@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -55,9 +55,21 @@ export async function prepareSetup(ask, { fetchImpl = fetch } = {}) {
   return { config, env };
 }
 
-async function main() {
-  const directory = '/config';
-  const names = ['config.json', 'secrets.env', 'depanator.container'];
+export function writeSetup(directory, { config, env }) {
+  const written = [];
+  try {
+    for (const [name, contents] of [['config.json', JSON.stringify(config, null, 2) + '\n'], ['secrets.env', Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n') + '\n']]) {
+      const path = join(directory, name);
+      writeFileSync(path, contents, { mode: 0o600, flag: 'wx' });
+      written.push(path);
+    }
+  } catch (error) { for (const path of written) rmSync(path); throw error; }
+}
+
+export async function main(args = process.argv.slice(2)) {
+  if (args.length && (args.length !== 2 || args[0] !== '--output-dir')) throw new Error('Usage: setup [--output-dir directory]');
+  const directory = resolve(args[1] || '.');
+  const names = ['config.json', 'secrets.env'];
   if (names.some(name => existsSync(join(directory, name)))) throw new Error('Setup files already exist. Edit them directly; setup never overwrites credentials or configuration.');
   let hidden = false;
   const output = new Writable({ write(chunk, encoding, callback) { if (!hidden) process.stdout.write(chunk, encoding); callback(); } });
@@ -75,19 +87,9 @@ async function main() {
   }
   try {
     const { config, env } = await prepareSetup(ask);
-    const image = process.env.DEPANATOR_IMAGE || 'ghcr.io/jhoogstraat/depanator:latest';
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(image)) throw new Error('Invalid container image name');
-    const unit = readFileSync(new URL('../deploy/depanator.container', import.meta.url), 'utf8').replace('ghcr.io/jhoogstraat/depanator:latest', image);
-    const written = [];
-    try {
-      for (const [name, contents] of [['config.json', JSON.stringify(config, null, 2) + '\n'], ['secrets.env', Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n') + '\n'], ['depanator.container', unit]]) {
-        const path = join(directory, name);
-        writeFileSync(path, contents, { mode: 0o600, flag: 'wx' });
-        written.push(path);
-      }
-    } catch (error) { for (const path of written) rmSync(path); throw error; }
+    writeSetup(directory, { config, env });
     console.log(`Configuration saved. Viewer password: ${env.VNC_PASSWORD}`);
-    console.log(`Login viewer: ${config.viewerUrl || 'configure your authenticated HTTPS viewer route to 127.0.0.1:6080'}`);
+    console.log(`Login viewer: ${config.viewerUrl || 'your operator-configured browser viewer'}`);
   } finally { terminal.close(); }
 }
 

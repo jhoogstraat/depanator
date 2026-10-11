@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareSetup } from '../src/setup.js';
+import { prepareSetup, writeSetup } from '../src/setup.js';
+import { mkdtempSync, readFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { IS24Adapter } from '../src/is24.js';
 import { Workflow } from '../src/workflow.js';
 
@@ -58,4 +61,17 @@ test('workflow waits for authentication before any action and shutdown cancels t
   const rejection = assert.rejects(action, /closed/);
   await workflow.close(); await rejection;
   assert.equal(actions, 0);
+});
+
+test('wizard output uses only the selected directory, protects secrets, and never overwrites existing config', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'depanator-output-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const result = await wizard();
+  writeSetup(directory, result);
+  assert.deepEqual(readdirSync(directory).sort(), ['config.json', 'secrets.env']);
+  assert.deepEqual(JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8')), result.config);
+  assert.equal(statSync(join(directory, 'secrets.env')).mode & 0o777, 0o600);
+  const before = readFileSync(join(directory, 'config.json'), 'utf8');
+  assert.throws(() => writeSetup(directory, { ...result, config: { changed: true } }), /EEXIST/);
+  assert.equal(readFileSync(join(directory, 'config.json'), 'utf8'), before);
 });

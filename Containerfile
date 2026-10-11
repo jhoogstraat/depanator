@@ -13,14 +13,12 @@ COPY src ./src
 COPY THIRD_PARTY_NOTICES.md ./
 COPY .puppeteerrc.cjs ./
 COPY config.example.json ./
-COPY deploy/quadlet/depanator.container ./deploy/depanator.container
 COPY deploy/container-entrypoint.sh /usr/local/bin/depanator-entrypoint
 RUN chmod 755 /usr/local/bin/depanator-entrypoint && mkdir -p /data /config && chown bun:bun /data
 
 ENV DISPLAY=:99 \
     HOME=/data/home \
     DEPANATOR_DATA_DIR=/data \
-    DEPANATOR_BROWSER_PROFILE=/data/browser \
     DEPANATOR_BROWSER_EXECUTABLE=/usr/bin/chromium \
     DEPANATOR_BROWSER_NO_SANDBOX=1
 

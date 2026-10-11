@@ -12,8 +12,9 @@ import { acquireLock } from './lock.js';
 
 export async function main(args = process.argv.slice(2)) {
   const command = args[0] || 'start';
+  if (command === 'setup') return (await import('./setup.js')).main(args.slice(1));
   if (['help', '--help', '-h'].includes(command)) {
-    console.log('Usage: bun src/cli.js init|login|start|status [--config path]\ninit: create config.json\nlogin: manual IS24 login in bundled Chromium; close it when done\nstart: poll listings and handle Telegram approvals\nstatus: inspect the durable review history');
+    console.log('Usage: bun src/cli.js init|login|start|status [--config path]\nsetup [--output-dir directory]: interactive config and credentials wizard\ninit: create config.json\nlogin: manual IS24 login in bundled Chromium; close it when done\nstart: poll listings and handle Telegram approvals\nstatus: inspect the durable review history');
     return;
   }
   const option = args.indexOf('--config');

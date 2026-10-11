@@ -1,76 +1,48 @@
-# Run the GHCR image with rootless Quadlet
+# Container interface
 
-The published image is `ghcr.io/jhoogstraat/depanator:latest`, for Linux x86_64 and ARM64. Servers need Podman, systemd user services, one `.container` file, config, and credentials. No source checkout or host Bun installation is needed. Pin a version or image digest for controlled updates.
+Image: `ghcr.io/jhoogstraat/depanator:latest`, for Linux x86_64 and ARM64. The image includes Bun, Chromium, a virtual display, and the noVNC login viewer. A private package needs registry credentials; a public package supports anonymous pulls.
 
-## Quick setup
+The operator chooses the container runtime, service manager, host paths, volume names, user mapping, published ports, domain, proxy, and authentication provider. The image does not create host services, modify system configuration, install Quadlets, or provision tunnels/DNS/access policies.
 
-Run as your rootless service user on a Linux server with Podman and a working systemd user session:
+## Configuration wizard
 
-```sh
-curl -fsSLo depanator-install.sh https://raw.githubusercontent.com/jhoogstraat/depanator/main/deploy/install.sh && sh depanator-install.sh
-```
+Run the image interactively with command `setup --output-dir DIRECTORY`, where `DIRECTORY` is an existing writable directory you provide inside the container. The wizard writes only `config.json` and `secrets.env` there. It does not overwrite existing files or start services. No viewer password or display is needed to run setup.
 
-The wizard asks for your filtered search URL, preferences, contact name/email, API key, bot token, and optional authenticated viewer URL. Keys are hidden while typing. It discovers your private Telegram chat after you send `/start`, asks you to confirm it, generates a viewer password, writes protected config and credentials, installs the Quadlet, and starts the service. Existing configuration is never overwritten. Additional contact facts can be added later under `persona` in `config.json`.
+The wizard asks for the filtered search URL, preferences, contact name/email, LLM API key, Telegram bot token, and optional viewer URL. Credentials are hidden while typing. After you send `/start` to your bot, it discovers the private chat and asks you to confirm it. It generates an eight-character viewer password and enables automatic login handoff. Additional contact facts can be added under `persona` later.
 
-Configure your own [Cloudflare Tunnel + Access or authenticated reverse proxy](remote-login.md), then open the viewer link on your phone. Sign into IS24 and close Chromium. The agent verifies the account and resumes automatically. It also pauses and sends a Telegram login notice when the account needs attention. No Quadlet mode changes are needed. Site/network failures remain errors rather than being treated as a successful login.
+Mount the generated configuration wherever you choose and pass the secret values as environment variables through your deployment tooling. Restrict access to both files. `secrets.env` is a plain `KEY=value` file, not a shell script; how it is loaded depends on your runtime. Keys must not be included in the image or committed to source control.
 
-The installer prints the one-time lingering command if needed for startup after logout or boot. Creating the bot, supplying keys, configuring your domain/access policy, and completing IS24 login/2FA remain operator tasks. No hostname, Access email, or tunnel is provisioned automatically. A private GHCR package requires registry authentication; make the package public for anonymous pulls.
+You can also run the wizard from the source checkout: `bun src/cli.js setup --output-dir DIRECTORY`.
 
-## Manual setup
+## Runtime inputs
 
-Create the configuration directory and extract the template from the image:
+| Input | Default / purpose |
+| --- | --- |
+| `DEPANATOR_CONFIG` | `/config/config.json`; path to the supplied JSON config |
+| `DEPANATOR_DATA_DIR` | `/data`; absolute writable path for persistent SQLite state and browser profile |
+| `DEPANATOR_BROWSER_PROFILE` | `browser` under the data directory; optional independent profile path |
+| `HOME` | `/data/home`; writable browser home directory |
+| `OPENAI_API_KEY` or `DEPANATOR_LLM_API_KEY` | Required LLM credential |
+| `TELEGRAM_BOT_TOKEN` | Required dedicated bot credential |
+| `TELEGRAM_CHAT_ID` | Required positive private chat ID; also accepted in config |
+| `VNC_PASSWORD` | Required for `start`/`login`; viewer authentication, eight characters |
 
-```sh
-mkdir -p ~/.config/depanator ~/.config/containers/systemd
-chmod 700 ~/.config/depanator
-```
+Internal paths are image defaults, not prescribed host locations. Persist the data directory and any independently configured browser profile. These paths must be writable by the container process; the image defaults to user `bun` (UID/GID 1000), and your runtime controls permissions and user mapping. If changing the data path, also configure a writable `HOME` as appropriate. Run one instance per data directory and Telegram bot.
 
-Then:
+Commands: `start` (default), `login` (explicit manual maintenance), `status` (read-only history), and `setup`. Configuration and secrets must be supplied before starting. Runtime lifecycle, restarts, upgrades, and backups are controlled by your deployment tooling.
 
-```sh
-podman run --rm --entrypoint cat ghcr.io/jhoogstraat/depanator:latest /app/config.example.json > ~/.config/depanator/config.json
-```
+## Viewer and account login
 
-Edit the search URL, account email, persona, and preferences. Create `~/.config/depanator/secrets.env`:
+The viewer listens on container TCP port **6080**, with its page at `/vnc.html` and a WebSocket connection on the same service. Publishing/routing this port is the operator's choice. The image makes no assumption that container loopback is reachable from a host or another container.
 
-```dotenv
-OPENAI_API_KEY=your-api-key
-TELEGRAM_BOT_TOKEN=your-bot-token
-TELEGRAM_CHAT_ID=your-private-numeric-chat-id
-VNC_PASSWORD=your-viewer-password
-```
+For remote access, place authenticated HTTPS in front of the entire viewer service, including WebSockets. Forward WebSocket upgrades and avoid caching. Choose your own proxy or tunnel; no provider is bundled. The viewer password is an additional layer, distinct from your external access controls and IS24 credentials. An already open WebSocket can outlive an external login session; use your infrastructure to terminate access when required.
 
-Use an eight-character viewer password. Protect both files with `chmod 600`. Keep one agent per Telegram bot.
+With `"autoLogin": true`, the agent verifies the signed-in IS24 account before work. If it cannot verify the configured identity, it pauses, notifies Telegram, and opens the manual login browser. Open your configured viewer, sign into IS24 including 2FA, and close Chromium. The agent rechecks identity and resumes automatically. The optional `viewerUrl` config field is your HTTPS login link for notifications; leaving it empty does not disable authentication handoff. No mode edits or service-manager commands are required by this flow.
 
-## One Quadlet
+The container disables Chromium's own sandbox by default. Isolation is the operator's responsibility; `DEPANATOR_BROWSER_NO_SANDBOX=0` enables Chromium's sandbox when your runtime supports it. The viewer is only for account login/maintenance; listing approvals remain in Telegram.
 
-Download the example or write your own using the same mounts and environment file:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/jhoogstraat/depanator/main/deploy/quadlet/depanator.container -o ~/.config/containers/systemd/depanator.container
-```
-
-Podman automatically creates its named data volume. SQLite and the account profile persist there. Hostnames, authentication policies, and tunnel credentials are configured by each server operator; none are embedded in the image.
-
-For automatic login handoff, add `"autoLogin": true` and your authenticated `"viewerUrl"` to `config.json`, leave `Exec=start`, then run:
-
-```sh
-systemctl --user daemon-reload
-systemctl --user start depanator.service
-```
-
-For an iPhone without VPN or SSH, follow [authenticated HTTPS access](remote-login.md). Alternatively, on your workstation run `ssh -N -L 6080:127.0.0.1:6080 USER@SERVER`. Open `http://127.0.0.1:6080/vnc.html`, enter the viewer password, sign into IS24, then close Chromium. The agent verifies the account and starts polling automatically. The explicit `Exec=login` command remains available for maintenance. Reviews and approval buttons arrive in Telegram.
-
-Enable lingering once with `sudo loginctl enable-linger "$USER"` for startup without an interactive login. Quadlet's `WantedBy=default.target` handles boot activation; do not enable the generated service manually.
-
-Logs: `journalctl --user -u depanator.service -f`. History: `podman exec depanator bun /app/src/cli.js status --config /config/config.json`.
-
-For updates, stop the service, `podman pull ghcr.io/jhoogstraat/depanator:latest`, then start it. With automatic login enabled, follow the Telegram login notice for reauthentication. Back up the data volume with the service stopped. Log in separately on each server; cookies may not be portable.
-
-The browser viewer is only for login and maintenance. It binds to host loopback and is accessed over SSH or the authenticated HTTPS route above. Chromium's sandbox is disabled inside the unprivileged rootless container; no privileged mode or extra capabilities are required. Live IS24 account compatibility remains unverified and submission fails closed on unverifiable details or identity.
+Live IS24 account compatibility has not been verified. Missing identity indicators, changed site structure, or unverifiable form values fail closed. Network/site failures remain errors and are retried by normal polling; they are not accepted as authenticated sessions.
 
 ## Publishing
 
-[The GitHub Actions workflow](../.github/workflows/image.yml) builds both architectures and publishes `latest`, commit, and version tags to GHCR when `main` or a `v*` tag is pushed, or when manually dispatched. It uses the repository's `GITHUB_TOKEN`, without a separate registry secret. Make the GHCR package public once for anonymous pulls; repository visibility is independent of package visibility.
-
-References: [GHCR publishing](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [multi-platform builds](https://docs.docker.com/build/ci/github-actions/multi-platform/), [Quadlet](https://docs.podman.io/en/stable/markdown/podman-systemd.unit.5.html).
+[GitHub Actions](../.github/workflows/image.yml) rebuilds both architectures and publishes `latest`, commit, and version tags to GHCR on pushes to `main` or a `v*` tag, and supports manual dispatch. The workflow uses `GITHUB_TOKEN`; no separate registry secret is needed. Package visibility is independent of repository visibility.
