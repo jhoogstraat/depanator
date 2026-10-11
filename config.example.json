@@ -1,0 +1,29 @@
+{
+  "searchUrl": "https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1200&numberofrooms=2-&livingspace=50-",
+  "accountEmail": "you@example.com",
+  "persona": {
+    "anrede": "",
+    "vorname": "Your first name",
+    "nachname": "Your last name",
+    "email": "you@example.com",
+    "telefon": "",
+    "strasse": "",
+    "hausnummer": "",
+    "plz": "",
+    "ort": "",
+    "einzug": "",
+    "personen": "",
+    "haustiere": "",
+    "beschaeftigung": "",
+    "einkommen": "",
+    "unterlagen": ""
+  },
+  "preferences": "Replace with your preferences and hard requirements. Dismiss swap-only listings. Explain uncertain facts before drafting.",
+  "llm": { "baseUrl": "https://api.openai.com/v1", "model": "gpt-4.1-mini" },
+  "notification": { "chatId": "" },
+  "maxPages": 5,
+  "pollIntervalMs": 600000,
+  "approvalTtlMs": 86400000,
+  "port": 8787,
+  "dataDir": ".depanator"
+}

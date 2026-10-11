@@ -1,0 +1,24 @@
+{
+  "name": "depanator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local apartment discovery, LLM review, and approval-gated applications",
+  "engines": {
+    "bun": ">=1.4.3",
+    "node": ">=24"
+  },
+  "packageManager": "bun@1.4.3",
+  "scripts": {
+    "browser:install": "bun node_modules/puppeteer/install.mjs",
+    "init": "bun src/cli.js init",
+    "start": "bun src/cli.js start",
+    "login": "bun src/cli.js login",
+    "status": "bun src/cli.js status",
+    "test": "bun test test/*.test.js",
+    "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check"
+  },
+  "dependencies": {
+    "puppeteer": "^25.13.0"
+  }
+}

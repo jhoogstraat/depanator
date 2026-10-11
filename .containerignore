@@ -1,0 +1,9 @@
+.git
+.depanator
+node_modules
+config.json
+*.env
+*.db*
+test
+docs
+package-lock.json

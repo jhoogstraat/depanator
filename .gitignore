@@ -1,0 +1,8 @@
+node_modules/
+.depanator/
+config.json
+*.env
+debug/
+*.db
+*.db-shm
+*.db-wal
