@@ -1,6 +1,6 @@
 # iPhone login without VPN or SSH
 
-Use the existing noVNC viewer through authenticated HTTPS. The account browser and profile stay on the server. No application code or agent image changes are needed. Safari is the setup path; embedding the viewer in T3 Code's iPhone app has not been verified.
+Use the existing noVNC viewer through authenticated HTTPS. The account browser and profile stay on the server. No application code or agent image changes are needed. Open the viewer in Safari or another browser that supports noVNC.
 
 ## Cloudflare Tunnel + Access
 

@@ -4,7 +4,14 @@ The published image is `ghcr.io/jhoogstraat/depanator:latest`, for Linux x86_64 
 
 ## Configure
 
-Create `~/.config/depanator` with mode 700. Extract the config template from the image:
+Create the configuration directory and extract the template from the image:
+
+```sh
+mkdir -p ~/.config/depanator ~/.config/containers/systemd
+chmod 700 ~/.config/depanator
+```
+
+Then:
 
 ```sh
 podman run --rm --entrypoint cat ghcr.io/jhoogstraat/depanator:latest /app/config.example.json > ~/.config/depanator/config.json
@@ -23,7 +30,13 @@ Use an eight-character viewer password. Protect both files with `chmod 600`. Kee
 
 ## One Quadlet
 
-Copy [depanator.container](quadlet/depanator.container) to `~/.config/containers/systemd/depanator.container`, or write your own using the same mounts and environment file. Podman automatically creates its named data volume. SQLite and the account profile persist there.
+Download the example or write your own using the same mounts and environment file:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jhoogstraat/depanator/main/deploy/quadlet/depanator.container -o ~/.config/containers/systemd/depanator.container
+```
+
+Podman automatically creates its named data volume. SQLite and the account profile persist there. Hostnames, authentication policies, and tunnel credentials are configured by each server operator; none are embedded in the image.
 
 For first login, set `Exec=login` in that same file, then run:
 
@@ -44,6 +57,6 @@ The browser viewer is only for login and maintenance. It binds to host loopback 
 
 ## Publishing
 
-[The GitHub Actions workflow](../.github/workflows/image.yml) builds both architectures and publishes `latest`, commit, and version tags to GHCR when `main` or a `v*` tag is pushed, or when manually dispatched. It uses the repository's `GITHUB_TOKEN`, without a separate registry secret. Make the GHCR package public once for anonymous pulls; repository visibility is independent of package visibility. Until the first successful workflow run, the image is not available.
+[The GitHub Actions workflow](../.github/workflows/image.yml) builds both architectures and publishes `latest`, commit, and version tags to GHCR when `main` or a `v*` tag is pushed, or when manually dispatched. It uses the repository's `GITHUB_TOKEN`, without a separate registry secret. Make the GHCR package public once for anonymous pulls; repository visibility is independent of package visibility.
 
 References: [GHCR publishing](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [multi-platform builds](https://docs.docker.com/build/ci/github-actions/multi-platform/), [Quadlet](https://docs.podman.io/en/stable/markdown/podman-systemd.unit.5.html).
