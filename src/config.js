@@ -20,6 +20,8 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
     accountEmail,
     dataDir,
     browserProfile,
+    autoLogin: env.DEPANATOR_AUTO_LOGIN === '1' || input.autoLogin === true,
+    viewerUrl: String(input.viewerUrl || ''),
     browser: {
       executablePath: env.DEPANATOR_BROWSER_EXECUTABLE || input.browser?.executablePath || null,
       disableSandbox: env.DEPANATOR_BROWSER_NO_SANDBOX === '1' || input.browser?.disableSandbox === true,
@@ -36,6 +38,10 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
     telegramBotToken: env.TELEGRAM_BOT_TOKEN || '',
   };
   const base = new URL(config.llm.baseUrl);
+  if (config.viewerUrl) {
+    const viewer = new URL(config.viewerUrl);
+    if (viewer.protocol !== 'https:' || viewer.username || viewer.password || viewer.search || viewer.hash) throw new Error('viewerUrl must be HTTPS without credentials/query/fragment');
+  }
   if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)))) {
     throw new Error('llm.baseUrl must use HTTPS, or HTTP on localhost, without credentials/query/fragment');
   }

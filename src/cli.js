@@ -43,6 +43,7 @@ export async function main(args = process.argv.slice(2)) {
     if (closing) return;
     closing = true;
     clearInterval(interval);
+    adapter?.cancelLogin();
     try {
       await telegram?.close();
       if (workflow) await workflow.close(); else await adapter?.close();
@@ -60,6 +61,14 @@ export async function main(args = process.argv.slice(2)) {
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
       notify: review => telegram.notify(review),
+      beforeWork: async () => {
+        if (!config.autoLogin) return;
+        await adapter.authenticate(async () => {
+          const message = `IS24 login required for ${config.accountEmail}. Open ${config.viewerUrl || 'your configured browser viewer'}, sign in, then close Chromium. The agent will resume automatically.`;
+          console.log(message);
+          await telegram.api('sendMessage', { chat_id: config.notification.chatId, text: message }).catch(error => console.error(error.message));
+        });
+      },
       onEvent(event) {
         if (event.type === 'submission') {
           console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);

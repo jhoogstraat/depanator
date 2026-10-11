@@ -1,8 +1,8 @@
 import { bindingFor, configHashFor, hash } from './store.js';
 
 export class Workflow {
-  constructor({ store, adapter, evaluate, notify, config, onEvent = () => {} }) {
-    Object.assign(this, { store, adapter, evaluate, notify, config, onEvent });
+  constructor({ store, adapter, evaluate, notify, config, onEvent = () => {}, beforeWork = async () => {} }) {
+    Object.assign(this, { store, adapter, evaluate, notify, config, onEvent, beforeWork });
     this.queue = Promise.resolve();
     this.runningTick = null;
     this.closed = false;
@@ -12,7 +12,12 @@ export class Workflow {
   emit(event) { try { this.onEvent(event); } catch { /* Reporting cannot change a send outcome. */ } }
   run(fn) {
     if (this.closed) return Promise.reject(new Error('Workflow is closed'));
-    const result = this.queue.then(fn);
+    const result = this.queue.then(async () => {
+      if (this.closed) throw new Error('Workflow is closed');
+      await this.beforeWork();
+      if (this.closed) throw new Error('Workflow is closed');
+      return fn();
+    });
     this.queue = result.catch(() => {});
     return result;
   }
@@ -95,6 +100,7 @@ export class Workflow {
   }
   async close() {
     this.closed = true;
+    this.adapter.cancelLogin?.();
     await this.queue;
     await this.adapter.close?.();
     this.store.close();

@@ -2,7 +2,7 @@
 
 A local, Telegram-first apartment agent for ImmobilienScout24. It polls a filtered website search URL, extracts listing details, asks an LLM to message or dismiss new listings, drafts applications, and sends only after your explicit approval. There is no web UI.
 
-For rootless server deployment on x86_64 or ARM64, see [the Quadlet guide](deploy/README.md). The browser viewer there is for account login and maintenance; reviews remain entirely in Telegram.
+For rootless server deployment on x86_64 or ARM64, use the [one-command installer and Quadlet guide](deploy/README.md#quick-setup). The browser viewer there is for account login and maintenance; reviews remain entirely in Telegram.
 
 Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered.
 

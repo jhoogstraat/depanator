@@ -13,6 +13,7 @@ COPY src ./src
 COPY THIRD_PARTY_NOTICES.md ./
 COPY .puppeteerrc.cjs ./
 COPY config.example.json ./
+COPY deploy/quadlet/depanator.container ./deploy/depanator.container
 COPY deploy/container-entrypoint.sh /usr/local/bin/depanator-entrypoint
 RUN chmod 755 /usr/local/bin/depanator-entrypoint && mkdir -p /data /config && chown bun:bun /data
 

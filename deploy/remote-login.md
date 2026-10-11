@@ -10,7 +10,7 @@ Requires a Cloudflare account, a domain on Cloudflare, and outbound tunnel conne
 2. Create a remotely managed Cloudflare Tunnel. Add a published HTTP route for the hostname to `http://127.0.0.1:6080`. Under the route's Access settings, enable **Protect with Access**, supplying the Access team name and application audience (AUD) tag. This makes the connector validate Access tokens before forwarding traffic.
 3. Reuse an existing host-networked tunnel connector if you have one. Otherwise copy [cloudflared.container](cloudflared.container) into `~/.config/containers/systemd/cloudflared.container`. This optional second Quadlet uses the official image. Host networking reaches the agent's loopback port; it publishes no ports, and metrics also bind to loopback.
 4. Save the tunnel token directly on the server in `~/.config/depanator/tunnel.env`, as `TUNNEL_TOKEN=your-tunnel-token`, with mode 600. Keep it separate from the agent's LLM and Telegram credentials. Do not paste tokens into chat or commit them.
-5. Keep `PublishPort=127.0.0.1:6080:6080` in the agent Quadlet. Set `Exec=login` for first authentication, then run:
+5. Keep `PublishPort=127.0.0.1:6080:6080` in the agent Quadlet. Leave `Exec=start` and enable `"autoLogin": true` in `config.json` (the installer does this), then run:
 
    ```sh
    systemctl --user daemon-reload
@@ -18,7 +18,7 @@ Requires a Cloudflare account, a domain on Cloudflare, and outbound tunnel conne
    ```
 
 6. On your iPhone, open `https://apartments.example.com/vnc.html` in Safari. Authenticate through Access, enter the viewer password, and sign into IS24 including any 2FA. noVNC's side controls provide an on-screen keyboard. Close Chromium when done.
-7. Change the agent back to `Exec=start`, reload, and start `depanator.service`. The tunnel remains available for future login. Listing reviews and approvals stay in Telegram.
+7. The agent verifies your account and begins polling automatically after Chromium closes. The tunnel remains available for future login, and Telegram notifies you when reauthentication is required. Listing reviews and approvals stay in Telegram.
 
 Cloudflare terminates HTTPS and proxies the browser session. Access, the viewer password, and IS24 are separate authentication layers. Access expiry does not necessarily disconnect an already open WebSocket viewer; disconnect or stop the tunnel to terminate it immediately.
 

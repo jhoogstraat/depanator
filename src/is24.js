@@ -169,6 +169,18 @@ export class IS24Adapter {
     const account = await page.evaluate(readAccount);
     if (!account || account !== this.config.accountEmail.toLowerCase()) throw new Error('Signed-in account email cannot be verified or differs from approved account');
   }
+  async authenticate(onRequired) {
+    for (;;) {
+      const page = await this.serial(async () => {
+        const current = await this.ensureBrowser();
+        const response = await current.goto(ORIGIN + '/', { waitUntil: 'networkidle2', timeout: 30000 });
+        if (!response?.ok() || new URL(current.url()).origin !== ORIGIN) throw new Error('Cannot verify IS24 session; retry when the site is reachable');
+        return current;
+      });
+      try { await this.assertAccount(page); return; }
+      catch { await onRequired(); await this.login(); }
+    }
+  }
   send(review,{beforeSubmit} = {}) {
     return this.serial(async () => {
       let attempted = false;
@@ -200,11 +212,17 @@ export class IS24Adapter {
   }
   login() {
     return this.serial(async () => {
+      if (this.loginCancelled) throw new Error('Login cancelled');
       if (this.browser) { await this.browser.close(); this.browser = null; }
+      if (this.loginCancelled) throw new Error('Login cancelled');
       const launch = this.deps.spawn || spawn;
       const child = launch(this.config.browser?.executablePath || puppeteer.executablePath(),[...this.browserArgs(), `--user-data-dir=${resolve(this.config.browserProfile)}`, '--no-first-run', ORIGIN],{stdio:'ignore'});
-      await new Promise((resolve,reject) => { child.once('error',reject); child.once('exit',(code) => code === 0 ? resolve() : reject(new Error(`Browser exited (${code})`))); });
+      this.loginChild = child;
+      try {
+        await new Promise((resolve,reject) => { child.once('error',reject); child.once('exit',(code) => code === 0 ? resolve() : reject(new Error(`Browser exited (${code})`))); });
+      } finally { this.loginChild = null; }
     });
   }
+  cancelLogin() { this.loginCancelled = true; this.loginChild?.kill('SIGTERM'); }
   close() { return this.serial(async () => { if (this.browser) await this.browser.close(); this.browser=null; }); }
 }
