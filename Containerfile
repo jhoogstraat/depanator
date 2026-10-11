@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --ignore-scripts --production
 COPY src ./src
-COPY vendor ./vendor
+COPY THIRD_PARTY_NOTICES.md ./
 COPY .puppeteerrc.cjs ./
 COPY config.example.json ./
 COPY deploy/container-entrypoint.sh /usr/local/bin/depanator-entrypoint

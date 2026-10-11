@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { IS24Adapter, listingUrl, readAccount, extractDetails, verifyForm } from '../src/is24.js';
-import { validateSearchUrl } from '../vendor/homelander/url-translator.js';
-import { IS24Contactor } from '../vendor/homelander/is24-contactor.js';
+import { validateSearchUrl } from '../src/url-translator.js';
+import { IS24Contactor } from '../src/is24-contactor.js';
 const searchUrl='https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten';
 const config={searchUrl,maxPages:3,browserProfile:'/tmp/test-is24-profile',accountEmail:'me@example.com',persona:{vorname:'Me',nachname:'Example',email:'me@example.com'}};
 const snapshot={expose_id:'123',title:'Home',price:900,area:60,rooms:2,address:'Berlin',image_url:'',url:listingUrl('123'),description:'Full listing description',amenities:['Balcony: yes']};
@@ -75,8 +75,8 @@ test('browser tasks serialize to preserve page and account context',async()=>{
   await Promise.all([adapter.serial(async()=>{order.push('a');await new Promise(r=>setTimeout(r,10));order.push('b');}),adapter.serial(async()=>order.push('c'))]);
   assert.deepEqual(order,['a','b','c']);
 });
-test('vendored contactor has one submit call and captcha cannot trigger resubmit',async()=>{
-  const source=await readFile(new URL('../vendor/homelander/is24-contactor.js',import.meta.url),'utf8');
+test('contactor has one submit call and captcha cannot trigger resubmit',async()=>{
+  const source=await readFile(new URL('../src/is24-contactor.js',import.meta.url),'utf8');
   assert.equal((source.match(/await this\._clickAbschicken\(/g)||[]).length,1);
   const contactor=new IS24Contactor(null,{});
   let commands=0; let marks=0;

@@ -62,4 +62,4 @@ bun run check
 
 Tests cover the complete Telegram approval workflow with simulated external services, durable restart behavior, invalid approvals, exact drafts, filter preservation, and actual bundled-Chromium DOM fixtures. Tests do not send real applications or Telegram messages.
 
-The scraper/contactor originate from Homelander commit `b0e7283b540d853311854d5111bffc0254d5ea85`. Its MIT license and local modifications are recorded in [vendor/homelander/NOTICE.md](vendor/homelander/NOTICE.md). The original source analysis is in [docs/homelander-agent-analysis.md](docs/homelander-agent-analysis.md).
+The scraper/contactor originate from Homelander commit `b0e7283b540d853311854d5111bffc0254d5ea85`. Its MIT license and local modifications are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The original source analysis is in [docs/homelander-agent-analysis.md](docs/homelander-agent-analysis.md).

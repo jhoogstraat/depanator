@@ -2,8 +2,8 @@ import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import puppeteer from 'puppeteer';
-import { IS24Contactor } from '../vendor/homelander/is24-contactor.js';
-import { validateSearchUrl, buildMobileApiUrl } from '../vendor/homelander/url-translator.js';
+import { IS24Contactor } from './is24-contactor.js';
+import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
 
 const ORIGIN = 'https://www.immobilienscout24.de';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
