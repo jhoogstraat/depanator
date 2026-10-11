@@ -52,15 +52,20 @@ export function codexArguments(config, directory) {
     ...disabled.flatMap(feature => ['--disable', feature]), '-'];
 }
 
-export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn } = {}) {
+export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal } = {}) {
+  signal?.throwIfAborted();
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-'));
   try {
     const args = codexArguments(config, directory);
     const child = spawnImpl(codexExecutable(), args, { cwd: directory, env: codexEnvironment(config, directory), stdio: ['pipe', 'ignore', 'ignore'] });
     const complete = new Promise((resolve, reject) => {
+      const abort = () => { child.kill('SIGKILL'); };
+      signal?.addEventListener('abort', abort, { once: true });
       const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Codex review timed out; nothing was sent')); }, 120000);
-      child.once('error', () => { clearTimeout(timeout); reject(new Error('Cannot start bundled Codex CLI')); });
-      child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error('Codex review failed; check subscription login with llm-login (no API fallback)')); });
+      const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); };
+      child.once('error', () => { cleanup(); reject(new Error('Cannot start bundled Codex CLI')); });
+      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(new Error('Codex review failed or cancelled; check subscription login with llm-login (no API fallback)')); });
+      if (signal?.aborted) abort();
     });
     child.stdin.on('error', () => {});
     child.stdin.end(JSON.stringify({ preferences: config.preferences, verifiedPersona: config.persona, listing: snapshot }));

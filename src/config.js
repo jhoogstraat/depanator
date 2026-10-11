@@ -1,10 +1,29 @@
-import { readFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, mkdirSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 
 function integer(value, fallback, min, max, name) {
   const result = value ?? fallback;
   if (!Number.isSafeInteger(result) || result < min || result > max) throw new Error(`${name} must be an integer between ${min} and ${max}`);
   return result;
+}
+
+export function readSecret(env, name) {
+  const file = env[`${name}_FILE`];
+  if (file && env[name]) throw new Error(`Set only ${name} or ${name}_FILE`);
+  if (!file) return env[name] || '';
+  let value;
+  try {
+    if (statSync(file).size > 16384) throw new Error();
+    value = readFileSync(file, 'utf8').replace(/\r?\n$/, '');
+  } catch { throw new Error(`Cannot read ${name}_FILE`); }
+  if (!value || /[\r\n\0]/.test(value)) throw new Error(`${name}_FILE must contain one nonempty line`);
+  return value;
+}
+
+export function assertReconciled(config) {
+  if (config.dataDir && existsSync(resolve(config.dataDir, 'reconciliation-required'))) {
+    throw new Error('Restore reconciliation required: verify IS24 history and restored reviews before removing reconciliation-required');
+  }
 }
 
 export function loadConfig(filename = 'config.json', { env = process.env, loginOnly = false } = {}) {
@@ -38,9 +57,9 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
       model: input.llm?.model || (input.llm?.backend === 'codex' ? 'gpt-6-luna' : 'gpt-4.1-mini'),
       codexHome: resolve(dirname(path), input.llm?.codexHome || `${dataDir}/codex`),
     },
-    llmApiKey: env.DEPANATOR_LLM_API_KEY || env.OPENAI_API_KEY || '',
+    llmApiKey: loginOnly || input.llm?.backend === 'codex' ? '' : readSecret(env, 'DEPANATOR_LLM_API_KEY') || readSecret(env, 'OPENAI_API_KEY'),
     notification: { type: 'telegram', chatId: String(env.TELEGRAM_CHAT_ID || input.notification?.chatId || '') },
-    telegramBotToken: env.TELEGRAM_BOT_TOKEN || '',
+    telegramBotToken: loginOnly ? '' : readSecret(env, 'TELEGRAM_BOT_TOKEN'),
   };
   if (!['api', 'codex'].includes(config.llm.backend)) throw new Error('llm.backend must be api or codex');
   if (typeof config.llm.model !== 'string' || !config.llm.model.trim() || (config.llm.backend === 'codex' && !/^[a-zA-Z0-9._-]+$/.test(config.llm.model))) throw new Error('llm.model must be a model name');

@@ -2,13 +2,21 @@ import { copyFileSync, constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { loadConfig } from './config.js';
+import { loadConfig, assertReconciled } from './config.js';
 import { Store } from './store.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
 import { createEvaluator } from './llm.js';
 import { Telegram } from './telegram.js';
 import { acquireLock } from './lock.js';
+
+export async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
+  const timer = setTimeout(() => {
+    console.error('Shutdown deadline reached; any interrupted submission will remain uncertain');
+    terminate();
+  }, timeoutMs);
+  try { await action(); } finally { clearTimeout(timer); }
+}
 
 export async function main(args = process.argv.slice(2)) {
   const command = args[0] || 'start';
@@ -27,6 +35,7 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (!['start', 'login', 'llm-login', 'status'].includes(command)) throw new Error(`Unknown command: ${command}`);
   const config = loadConfig(configPath, { loginOnly: command !== 'start' });
+  if (command === 'start') assertReconciled(config);
   if (command === 'llm-login') return (await import('./codex.js')).loginWithCodex(config);
   if (command === 'status') {
     const db = new DatabaseSync(join(config.dataDir, 'agent.db'), { readOnly: true });
@@ -40,16 +49,21 @@ export async function main(args = process.argv.slice(2)) {
   }
   const unlock = acquireLock(config.dataDir);
   let adapter, workflow, telegram, interval;
-  let closing = false;
-  const close = async () => {
-    if (closing) return;
+  let closing = false, closePromise;
+  const close = () => {
+    if (closePromise) return closePromise;
     closing = true;
     clearInterval(interval);
+    workflow?.stop();
     adapter?.cancelLogin();
-    try {
-      await telegram?.close();
-      if (workflow) await workflow.close(); else await adapter?.close();
-    } finally { unlock(); }
+    closePromise = boundedShutdown(async () => {
+      try {
+        const results = await Promise.allSettled([telegram?.close(), workflow ? workflow.close() : adapter?.close()]);
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure) throw failure.reason;
+      } finally { unlock(); }
+    });
+    return closePromise;
   };
   try {
     adapter = new IS24Adapter(config);
@@ -74,18 +88,19 @@ export async function main(args = process.argv.slice(2)) {
       onEvent(event) {
         if (event.type === 'submission') {
           console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
-          telegram.notifyOutcome(event.review).catch(error => { console.error(error.message); workflow.status.telegramError = error.message; });
+          if (!closing) telegram.notifyOutcome(event.review).catch(error => { console.error(error.message); workflow.status.telegramError = error.message; });
         }
         if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
       },
     });
     telegram = new Telegram({ config, store, bindings: () => workflow.bindings(), onApproved: () => workflow.sendApproved(), onError: message => { workflow.status.telegramError = message; console.error(message); } });
     console.log('Agent running. Reviews and approvals arrive in your private Telegram chat. Keep this terminal open.');
-    const shutdown = () => { close().catch(error => { console.error(error.message); process.exitCode = 1; }); };
+    const shutdown = () => { close().then(() => process.exit(process.exitCode || 0), error => { console.error(error.message); process.exit(1); }); };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
     telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
     const tick = () => workflow.tick().then(() => {
+      if (closing) return;
       console.log(`Poll complete. ${store.list().length} listings tracked.`);
       if (workflow.status.warning) console.error(workflow.status.warning);
     }).catch(error => { console.error(`Agent: ${error.message}`); });

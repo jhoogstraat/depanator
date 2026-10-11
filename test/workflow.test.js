@@ -122,3 +122,65 @@ test('an unrelated search outage does not block an already approved send', async
   assert.equal(f.workflow.status.lastError, 'Search unavailable');
   await f.workflow.close();
 });
+
+test('shutdown during enrichment prevents evaluation, notification, and remaining batch work', async () => {
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  const f = fixture();
+  f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }], complete: true });
+  f.adapter.details = async () => { entered(); await waiting; return f.snapshot; };
+  const poll = f.workflow.poll();
+  await started;
+  f.workflow.stop();
+  assert.equal(f.workflow.controller.signal.aborted, true);
+  const stopped = assert.rejects(poll, /Workflow is closed/);
+  release(); await stopped;
+  assert.equal(f.calls.evaluate, 0); assert.equal(f.calls.notify, 0);
+  assert.equal(f.store.list()[1].status, 'discovered');
+  await f.workflow.close();
+});
+
+test('shutdown guards the final submit seam and prevents further approved submissions', async () => {
+  const f = fixture();
+  await f.workflow.poll();
+  const review = approve(f);
+  f.adapter.send = async (_review, { beforeSubmit, assertCanSubmit }) => {
+    await beforeSubmit();
+    f.workflow.stop();
+    assertCanSubmit();
+    f.calls.send++;
+    return { outcome: 'sent' };
+  };
+  await f.workflow.sendApproved();
+  assert.equal(f.calls.send, 0);
+  assert.equal(f.store.get(review.id).status, 'unknown_outcome');
+  await assert.rejects(f.workflow.sendApproved(), /closed/);
+  await f.workflow.close();
+});
+
+test('shutdown drains an already-started send and never claims the next approval', async () => {
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  const f = fixture();
+  f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }], complete: true });
+  f.adapter.details = async snapshot => snapshot;
+  await f.workflow.poll();
+  const reviews = f.store.list();
+  for (const review of reviews) f.store.approve(review.id, { version: review.version, draftHash: review.draftHash, ...f.workflow.bindings() });
+  const ordered = f.store.approved();
+  f.adapter.send = async (_review, { beforeSubmit, assertCanSubmit }) => {
+    await beforeSubmit(); assertCanSubmit(); f.calls.send++; entered(); await waiting;
+    return { outcome: 'unknown_outcome', detail: 'Transport lost after click' };
+  };
+  const sending = f.workflow.sendApproved();
+  await started; f.workflow.stop();
+  const stopped = assert.rejects(sending, /closed/);
+  release(); await stopped;
+  assert.equal(f.calls.send, 1);
+  assert.equal(f.store.get(ordered[0].id).status, 'unknown_outcome');
+  assert.equal(f.store.get(ordered[1].id).status, 'approved');
+  assert.equal(f.store.attempts(ordered[1].id).length, 0);
+  await f.workflow.close();
+});

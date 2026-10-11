@@ -64,6 +64,21 @@ test('subscription configuration and wizard do not require or write an API key',
   assert.equal('TELEGRAM_BOT_TOKEN' in codexEnvironment(loaded, config.dataDir), false);
 });
 
+test('shutdown cancels the Codex subprocess and an already aborted review cannot spawn', async t => {
+  const config = fixture(t);
+  const controller = new AbortController();
+  let killed = false;
+  const review = evaluateWithCodex(config, {}, { signal: controller.signal, spawnImpl() {
+    const child = new EventEmitter(); child.stdin = new PassThrough();
+    child.kill = signal => { assert.equal(signal, 'SIGKILL'); killed = true; child.emit('close', null); };
+    return child;
+  } });
+  controller.abort();
+  await assert.rejects(review, /cancelled/);
+  assert.equal(killed, true);
+  await assert.rejects(evaluateWithCodex(config, {}, { signal: controller.signal, spawnImpl() { throw new Error('Must not spawn'); } }), /abort/i);
+});
+
 test('pinned native Codex CLI sends no tools to an offline fixture endpoint', { timeout: 20000 }, async t => {
   const config = fixture(t);
   let request;

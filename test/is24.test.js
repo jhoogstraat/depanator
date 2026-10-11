@@ -70,6 +70,15 @@ test('single submit maps confirmation to sent and all uncertainty to unknown',as
     assert.equal(result.outcome,options.success===false||options.throwAfterClick?'unknown_outcome':'sent'); assert.equal(f.clicks(),1);
   }
 });
+test('shutdown and restore guards can still prevent click after final async validation',async()=>{
+  for (const mode of ['shutdown', 'restore']) {
+    const f=fixture();
+    const beforeSubmit=async()=>{ if(mode==='shutdown') f.adapter.cancelLogin(); return true; };
+    const result=await f.adapter.send({snapshot,draft:'Exact approved text'},{beforeSubmit,assertCanSubmit:()=>{if(mode==='restore') throw new Error('Restore reconciliation required');}});
+    assert.equal(result.outcome,'failed'); assert.equal(f.clicks(),0);
+    await f.adapter.close();
+  }
+});
 test('browser tasks serialize to preserve page and account context',async()=>{
   const adapter=new IS24Adapter(config); const order=[];
   await Promise.all([adapter.serial(async()=>{order.push('a');await new Promise(r=>setTimeout(r,10));order.push('b');}),adapter.serial(async()=>order.push('c'))]);

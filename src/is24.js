@@ -121,10 +121,11 @@ export class IS24Adapter {
     this.queue = task.catch(() => {});
     return task;
   }
-  async search() {
+  async search({ signal } = {}) {
     const listings = new Map();
     for (let page=1; page<=this.config.maxPages; page++) {
-      const response = await this.fetch(buildMobileApiUrl(this.validation.canonical, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:AbortSignal.timeout(30000), redirect:'error'});
+      signal?.throwIfAborted();
+      const response = await this.fetch(buildMobileApiUrl(this.validation.canonical, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect:'error'});
       if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`Search unavailable (HTTP ${response.status}); resolve blocks manually`);
       const data = await response.json();
       if (!Array.isArray(data.resultListItems)) throw new Error('Unexpected search response');
@@ -181,7 +182,7 @@ export class IS24Adapter {
       catch { await onRequired(); await this.login(); }
     }
   }
-  send(review,{beforeSubmit} = {}) {
+  send(review,{beforeSubmit, assertCanSubmit} = {}) {
     return this.serial(async () => {
       let attempted = false;
       try {
@@ -204,7 +205,11 @@ export class IS24Adapter {
             await verifyForm(current,review.draft,this.config.persona);
             if (await beforeSubmit() === false) throw new Error('Approval no longer valid');
           },
-          onSubmitAttempt: () => { attempted = true; },
+          onSubmitAttempt: () => {
+            if (this.loginCancelled) throw new Error('Shutdown cancelled submission');
+            assertCanSubmit?.();
+            attempted = true;
+          },
         });
         return {outcome:result.success ? 'sent' : attempted ? 'unknown_outcome' : 'failed',detail:result.detail || result.reason};
       } catch (err) { return {outcome:attempted ? 'unknown_outcome' : 'failed',detail:err.message}; }

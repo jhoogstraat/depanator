@@ -23,13 +23,14 @@ export function validateEvaluation(result) {
 }
 
 export function createEvaluator(config, { fetchImpl = fetch } = {}) {
-  if (config.llm.backend === 'codex') return async snapshot => {
+  if (config.llm.backend === 'codex') return async (snapshot, options) => {
     const { evaluateWithCodex } = await import('./codex.js');
-    return validateEvaluation(await evaluateWithCodex(config, snapshot));
+    return validateEvaluation(await evaluateWithCodex(config, snapshot, options));
   };
-  return async snapshot => {
+  return async (snapshot, { signal } = {}) => {
+    signal?.throwIfAborted();
     const response = await fetchImpl(`${config.llm.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST', signal: AbortSignal.timeout(60_000),
+      method: 'POST', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.llmApiKey}` },
       body: JSON.stringify({
         model: config.llm.model,

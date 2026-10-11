@@ -105,6 +105,7 @@ export class Telegram {
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
   }
   async handleUpdate(update) {
+    if (this.controller.signal.aborted) return;
     const query = update.callback_query;
     if (!query) return;
     let answer = 'This approval is invalid or expired.';
@@ -147,6 +148,7 @@ export class Telegram {
       try {
         const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
         for (const update of updates) {
+          if (signal.aborted) break;
           await this.handleUpdate(update);
           this.saveOffset(update.update_id + 1);
         }

@@ -16,7 +16,8 @@ case "$mode" in
   *) echo 'Use setup, start, login, llm-login, or status' >&2; exit 64 ;;
 esac
 
-: "${VNC_PASSWORD:?Set VNC_PASSWORD in the environment file}"
+VNC_PASSWORD=$(bun -e 'import { readSecret } from "/app/src/config.js"; process.stdout.write(readSecret(process.env, "VNC_PASSWORD"));')
+: "${VNC_PASSWORD:?Set VNC_PASSWORD or VNC_PASSWORD_FILE}"
 if [ "${#VNC_PASSWORD}" -lt 8 ]; then
   echo 'VNC_PASSWORD must contain at least 8 characters' >&2
   exit 64
@@ -47,5 +48,5 @@ websockify --web=/usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 # it commits the outcome and releases its own lock before the container exits.
 bun /app/src/cli.js "$mode" --config "$config_file" &
 agent_pid=$!
-trap 'kill -TERM "$agent_pid" 2>/dev/null || true; wait "$agent_pid" || true; exit 0' TERM INT
+trap 'kill -TERM "$agent_pid" 2>/dev/null || true; result=0; wait "$agent_pid" || result=$?; exit "$result"' TERM INT
 wait "$agent_pid"
