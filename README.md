@@ -43,6 +43,14 @@ bun run status
 
 Commands accept `--config path`, for example `bun run start --config apartment.json`. The default data/profile directory is `.depanator/`. Config and data are git-ignored. Runtime keys can use `DEPANATOR_LLM_API_KEY` instead of `OPENAI_API_KEY`; `llm.baseUrl` supports a compatible Chat Completions endpoint with strict JSON-schema output. The default is OpenAI, using [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=chat). Listing snapshots, preferences, and persona facts are sent to that configured LLM; approval details and drafts are sent to your Telegram bot.
 
+### ChatGPT subscription
+
+The wizard offers `api` or `codex`. For existing configuration, replace the entire `llm` object with `{"backend":"codex"}` and run `bun run llm-login` (accepts `--config path`). The bundled official Codex CLI prints a link and one-time code. Open the link on your phone, sign into ChatGPT, and enter the code. Enable device-code login in ChatGPT security settings if required. This uses your plan's Codex allowance, not unlimited access or API credit. See [OpenAI's authentication guide](https://developers.openai.com/codex/auth/).
+
+No API key is required in Codex mode; failures never fall back to API billing. Authentication persists under `codex` in the data directory; `llm.codexHome` can override that location. Keep it private and persist it. The default model is `gpt-6-luna`; override `llm.model` with a model available to your plan. Unavailable models or expired login leave listings unsent; rerun `llm-login` when needed.
+
+Each review uses an ephemeral, tool-free Codex invocation, a private empty working directory, a restricted environment, and the same JSON schema and draft validation as API mode. No shell, file-edit, browser, web-search, MCP, app, or delegation tools are exposed. The CLI is pinned, and an offline integration test verifies its request contains zero tools. Subscription login is separate from IS24 login; the optional viewer URL is only your operator-configured IS24 browser link.
+
 Puppeteer's browser installer runs explicitly under Bun rather than through a Node lifecycle script. Existing config, Chromium profiles, and SQLite databases need no conversion. Bun's [Node compatibility](https://bun.sh/docs/runtime/nodejs-compat) includes the `node:sqlite` API used here; direct execution with Node 24+ remains a fallback, for example `node src/cli.js start`. Keep one agent process running per data directory.
 
 ## Submission and recovery

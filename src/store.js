@@ -16,7 +16,7 @@ export function bindingFor(config) {
 export function configHashFor(config) {
   const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, approvalTtlMs, browser } = config;
   // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl }, approvalTtlMs, browser });
+  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, approvalTtlMs, browser });
 }
 function conflict(message) {
   const error = new Error(message);

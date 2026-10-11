@@ -32,11 +32,18 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
     pollIntervalMs: integer(input.pollIntervalMs, 600_000, 30_000, 86_400_000, 'pollIntervalMs'),
     approvalTtlMs: integer(input.approvalTtlMs, 86_400_000, 60_000, 604_800_000, 'approvalTtlMs'),
     port: integer(input.port, 8787, 1024, 65535, 'port'),
-    llm: { baseUrl: input.llm?.baseUrl || 'https://api.openai.com/v1', model: input.llm?.model || 'gpt-4.1-mini' },
+    llm: {
+      backend: input.llm?.backend || 'api',
+      baseUrl: input.llm?.baseUrl || 'https://api.openai.com/v1',
+      model: input.llm?.model || (input.llm?.backend === 'codex' ? 'gpt-6-luna' : 'gpt-4.1-mini'),
+      codexHome: resolve(dirname(path), input.llm?.codexHome || `${dataDir}/codex`),
+    },
     llmApiKey: env.DEPANATOR_LLM_API_KEY || env.OPENAI_API_KEY || '',
     notification: { type: 'telegram', chatId: String(env.TELEGRAM_CHAT_ID || input.notification?.chatId || '') },
     telegramBotToken: env.TELEGRAM_BOT_TOKEN || '',
   };
+  if (!['api', 'codex'].includes(config.llm.backend)) throw new Error('llm.backend must be api or codex');
+  if (typeof config.llm.model !== 'string' || !config.llm.model.trim() || (config.llm.backend === 'codex' && !/^[a-zA-Z0-9._-]+$/.test(config.llm.model))) throw new Error('llm.model must be a model name');
   const base = new URL(config.llm.baseUrl);
   if (config.viewerUrl) {
     const viewer = new URL(config.viewerUrl);
@@ -53,7 +60,7 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
       if (typeof config.persona[field] !== 'string' || !config.persona[field].trim()) throw new Error(`Set persona.${field} to your verified contact details`);
     }
     if (String(config.persona.email).trim().toLowerCase() !== accountEmail) throw new Error('persona.email must match accountEmail');
-    if (!config.llmApiKey) throw new Error('Set OPENAI_API_KEY or DEPANATOR_LLM_API_KEY in the environment');
+    if (config.llm.backend === 'api' && !config.llmApiKey) throw new Error('Set OPENAI_API_KEY or DEPANATOR_LLM_API_KEY in the environment');
     if (!config.telegramBotToken || !/^[1-9]\d*$/.test(config.notification.chatId)) throw new Error('Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to your private Telegram chat (positive numeric ID)');
   }
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });

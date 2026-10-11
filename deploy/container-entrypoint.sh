@@ -11,9 +11,9 @@ case "$agent_data_dir" in
 esac
 case "$mode" in
   setup) shift; exec bun /app/src/setup.js "$@" ;;
-  status) exec bun /app/src/cli.js status --config "$config_file" ;;
+  status|llm-login) exec bun /app/src/cli.js "$mode" --config "$config_file" ;;
   start|login) ;;
-  *) echo 'Use setup, start, login, or status' >&2; exit 64 ;;
+  *) echo 'Use setup, start, login, llm-login, or status' >&2; exit 64 ;;
 esac
 
 : "${VNC_PASSWORD:?Set VNC_PASSWORD in the environment file}"

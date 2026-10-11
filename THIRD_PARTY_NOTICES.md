@@ -44,3 +44,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Codex CLI
+
+The image bundles unmodified `@openai/codex` 0.162.1 from
+https://github.com/openai/codex, licensed under Apache-2.0.
+Its license and upstream notice are preserved in `licenses/codex-APACHE-2.0.txt`
+and `licenses/codex-NOTICE.txt`; package-provided third-party notices remain
+within `node_modules/@openai/`.

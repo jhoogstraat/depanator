@@ -17,7 +17,10 @@ export async function prepareSetup(ask, { fetchImpl = fetch } = {}) {
     viewerUrl: await ask('Authenticated viewer HTTPS URL (optional): ', false, true),
     autoLogin: true,
   };
-  const apiKey = await ask('LLM API key (hidden): ', true);
+  const backend = (await ask('LLM backend [api/codex] (default api): ', false, true)) || 'api';
+  if (!['api', 'codex'].includes(backend)) throw new Error('Choose api or codex');
+  config.llm = { backend };
+  const apiKey = backend === 'api' ? await ask('LLM API key (hidden): ', true) : '';
   const token = await ask('Telegram bot token (hidden): ', true);
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) throw new Error('Invalid Telegram bot token format');
   async function telegram(method) {
@@ -42,7 +45,7 @@ export async function prepareSetup(ask, { fetchImpl = fetch } = {}) {
   }
   chatId ||= await ask('Your private numeric Telegram chat ID: ');
   const password = randomBytes(6).toString('hex').slice(0, 8);
-  const env = { OPENAI_API_KEY: apiKey, TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: chatId, VNC_PASSWORD: password };
+  const env = { ...(backend === 'api' ? { OPENAI_API_KEY: apiKey } : {}), TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: chatId, VNC_PASSWORD: password };
   for (const value of Object.values(env)) if (/[\r\n\0]/.test(value)) throw new Error('Credentials must be single-line values');
   // Reuse the runtime's validation before writing anything to the operator's directory.
   const temporary = mkdtempSync(join(tmpdir(), 'depanator-setup-'));
@@ -89,6 +92,7 @@ export async function main(args = process.argv.slice(2)) {
     const { config, env } = await prepareSetup(ask);
     writeSetup(directory, { config, env });
     console.log(`Configuration saved. Viewer password: ${env.VNC_PASSWORD}`);
+    if (config.llm.backend === 'codex') console.log('Next: run llm-login with this configuration and persistent data directory. Open its link on your phone and enter the one-time code.');
     console.log(`Login viewer: ${config.viewerUrl || 'your operator-configured browser viewer'}`);
   } finally { terminal.close(); }
 }

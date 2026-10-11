@@ -16,9 +16,11 @@
     "login": "bun src/cli.js login",
     "status": "bun src/cli.js status",
     "test": "bun test test/*.test.js",
-    "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check"
+    "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check",
+    "llm-login": "bun src/cli.js llm-login"
   },
   "dependencies": {
+    "@openai/codex": "0.162.1",
     "puppeteer": "^25.13.0"
   }
 }

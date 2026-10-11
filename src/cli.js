@@ -14,19 +14,20 @@ export async function main(args = process.argv.slice(2)) {
   const command = args[0] || 'start';
   if (command === 'setup') return (await import('./setup.js')).main(args.slice(1));
   if (['help', '--help', '-h'].includes(command)) {
-    console.log('Usage: bun src/cli.js init|login|start|status [--config path]\nsetup [--output-dir directory]: interactive config and credentials wizard\ninit: create config.json\nlogin: manual IS24 login in bundled Chromium; close it when done\nstart: poll listings and handle Telegram approvals\nstatus: inspect the durable review history');
+    console.log('Usage: bun src/cli.js init|login|llm-login|start|status [--config path]\nsetup [--output-dir directory]: interactive config and credentials wizard\ninit: create config.json\nllm-login: ChatGPT subscription device-code login\nlogin: manual IS24 login in bundled Chromium; close it when done\nstart: poll listings and handle Telegram approvals\nstatus: inspect the durable review history');
     return;
   }
   const option = args.indexOf('--config');
   const configPath = option >= 0 ? args[option + 1] : 'config.json';
-  if (!configPath || args.some((arg, index) => index > 0 && index !== option && index !== option + 1)) throw new Error('Usage: bun src/cli.js init|login|start|status [--config path]');
+  if (!configPath || args.some((arg, index) => index > 0 && index !== option && index !== option + 1)) throw new Error('Usage: bun src/cli.js init|login|llm-login|start|status [--config path]');
   if (command === 'init') {
     copyFileSync(fileURLToPath(new URL('../config.example.json', import.meta.url)), configPath, constants.COPYFILE_EXCL);
     console.log(`Created ${configPath}. Fill your search URL, preferences, and verified persona before starting.`);
     return;
   }
-  if (!['start', 'login', 'status'].includes(command)) throw new Error(`Unknown command: ${command}`);
+  if (!['start', 'login', 'llm-login', 'status'].includes(command)) throw new Error(`Unknown command: ${command}`);
   const config = loadConfig(configPath, { loginOnly: command !== 'start' });
+  if (command === 'llm-login') return (await import('./codex.js')).loginWithCodex(config);
   if (command === 'status') {
     const db = new DatabaseSync(join(config.dataDir, 'agent.db'), { readOnly: true });
     try {

@@ -8,7 +8,7 @@ import { IS24Adapter } from '../src/is24.js';
 import { Workflow } from '../src/workflow.js';
 
 const searchUrl = 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten';
-const inputs = ['me@example.com', searchUrl, 'First', 'Last', 'No swap apartments', 'https://apartments.example.com/vnc.html', 'fake-api-key', '123:fake-token', '', 'y'];
+const inputs = ['me@example.com', searchUrl, 'First', 'Last', 'No swap apartments', 'https://apartments.example.com/vnc.html', 'api', 'fake-api-key', '123:fake-token', '', 'y'];
 function wizard(values = inputs, updates = [{ message: { chat: { id: 42, type: 'private' }, from: { id: 42 } } }]) {
   const answers = [...values];
   return prepareSetup(async () => answers.shift(), { fetchImpl: async url => ({ ok: true, json: async () => ({ ok: true, result: url.endsWith('getWebhookInfo') ? { url: '' } : updates }) }) });
@@ -21,13 +21,13 @@ test('setup validates runtime config, discovers private chat, generates viewer p
   assert.equal(result.env.TELEGRAM_CHAT_ID, '42');
   assert.match(result.env.VNC_PASSWORD, /^[a-f0-9]{8}$/);
   assert.equal(JSON.stringify(result.config).includes('fake-api-key'), false);
-  const unsafe = [...inputs]; unsafe[6] = 'key\nINJECTED=1';
+  const unsafe = [...inputs]; unsafe[7] = 'key\nINJECTED=1';
   await assert.rejects(wizard(unsafe), /single-line/);
   const widened = [...inputs]; widened[1] += '?furnished=true';
   await assert.rejects(wizard(widened));
   const insecure = [...inputs]; insecure[5] = 'http://apartments.example.com';
   await assert.rejects(wizard(insecure), /HTTPS/);
-  await assert.rejects(wizard([...inputs.slice(0, 9), '-42'], []), /private Telegram chat/);
+  await assert.rejects(wizard([...inputs.slice(0, 10), '-42'], []), /private Telegram chat/);
 });
 
 test('authentication waits for manual login, verifies identity again, and propagates site failure', async () => {

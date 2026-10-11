@@ -19,7 +19,7 @@
     "unterlagen": ""
   },
   "preferences": "Replace with your preferences and hard requirements. Dismiss swap-only listings. Explain uncertain facts before drafting.",
-  "llm": { "baseUrl": "https://api.openai.com/v1", "model": "gpt-4.1-mini" },
+  "llm": { "backend": "api", "baseUrl": "https://api.openai.com/v1", "model": "gpt-4.1-mini" },
   "notification": { "chatId": "" },
   "maxPages": 5,
   "pollIntervalMs": 600000,
