@@ -32,7 +32,7 @@ systemctl --user daemon-reload
 systemctl --user start depanator.service
 ```
 
-On your workstation, run `ssh -N -L 6080:127.0.0.1:6080 USER@SERVER`. Open `http://127.0.0.1:6080/vnc.html`, enter the viewer password, sign into IS24, then close Chromium. Set `Exec=start`, reload, and start the same service again. Reviews and approval buttons arrive in Telegram.
+For an iPhone without VPN or SSH, follow [authenticated HTTPS access](remote-login.md). Alternatively, on your workstation run `ssh -N -L 6080:127.0.0.1:6080 USER@SERVER`. Open `http://127.0.0.1:6080/vnc.html`, enter the viewer password, sign into IS24, then close Chromium. Set `Exec=start`, reload, and start the same service again. Reviews and approval buttons arrive in Telegram.
 
 Enable lingering once with `sudo loginctl enable-linger "$USER"` for startup without an interactive login. Quadlet's `WantedBy=default.target` handles boot activation; do not enable the generated service manually.
 
@@ -40,7 +40,7 @@ Logs: `journalctl --user -u depanator.service -f`. History: `podman exec depanat
 
 For updates, stop the service, `podman pull ghcr.io/jhoogstraat/depanator:latest`, then start it. For reauthentication, repeat the `Exec=login` procedure. Back up the data volume with the service stopped. Log in separately on each server; cookies may not be portable.
 
-The browser viewer is only for login and maintenance. It binds to host loopback and is accessed over SSH. Chromium's sandbox is disabled inside the unprivileged rootless container; no privileged mode or extra capabilities are required. Live IS24 account compatibility remains unverified and submission fails closed on unverifiable details or identity.
+The browser viewer is only for login and maintenance. It binds to host loopback and is accessed over SSH or the authenticated HTTPS route above. Chromium's sandbox is disabled inside the unprivileged rootless container; no privileged mode or extra capabilities are required. Live IS24 account compatibility remains unverified and submission fails closed on unverifiable details or identity.
 
 ## Publishing
 

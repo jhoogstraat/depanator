@@ -1,0 +1,18 @@
+[Unit]
+Description=Depanator browser access through Cloudflare Tunnel
+
+[Container]
+Image=docker.io/cloudflare/cloudflared:latest
+ContainerName=depanator-tunnel
+# Reach the agent's loopback-only viewer without opening an inbound port.
+Network=host
+EnvironmentFile=%h/.config/depanator/tunnel.env
+Exec=tunnel --no-autoupdate --metrics 127.0.0.1:20241 run
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
