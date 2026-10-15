@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, hash, bindingFor, configHashFor } from '../src/store.js';
+import { Store, hash, bindingFor, configHashFor, MAX_ANALYSIS_ATTEMPTS } from '../src/store.js';
 
 const snapshot = { expose_id: '123', title: 'Apartment', price: 1000, description: 'Balcony', amenities: ['Balcony'] };
 const bindings = { accountBinding: 'account', configHash: 'config' };
@@ -74,4 +74,24 @@ test('hash canonicalizes objects; only meaningful settings affect config binding
   assert.equal(configHashFor(config), configHashFor({ ...config, llmApiKey: 'secret', port: 3 }));
   assert.notEqual(configHashFor(config), configHashFor({ ...config, persona: { name: 'Other' } }));
   assert.notEqual(bindingFor(config), bindingFor({ ...config, browserProfile: '/tmp/other' }));
+});
+test('illegal transitions are rejected, failing analysis gives up, schema is versioned', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'depanator-store-'));
+  const path = join(dir, 'state.sqlite');
+  let store = new Store(path, { now: () => 10 });
+  const review = reviewed(store);
+  assert.throws(() => store.write({ ...review, status: 'sent' }, 'awaiting_approval'), /Illegal review transition/);
+  const flaky = store.discover({ ...snapshot, expose_id: '789' });
+  for (let i = 1; i < MAX_ANALYSIS_ATTEMPTS; i++) { store.beginAnalysis(flaky.id); store.failAnalysis(flaky.id, 'LLM down'); }
+  assert.equal(store.get(flaky.id).status, 'discovered');
+  store.beginAnalysis(flaky.id); // crash mid-analysis on the last attempt
+  store.close();
+  store = new Store(path, { now: () => 20 });
+  assert.equal(store.get(flaky.id).status, 'analysis_failed');
+  assert.equal(store.beginAnalysis(flaky.id), null);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 1);
+  store.db.exec('PRAGMA user_version=99');
+  store.close();
+  assert.throws(() => new Store(path), /newer than this agent supports/);
+  rmSync(dir, { recursive: true, force: true });
 });
