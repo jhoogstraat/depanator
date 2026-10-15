@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, hash, bindingFor, configHashFor, MAX_ANALYSIS_ATTEMPTS } from '../src/store.js';
+import { Store, hash, bindingFor, configHashFor, displayStatus, MAX_ANALYSIS_ATTEMPTS } from '../src/store.js';
 
 const snapshot = { expose_id: '123', title: 'Apartment', price: 1000, description: 'Balcony', amenities: ['Balcony'] };
 const bindings = { accountBinding: 'account', configHash: 'config' };
@@ -55,6 +55,7 @@ test('expiry and changed binding invalidate approval; tampered draft cannot clai
   const review = reviewed(store);
   store.approve(review.id, { version: 1, draftHash: review.draftHash, ...bindings });
   now = 111;
+  assert.equal(displayStatus(store.get(review.id), now), 'expired', 'read-only status shows expiry before any write');
   assert.equal(store.claimSend(review.id, bindings), null);
   assert.equal(store.get(review.id).status, 'expired');
   now = 10;
@@ -89,7 +90,7 @@ test('illegal transitions are rejected, failing analysis gives up, schema is ver
   store = new Store(path, { now: () => 20 });
   assert.equal(store.get(flaky.id).status, 'analysis_failed');
   assert.equal(store.beginAnalysis(flaky.id), null);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 1);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
   store.db.exec('PRAGMA user_version=99');
   store.close();
   assert.throws(() => new Store(path), /newer than this agent supports/);

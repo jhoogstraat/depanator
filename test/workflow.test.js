@@ -184,3 +184,66 @@ test('shutdown drains an already-started send and never claims the next approval
   assert.equal(f.store.attempts(ordered[1].id).length, 0);
   await f.workflow.close();
 });
+
+test('LLM outage refunds attempts, alerts once after self-healing fails, and reports recovery', async () => {
+  const alerts = [];
+  let down = true;
+  const f = fixture({ workflow: {
+    alert: async text => { alerts.push(text); },
+    evaluate: async () => { if (down) throw Object.assign(new Error('LLM is unreachable'), { code: 'LLM_UNAVAILABLE' }); return { decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.' }; },
+  } });
+  for (let poll = 0; poll < 6; poll++) await f.workflow.poll();
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0], /LLM failed 3 times/);
+  const review = f.store.list()[0];
+  assert.equal(review.status, 'discovered', 'outages never exhaust the listing');
+  assert.equal(review.analysisAttempts, 0);
+  down = false;
+  await f.workflow.poll();
+  assert.equal(f.store.get(review.id).status, 'awaiting_approval');
+  assert.match(alerts.at(-1), /LLM recovered/);
+  await f.workflow.close();
+});
+
+test('IS24 blocks back off exponentially, pause sends, and a gone listing is not an outage', async () => {
+  const alerts = [];
+  const f = fixture({ workflow: { alert: async text => { alerts.push(text); } } });
+  await f.workflow.poll();
+  const review = approve(f);
+  f.adapter.search = async () => { f.calls.search++; throw Object.assign(new Error('IS24 blocked access to search (HTTP 429)'), { code: 'BLOCKED' }); };
+  const searches = () => f.calls.search;
+  const before = searches();
+  for (let tick = 0; tick < 7; tick++) await f.workflow.tick().catch(() => {});
+  // Failures 1, 2, 3 skip 0, 1, then 3 polls: 3 searches across 7 ticks.
+  assert.equal(searches() - before, 3);
+  assert.equal(f.calls.send, 0, 'no submission while blocked');
+  assert.equal(f.store.get(review.id).status, 'approved');
+  assert.equal(alerts.length, 1);
+  f.adapter.search = async () => ({ listings: [{ ...f.snapshot, expose_id: '456' }], complete: true });
+  f.adapter.details = async listing => { if (listing.expose_id === '456') throw Object.assign(new Error('Listing is no longer available'), { code: 'LISTING_GONE' }); return f.snapshot; };
+  await f.workflow.tick();
+  assert.equal(f.calls.send, 1);
+  assert.equal(f.store.get(review.id).status, 'sent');
+  assert.match(alerts.at(-1), /IS24 recovered/);
+  assert.equal(f.workflow.health.IS24, undefined);
+  await f.workflow.close();
+});
+
+test('agent revises a draft on request; the old approval is invalidated', async () => {
+  const revisions = [];
+  const f = fixture({ workflow: { evaluate: async (_snapshot, { revision } = {}) => {
+    if (revision) { revisions.push(revision); return { decision: 'message', reasons: ['Revised'], draft: 'Hi! I have a cat and would love to visit.' }; }
+    return { decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.' };
+  } } });
+  await f.workflow.poll();
+  const original = f.store.list()[0];
+  const revised = await f.workflow.revise(original.id, 1, 'mention my cat');
+  assert.deepEqual(revisions, [{ draft: original.draft, instructions: 'mention my cat' }]);
+  assert.equal(revised.version, 2);
+  assert.equal(revised.notifiedAt, 100);
+  assert.equal(f.calls.notify, 2);
+  assert.throws(() => f.store.approve(original.id, { version: 1, draftHash: original.draftHash, ...f.workflow.bindings() }), /stale/);
+  await assert.rejects(f.workflow.revise(original.id, 1, 'again'), /already handled/);
+  f.store.approve(original.id, { version: 2, draftHash: revised.draftHash, ...f.workflow.bindings() });
+  await f.workflow.close();
+});

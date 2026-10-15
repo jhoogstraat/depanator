@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync, chmodSync, mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SCHEMA, INSTRUCTIONS } from './llm.js';
+import { SCHEMA, INSTRUCTIONS, reviewInput, unavailable } from './llm.js';
 
 const require = createRequire(import.meta.url);
 export function codexExecutable() {
@@ -52,7 +52,7 @@ export function codexArguments(config, directory) {
     ...disabled.flatMap(feature => ['--disable', feature]), '-'];
 }
 
-export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal } = {}) {
+export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal, revision } = {}) {
   signal?.throwIfAborted();
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-'));
   try {
@@ -61,14 +61,14 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
     const complete = new Promise((resolve, reject) => {
       const abort = () => { child.kill('SIGKILL'); };
       signal?.addEventListener('abort', abort, { once: true });
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Codex review timed out; nothing was sent')); }, 120000);
+      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(unavailable('Codex review timed out; nothing was sent')); }, 120000);
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); };
-      child.once('error', () => { cleanup(); reject(new Error('Cannot start bundled Codex CLI')); });
-      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(new Error('Codex review failed or cancelled; check subscription login with llm-login (no API fallback)')); });
+      child.once('error', () => { cleanup(); reject(unavailable('Cannot start bundled Codex CLI')); });
+      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('Codex review failed; check subscription login with llm-login (no API fallback)')); });
       if (signal?.aborted) abort();
     });
     child.stdin.on('error', () => {});
-    child.stdin.end(JSON.stringify({ preferences: config.preferences, verifiedPersona: config.persona, listing: snapshot }));
+    child.stdin.end(reviewInput(config, snapshot, revision));
     await complete;
     const filename = join(directory, 'result.json');
     if (statSync(filename).size > 65000) throw new Error('Codex output exceeded the review limit');

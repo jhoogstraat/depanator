@@ -4,7 +4,11 @@ A local, Telegram-first apartment agent for ImmobilienScout24. It polls a filter
 
 For container deployment on x86_64 or ARM64, see the [image interface and configuration wizard](deploy/README.md). You choose the runtime, service manager, storage, networking, and remote access controls. The browser viewer is for account login and maintenance; reviews remain entirely in Telegram.
 
-Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered.
+Tap **✏️ Edit** and reply with what to change (for example "shorter" or "mention I can move in on 1 March"); the agent revises the draft and sends it as a new version, which invalidates the old buttons. Facts you state in an edit are treated as verified.
+
+The agent heals itself before asking for help. Search outages and IS24 blocks trigger exponential backoff (up to an hour) and a browser restart; sends pause while IS24 blocks access. LLM outages pause analysis without using up a listing's retries. Telegram alerts you only when a component fails three times in a row, when it recovers, or when a listing is given up after five failed analyses.
+
+Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Edit / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered.
 
 ## Setup
 

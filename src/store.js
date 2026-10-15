@@ -34,7 +34,14 @@ const MIGRATIONS = [
   // IF NOT EXISTS adopts databases created before schema versioning.
   `CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, expose_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, body TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS attempts (review_id TEXT PRIMARY KEY REFERENCES reviews(id), started_at INTEGER NOT NULL, finished_at INTEGER, outcome TEXT NOT NULL, draft_hash TEXT NOT NULL, detail TEXT);`,
+  // Every poll selects by status.
+  'CREATE INDEX IF NOT EXISTS reviews_status ON reviews(status);',
 ];
+export const SCHEMA_VERSION = MIGRATIONS.length;
+// Expiry is time-based, so a stored status can be stale until the next write; readers use this.
+export function displayStatus(review, now = Date.now()) {
+  return ['awaiting_approval', 'approved'].includes(review.status) && review.expiresAt <= now ? 'expired' : review.status;
+}
 function conflict(message) {
   const error = new Error(message);
   error.code = 'CONFLICT';
@@ -50,8 +57,8 @@ export class Store {
   }
   migrate() {
     const { user_version: version } = this.db.prepare('PRAGMA user_version').get();
-    if (version > MIGRATIONS.length) throw new Error(`Database schema ${version} is newer than this agent supports (${MIGRATIONS.length}); upgrade the agent`);
-    for (let next = version; next < MIGRATIONS.length; next++) {
+    if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than this agent supports (${SCHEMA_VERSION}); upgrade the agent`);
+    for (let next = version; next < SCHEMA_VERSION; next++) {
       this.transaction(() => { this.db.exec(MIGRATIONS[next]); this.db.exec(`PRAGMA user_version=${next + 1}`); });
     }
   }
@@ -74,6 +81,7 @@ export class Store {
     this.expire();
     return this.db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all().map(row => JSON.parse(row.body));
   }
+  count() { return this.db.prepare('SELECT COUNT(*) AS count FROM reviews').get().count; }
   select(status) { return this.db.prepare('SELECT body FROM reviews WHERE status=? ORDER BY rowid').all(status).map(row => JSON.parse(row.body)); }
   discover(snapshot) {
     const exposeId = String(snapshot.expose_id ?? '');
@@ -97,9 +105,11 @@ export class Store {
     if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string' || (result.decision === 'message' && !result.draft.trim())) throw new Error('Invalid analysis result');
     return this.write({ ...review, snapshot: structuredClone(snapshot), snapshotHash: hash(snapshot), status: result.decision === 'message' ? 'awaiting_approval' : 'dismissed', reasons: result.reasons, draft: result.draft, draftHash: hash(result.draft), ...bindings }, 'analyzing');
   }
-  failAnalysis(id, detail) {
+  // refund: the failure was not the listing's fault (shutdown, outage), so the attempt does not count.
+  failAnalysis(id, detail, { refund = false } = {}) {
     const review = this.get(id);
-    if (review?.status === 'analyzing') this.write(this.retryOrGiveUp(review, detail), 'analyzing');
+    if (review?.status !== 'analyzing') return null;
+    return this.write(this.retryOrGiveUp({ ...review, analysisAttempts: review.analysisAttempts - (refund ? 1 : 0) }, detail), 'analyzing');
   }
   retryOrGiveUp(review, detail) {
     return review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS ? { ...review, status: 'analysis_failed', detail: `Gave up after ${review.analysisAttempts} attempts: ${detail}` } : { ...review, status: 'discovered', detail };
@@ -114,7 +124,7 @@ export class Store {
   }
   expire() {
     for (const status of ['awaiting_approval', 'approved']) for (const review of this.select(status)) {
-      if (review.expiresAt <= this.now()) this.write({ ...review, status: 'expired', detail: 'Approval expired' }, status);
+      if (displayStatus(review, this.now()) === 'expired') this.write({ ...review, status: 'expired', detail: 'Approval expired' }, status);
     }
   }
   intact(review, bindings) {
@@ -126,6 +136,16 @@ export class Store {
       const review = this.get(id);
       if (!review || review.status !== 'awaiting_approval' || review.version !== version || review.draftHash !== draftHash || !this.intact(review, { accountBinding, configHash })) conflict('Review is stale, expired, or has changed');
       return this.write({ ...review, status: 'approved', approvedAt: this.now() }, 'awaiting_approval');
+    });
+  }
+  // A new version invalidates every Telegram button signed for the previous draft.
+  reviseDraft(id, { version, draft, reasons, expiresAt }) {
+    if (typeof draft !== 'string' || !draft.trim()) throw new Error('Invalid revised draft');
+    return this.transaction(() => {
+      this.expire();
+      const review = this.get(id);
+      if (!review || review.status !== 'awaiting_approval' || review.version !== version) conflict('Review was already handled, changed, or expired');
+      return this.write({ ...review, version: version + 1, draft, draftHash: hash(draft), reasons, expiresAt, notifiedAt: null, notificationError: undefined }, 'awaiting_approval');
     });
   }
   dismiss(id, { version }) {

@@ -115,3 +115,22 @@ test('live process lock cannot be acquired twice and old release cannot remove r
   release();
   assert.deepEqual(JSON.parse(readFileSync(filename, 'utf8')), replacement);
 });
+
+test('Telegram edit: button prompts, only a reply from the owner reaches the agent', async (t) => {
+  const store = new Store(':memory:', { now: () => 1 }); t.after(() => store.close());
+  const item = review(store);
+  const { agent, calls } = telegram(t, store);
+  const revised = [];
+  agent.onRevise = async (...args) => { revised.push(args); };
+  await agent.handleUpdate(update(agent.callback(item, 'e')));
+  const prompt = calls.find(call => call.body.reply_markup?.force_reply);
+  assert.match(prompt.body.text, new RegExp(`Review ${item.id} · version 1$`));
+  const reply = (text, from = 12345) => ({ message: { text, from: { id: from }, chat: { id: 12345, type: 'private' }, reply_to_message: { from: { is_bot: true }, text: prompt.body.text } } });
+  await agent.handleUpdate(reply('mention my cat', 999));
+  await agent.handleUpdate(reply('mention my cat'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(revised, [[item.id, 1, 'mention my cat']]);
+  store.dismiss(item.id, { version: 1 });
+  await agent.handleUpdate(update(agent.callback(item, 'e')));
+  assert.match(calls.at(-1).body.text, /already handled/);
+});

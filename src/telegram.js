@@ -14,9 +14,15 @@ function chunks(text, limit = 3500) {
   return result;
 }
 
+function conflict() {
+  const error = new Error('Review was already handled');
+  error.code = 'CONFLICT';
+  throw error;
+}
+
 export class Telegram {
-  constructor({ config, store, bindings, onApproved, fetchImpl = fetch, onError = () => {} }) {
-    Object.assign(this, { config, store, bindings, onApproved, fetchImpl, onError });
+  constructor({ config, store, bindings, onApproved, onRevise = async () => { throw new Error('Editing is unavailable'); }, fetchImpl = fetch, onError = () => {} }) {
+    Object.assign(this, { config, store, bindings, onApproved, onRevise, fetchImpl, onError });
     this.chatId = String(config.notification.chatId);
     this.token = config.telegramBotToken;
     this.offsetFile = join(config.dataDir, 'telegram-offset.json');
@@ -94,7 +100,7 @@ export class Telegram {
     await this.api('sendMessage', {
       chat_id: this.chatId, text: `Send this exact draft?\n${String(listing.title).slice(0, 200)}\n\nReview ${review.id} · version ${review.version}`,
       entities: [{ type: 'bold', offset: 0, length: 'Send this exact draft?'.length }],
-      reply_markup: { inline_keyboard: [[{ text: '✅ Approve & send', callback_data: this.callback(review, 'a') }, { text: '✖️ Dismiss', callback_data: this.callback(review, 'd') }]] },
+      reply_markup: { inline_keyboard: [[{ text: '✅ Approve & send', callback_data: this.callback(review, 'a') }, { text: '✏️ Edit', callback_data: this.callback(review, 'e') }, { text: '✖️ Dismiss', callback_data: this.callback(review, 'd') }]] },
     });
   }
   async notifyOutcome(review) {
@@ -104,13 +110,27 @@ export class Telegram {
     const heading = review.status === 'sent' ? '✅ Message sent' : review.status === 'unknown_outcome' ? '⚠️ Check your IS24 account' : '❌ Message not sent';
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
   }
+  async send(text, extra = {}) { await this.api('sendMessage', { chat_id: this.chatId, text, ...extra }); }
+  // Edit instructions are replies to a bot message ending in "Review <id> · version <n>".
+  async handleMessage(message) {
+    if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
+    const target = message.reply_to_message?.from?.is_bot && /Review ([0-9a-f-]{36}) · version (\d+)$/.exec(message.reply_to_message.text || '');
+    const instructions = typeof message.text === 'string' ? message.text.trim() : '';
+    if (!target || !instructions) return this.send('To change a draft, tap ✏️ Edit under it and reply to the prompt.');
+    if (instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
+    await this.send('✍️ Revising the draft…');
+    // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
+    Promise.resolve().then(() => this.onRevise(target[1], Number(target[2]), instructions))
+      .catch(error => this.send(`Could not revise the draft: ${error.message}`).catch(failure => this.onError(failure.message)));
+  }
   async handleUpdate(update) {
     if (this.controller.signal.aborted) return;
+    if (update.message) return this.handleMessage(update.message);
     const query = update.callback_query;
     if (!query) return;
     let answer = 'This approval is invalid or expired.';
     if (query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId) {
-      const match = /^([ad]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
+      const match = /^([ade]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
       if (match) {
         const [, action, rawId, version, supplied] = match;
         const id = `${rawId.slice(0, 8)}-${rawId.slice(8, 12)}-${rawId.slice(12, 16)}-${rawId.slice(16, 20)}-${rawId.slice(20)}`;
@@ -121,6 +141,11 @@ export class Telegram {
               this.store.approve(id, { version: review.version, draftHash: review.draftHash, ...this.bindings() });
               answer = 'Approved. The agent will verify and send this exact draft.';
               Promise.resolve().then(() => this.onApproved()).catch(error => this.onError(error.message));
+            } else if (action === 'e') {
+              if (review.status !== 'awaiting_approval') conflict();
+              await this.send(`✏️ What should change in the draft for "${String(review.snapshot.title).slice(0, 200)}"?\nReply to this message, e.g. "shorter" or "mention I can move in on 1 March".\n\nReview ${review.id} · version ${review.version}`,
+                { reply_markup: { force_reply: true, input_field_placeholder: 'Describe the change' } });
+              answer = 'Reply to the prompt with your changes.';
             } else {
               this.store.dismiss(id, { version: review.version });
               answer = 'Dismissed. No message will be sent.';
@@ -146,7 +171,7 @@ export class Telegram {
     const signal = this.controller.signal;
     while (!signal.aborted) {
       try {
-        const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
+        const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query', 'message'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
         for (const update of updates) {
           if (signal.aborted) break;
           await this.handleUpdate(update);

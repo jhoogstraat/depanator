@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig, assertReconciled } from './config.js';
-import { Store } from './store.js';
+import { Store, displayStatus } from './store.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
 import { createEvaluator } from './llm.js';
@@ -42,7 +42,7 @@ export async function main(args = process.argv.slice(2)) {
     try {
       for (const row of db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all()) {
         const review = JSON.parse(row.body);
-        console.log(`${review.status.padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
+        console.log(`${displayStatus(review).padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
       }
     } finally { db.close(); }
     return;
@@ -77,12 +77,13 @@ export async function main(args = process.argv.slice(2)) {
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
       notify: review => telegram.notify(review),
+      alert: text => { console.error(text); return telegram.send(text); },
       beforeWork: async () => {
         if (!config.autoLogin) return;
         await adapter.authenticate(async () => {
           const message = `IS24 login required for ${config.accountEmail}. Open ${config.viewerUrl || 'your configured browser viewer'}, sign in, then close Chromium. The agent will resume automatically.`;
           console.log(message);
-          await telegram.api('sendMessage', { chat_id: config.notification.chatId, text: message }).catch(error => console.error(error.message));
+          await telegram.send(message).catch(error => console.error(error.message));
         });
       },
       onEvent(event) {
@@ -93,15 +94,15 @@ export async function main(args = process.argv.slice(2)) {
         if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
       },
     });
-    telegram = new Telegram({ config, store, bindings: () => workflow.bindings(), onApproved: () => workflow.sendApproved(), onError: message => { workflow.status.telegramError = message; console.error(message); } });
+    telegram = new Telegram({ config, store, bindings: () => workflow.bindings(), onApproved: () => workflow.sendApproved(), onRevise: (id, version, text) => workflow.revise(id, version, text), onError: message => { workflow.status.telegramError = message; console.error(message); } });
     console.log('Agent running. Reviews and approvals arrive in your private Telegram chat. Keep this terminal open.');
     const shutdown = () => { close().then(() => process.exit(process.exitCode || 0), error => { console.error(error.message); process.exit(1); }); };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
     telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
-    const tick = () => workflow.tick().then(() => {
+    const tick = () => workflow.tick().then(result => {
       if (closing) return;
-      console.log(`Poll complete. ${store.list().length} listings tracked.`);
+      console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : `Poll complete. ${store.count()} listings tracked.`);
       if (workflow.status.warning) console.error(workflow.status.warning);
     }).catch(error => { console.error(`Agent: ${error.message}`); });
     interval = setInterval(tick, config.pollIntervalMs);
