@@ -133,28 +133,33 @@ export class IS24Adapter {
     this.queue = task.catch(() => {});
     return task;
   }
+  async searchPage(page, signal) {
+    signal?.throwIfAborted();
+    const response = await this.fetch(buildMobileApiUrl(this.validation.canonical, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect:'error'});
+    if ([401, 403, 429].includes(response.status)) throw coded(new Error(`IS24 blocked access to search (HTTP ${response.status})`), 'BLOCKED');
+    if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`Search unavailable (HTTP ${response.status}); resolve blocks manually`);
+    const data = await response.json();
+    if (!Array.isArray(data.resultListItems) || !Number.isSafeInteger(data.numberOfPages) || data.numberOfPages < 0) throw new Error('Unexpected search response');
+    return data;
+  }
   async search({ signal } = {}) {
+    const first = await this.searchPage(1, signal);
+    const pages = Math.max(1, Math.min(first.numberOfPages, this.config.maxPages));
+    // The page count is known after page 1, so the rest load in parallel.
+    const rest = await Promise.all(Array.from({length:pages - 1}, (_, index) => this.searchPage(index + 2, signal)));
     const listings = new Map();
-    for (let page=1; page<=this.config.maxPages; page++) {
-      signal?.throwIfAborted();
-      const response = await this.fetch(buildMobileApiUrl(this.validation.canonical, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect:'error'});
-      if ([403, 429].includes(response.status)) throw coded(new Error(`IS24 blocked access to search (HTTP ${response.status})`), 'BLOCKED');
-      if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`Search unavailable (HTTP ${response.status}); resolve blocks manually`);
-      const data = await response.json();
-      if (!Array.isArray(data.resultListItems)) throw new Error('Unexpected search response');
-      for (const item of data.resultListItems) {
-        const expose = item.item || item;
-        const id = String(expose.id || expose.exposeId || '');
-        const url = listingUrl(id);
-        const attrs = Object.fromEntries((expose.attributes || []).map(a => [a.attribute,a.value]));
-        if (!expose.title) throw new Error('Missing listing title');
-        const address = typeof expose.address === 'string' ? expose.address : expose.address?.line || '';
-        const numeric = value => Number.parseFloat(value || 0);
-        if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:numeric(attrs.price || attrs.totalRent),area:numeric(attrs.livingSpace || attrs.area),rooms:numeric(attrs.numberOfRooms),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url});
-      }
-      if (data.resultListItems.length < 20) return {listings:[...listings.values()],complete:true,pages:page};
+    for (const data of [first, ...rest]) for (const item of data.resultListItems) {
+      const expose = item.item || item;
+      const id = String(expose.id || expose.exposeId || '');
+      const url = listingUrl(id);
+      if (!expose.title) throw new Error('Missing listing title');
+      const address = typeof expose.address === 'string' ? expose.address : expose.address?.line || '';
+      // Attributes are unlabeled display strings such as "1.234 €", "54 m²", "2,5 Zi.".
+      const attribute = unit => Number(String((expose.attributes || []).find(a => String(a.value).includes(unit))?.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+      if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url});
     }
-    return {listings:[...listings.values()],complete:false,pages:this.config.maxPages,warning:'Page limit reached; search coverage is partial'};
+    const complete = first.numberOfPages <= this.config.maxPages;
+    return {listings:[...listings.values()],complete,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
   }
   async ensureBrowser() {
     // Self-heal a crashed or killed Chromium instead of failing every task until restart.
@@ -183,7 +188,7 @@ export class IS24Adapter {
     const response = await page.goto(url,{waitUntil:'networkidle2',timeout:30000});
     if (!response?.ok()) {
       const status = response?.status();
-      if ([403, 429].includes(status)) throw coded(new Error(`IS24 blocked access (HTTP ${status})`), 'BLOCKED');
+      if ([401, 403, 429].includes(status)) throw coded(new Error(`IS24 blocked access (HTTP ${status})`), 'BLOCKED');
       if ([404, 410].includes(status)) throw coded(new Error('Listing is no longer available'), 'LISTING_GONE');
       throw new Error('Listing navigation failed');
     }

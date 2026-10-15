@@ -10,9 +10,9 @@ const config={searchUrl,maxPages:3,browserProfile:'/tmp/test-is24-profile',accou
 const snapshot={expose_id:'123',title:'Home',price:900,area:60,rooms:2,address:'Berlin',image_url:'',url:listingUrl('123'),description:'Full listing description',amenities:['Balcony: yes']};
 function network(pages) {
   let calls=0;
-  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1]})};},count:()=>calls};
+  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1],numberOfPages:pages.length})};},count:()=>calls};
 }
-const item=id=>({id,title:'Home',attributes:[],address:{line:'Berlin'}});
+const item=id=>({id,title:'Home',attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
 test('container browser path and sandbox flags apply to automated and manual launch',async()=>{
   const serverConfig={...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}};
   let automated, manual;
@@ -42,7 +42,8 @@ test('pagination never stops on duplicates and exposes capped coverage',async()=
   const fixture=network([full,full,[item(99)]]);
   const result=await new IS24Adapter(config,fixture).search();
   assert.equal(fixture.count(),3); assert.equal(result.complete,true); assert.equal(result.listings.length,21);
-  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full])).search();
+  assert.deepEqual([result.listings[0].price,result.listings[0].area,result.listings[0].rooms],[1234,54,2.5],'live unlabeled attribute format');
+  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
 });
 test('malformed/block search fails rather than reporting empty coverage',async()=>{
