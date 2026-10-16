@@ -149,16 +149,19 @@ export class IS24Adapter {
     if (!Array.isArray(data.resultListItems) || !Number.isSafeInteger(data.numberOfPages) || data.numberOfPages < 0) throw new Error('Unexpected search response');
     return data;
   }
-  // Results are newest first, so paging stops at the first page holding an already known listing:
-  // a routine poll is one request, which keeps short intervals cheap. known(exposeId) -> boolean.
+  // Results are newest first, so paging stops once a page ends with an already known listing: everything
+  // older is known too. A routine poll is one request, which keeps short intervals cheap. A known item
+  // elsewhere on the page (e.g. promoted to the top) does not stop paging. known(exposeId) -> boolean.
+  // caughtUp: the search reached listings seen before, so the new ones are genuinely new (see auto-send).
   async search({ signal, known = () => false } = {}) {
     const results = [];
-    let complete = false;
+    let complete = false, caughtUp = false;
     for (let page = 1; page <= this.config.maxPages; page++) {
       const data = await this.searchPage(page, signal);
       results.push(data);
       const ids = data.resultListItems.map(item => String((item.item || item).id || (item.item || item).exposeId || ''));
-      if (page >= data.numberOfPages || ids.some(id => known(id))) { complete = true; break; }
+      caughtUp ||= ids.some(id => known(id));
+      if (page >= data.numberOfPages || (ids.length && known(ids.at(-1)))) { complete = true; break; }
     }
     const pages = results.length;
     const listings = new Map();
@@ -172,7 +175,7 @@ export class IS24Adapter {
       const attribute = unit => Number(String((expose.attributes || []).find(a => String(a.value).includes(unit))?.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
       if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
     }
-    return {listings:[...listings.values()],complete,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+    return {listings:[...listings.values()],complete,caughtUp,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
   }
   async ensureBrowser() {
     // Self-heal a crashed or killed Chromium instead of failing every task until restart.

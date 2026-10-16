@@ -316,15 +316,18 @@ test('auto-send sends confident matches in the same tick and still asks about th
   const reported = [];
   const f = fixture({ workflow: {
     report: async review => { reported.push(review.approvedBy); },
-    evaluate: async listing => ({ decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.', confident: listing.expose_id === '123' }),
+    evaluate: async listing => ({ decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.', confident: listing.expose_id !== '456' }),
   } });
-  f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }], complete: true });
   f.adapter.details = async listing => ({ ...f.snapshot, expose_id: listing.expose_id });
   f.config.autoSend = true;
+  // The first check finds listings that were online before the agent: never auto-sent, even when confident.
+  f.adapter.search = async () => ({ listings: [{ ...f.snapshot, expose_id: '100' }], complete: true, caughtUp: false });
   await f.workflow.tick();
-  const [confident, unsure] = f.store.list();
-  assert.deepEqual([confident.status, confident.approvedBy, unsure.status], ['sent', 'auto', 'awaiting_approval']);
-  assert.equal(f.calls.notify, 1, 'only the unsure match asks for approval');
+  f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }, { ...f.snapshot, expose_id: '100' }], complete: true, caughtUp: true });
+  await f.workflow.tick();
+  const [baseline, confident, unsure] = f.store.list();
+  assert.deepEqual([baseline.status, confident.status, confident.approvedBy, unsure.status], ['awaiting_approval', 'sent', 'auto', 'awaiting_approval']);
+  assert.equal(f.calls.notify, 2, 'the baseline and the unsure match ask for approval');
   assert.deepEqual(reported, ['auto']);
   await f.workflow.close();
 });

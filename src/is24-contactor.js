@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const IS24_EXPOSE_URL = 'https://www.immobilienscout24.de/expose';
 const LOGIN_URL_RE = /\/login|\/registrierung|sso\.immobilienscout24/;
-const SESSION_EXPIRED = 'SESSION_EXPIRED (IS24 login required — run the login command)';
+const SESSION_EXPIRED = 'SESSION_EXPIRED (IS24 login required — log in again in the browser viewer)';
 const MAX_SCREENSHOTS = 20;
 // Persona key -> contact form <select> name. Their values must equal an option label.
 export const FORM_SELECTS = { anrede: 'salutation', einzug: 'moveInDateType', personen: 'numberOfPersons', haustiere: 'hasPets', beschaeftigung: 'employmentRelationship', einkommen: 'income', unterlagen: 'applicationPackageCompleted' };
@@ -268,11 +268,10 @@ export class IS24Contactor {
       };
     });
 
-    // Anrede
-    const targetAnrede = p.anrede || 'Frau';
+    // Anrede: only the persona's own answer, never a guessed default.
     const currentAnrede = await this.page.evaluate(() => window.__getSelectText('select[name="salutation"]'));
-    if (!currentAnrede || currentAnrede !== targetAnrede) {
-      await this.page.evaluate((a) => window.__setSelect('select[name="salutation"]', a), targetAnrede);
+    if (p.anrede && currentAnrede !== p.anrede) {
+      await this.page.evaluate((a) => window.__setSelect('select[name="salutation"]', a), p.anrede);
       await jitter(...T.anredeJitter);
     }
 

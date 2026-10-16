@@ -201,6 +201,7 @@ export class Telegram {
               const prompt = await this.send('✏️ What should change?', { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
                 reply_markup: { force_reply: true, input_field_placeholder: 'e.g. shorter, mention move-in 1 March' } });
               this.editPrompts.set(prompt.message_id, { id, version: review.version });
+              this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
               answer = 'Reply to the prompt with your changes.';
             } else {
               this.workflow.dismiss(id, review.version);

@@ -38,7 +38,7 @@ The answers are stored in the data directory and survive restarts; an interrupte
 
 ### Being early
 
-Results are read newest first, and each check stops at the first page with a listing it already knows, so a routine check is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. The very first check reviews all current results (up to 5 pages, about 100 listings), so expect a burst of messages. With **auto-send** on, a listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
+Results are read newest first, and each check stops once a page ends with a listing it already knows, so a routine check is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. The very first check reviews all current results (up to 5 pages, about 100 listings), so expect a burst of messages. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap, and so does everything the first check (or the first check after you change the search) finds, since those listings were already online. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
 
 ### Reviews
 

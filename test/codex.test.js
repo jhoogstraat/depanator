@@ -43,7 +43,7 @@ test('Codex review passes only listing/persona over stdin; output stays validate
   await assert.rejects(evaluateWithCodex(config, {}, { spawnImpl() {
     const child = new EventEmitter(); child.stdin = new PassThrough(); child.kill = () => {};
     child.stdin.on('finish', () => child.emit('close', 1)); return child;
-  } }), /no API fallback/);
+  } }), /send \/login/);
 });
 
 test('ChatGPT login relays the device link and code; a failed login is reported', async t => {

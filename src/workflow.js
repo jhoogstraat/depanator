@@ -8,7 +8,7 @@ const MAX_BACKOFF_MS = 3_600_000;
 const ANALYSIS_CONCURRENCY = 3;
 const ADVICE = {
   IS24: 'Self-healing restarted the browser and is backing off. Check the browser viewer for a captcha, block, or expired login.',
-  LLM: 'Analysis is paused and retries every poll. Check the API key and quota, or rerun llm-login for Codex.',
+  LLM: 'Analysis is paused and retries every check. Check your ChatGPT plan, or send /login to reconnect it.',
 };
 
 // Moves reviews through the review.js state machine: search → analyze → deliver → (user decides) → send.
@@ -113,7 +113,7 @@ export class Workflow {
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
-    this.store.discover(search.listings);
+    this.store.discover(search.listings, { fresh: search.caughtUp === true });
     const batch = { stop: false, is24Failed: false, llmFailed: false };
     const queue = this.store.list('discovered');
     const worker = async () => { while (!batch.stop && queue.length) await this.analyze(queue.shift(), batch); };
@@ -145,8 +145,9 @@ export class Workflow {
       if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
       this.emit({ type: 'analysis', review: saved });
-      // Auto-send: the owner's standing approval for clear matches. It is sent in this same tick.
-      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true) {
+      // Auto-send: the owner's standing approval for clear matches, sent in this same tick. Only for newly
+      // published listings: the first check, or one after a search change, would otherwise mass-apply.
+      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true) {
         this.store.dispatch(review.id, { type: 'approve', version: saved.version, draftHash: saved.draftHash, bindings, by: 'auto' });
       }
     } catch (error) {

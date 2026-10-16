@@ -15,7 +15,7 @@ export function codexExecutable() {
 export function codexEnvironment(config, home) {
   mkdirSync(config.llm.codexHome, { recursive: true, mode: 0o700 });
   chmodSync(config.llm.codexHome, 0o700);
-  // No API keys, Telegram credentials, browser settings, or inherited MCP env.
+  // No Telegram credentials, browser settings, or inherited MCP env.
   return { PATH: process.env.PATH, HOME: home, CODEX_HOME: config.llm.codexHome, TERM: 'dumb' };
 }
 
@@ -64,7 +64,7 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
       const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(unavailable('Codex review timed out; nothing was sent')); }, 120000);
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); };
       child.once('error', () => { cleanup(); reject(unavailable('Cannot start bundled Codex CLI')); });
-      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('Codex review failed; check subscription login with llm-login (no API fallback)')); });
+      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('ChatGPT review failed; if this repeats, send /login in Telegram to reconnect your subscription')); });
       if (signal?.aborted) abort();
     });
     child.stdin.on('error', () => {});

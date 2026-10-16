@@ -47,7 +47,8 @@ export const FIELDS = [
   { key: 'persona.plz', label: 'Postcode', ask: 'Your postcode?', parse: pattern(/^\d{5}$/, 'Please send a 5-digit postcode.'), optional: true },
   { key: 'persona.ort', label: 'City', ask: 'Your current city?', parse: line(60), optional: true },
   // Options come from a real contact form (formOptions), so values always match IS24's labels exactly.
-  ...Object.entries(FORM_QUESTIONS).map(([name, [label, ask]]) => ({ key: `persona.${name}`, label, ask, form: true, optional: true })),
+  // IS24 requires a salutation, so it cannot be skipped.
+  ...Object.entries(FORM_QUESTIONS).map(([name, [label, ask]]) => ({ key: `persona.${name}`, label, ask, form: true, optional: name !== 'anrede' })),
   { key: 'persona.einzug_datum', label: 'Move-in date', ask: 'Earliest move-in date? Write it as YYYY-MM-DD, for example 2027-03-01.', parse: value => { const date = pattern(/^\d{4}-\d{2}-\d{2}$/, 'Please write the date as YYYY-MM-DD.')(value); if (Number.isNaN(Date.parse(date))) throw new Error('That date does not exist.'); return date; }, optional: true },
   { key: 'persona.haustiere_zusatz', label: 'Which pets', ask: 'Which pets, if any? For example "1 cat".', parse: line(100), optional: true },
   { key: 'pollIntervalMs', label: 'Check every', ask: 'How often should I check for new listings? Being early matters most; every 2 minutes is a good balance.', default: 2 * MINUTE,
@@ -105,6 +106,16 @@ export class Settings {
     } else if (!['chatId', 'formOptions'].includes(key)) throw new Error(`Unknown setting ${key}`);
     this.store.saveSetting(key, value);
     this.values[key] = value;
+    // New form options: answers the form no longer offers are asked again (setup is incomplete until then).
+    if (key === 'formOptions') {
+      for (const field of FIELDS.filter(field => field.form && this.values[field.key] !== undefined)) {
+        const answer = this.values[field.key];
+        if (answer === '' ? !field.optional || this.choices(field.key).length : !this.choices(field.key).some(([choice]) => choice === answer)) {
+          this.store.deleteSetting(field.key);
+          delete this.values[field.key];
+        }
+      }
+    }
     this.apply();
     for (const listener of this.listeners) listener(key);
     return value;

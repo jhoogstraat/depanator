@@ -45,10 +45,14 @@ test('pagination never stops on duplicates and exposes capped coverage',async()=
   assert.deepEqual([result.listings[0].published,result.listings[0].earlyAccess],['vor 2 Stunden',true]);
   const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
-  // Newest first: a routine poll stops at the first page holding an already known listing.
+  // Newest first: a routine poll stops once a page ends with an already known listing...
   const routine=network([full,full,[item(99)]]);
-  const known=await new IS24Adapter(config,routine).search({known:id=>id==='7'});
-  assert.equal(routine.count(),1); assert.equal(known.complete,true); assert.equal(known.listings.length,20);
+  const known=await new IS24Adapter(config,routine).search({known:id=>id==='20'});
+  assert.equal(routine.count(),1); assert.deepEqual([known.complete,known.caughtUp,known.listings.length],[true,true,20]);
+  // ...but a known listing promoted to the top of page 1 does not hide the new ones below.
+  const promoted=network([full,full,[item(99)]]);
+  assert.equal((await new IS24Adapter(config,promoted).search({known:id=>id==='1'})).listings.length,21);
+  assert.equal(result.caughtUp,false,'a first check has not caught up');
 });
 test('malformed/block search fails rather than reporting empty coverage',async()=>{
   const adapter=new IS24Adapter(config,{fetch:async()=>({ok:true,status:200,headers:{get:()=> 'text/html'}})});

@@ -43,10 +43,11 @@ export class Store {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   // Stable listing IDs: an already-known listing is ignored, even if its price changed. Returns the new reviews.
-  discover(snapshots) {
+  // fresh: found by a search that had caught up with known listings, i.e. newly published (auto-send eligible).
+  discover(snapshots, { fresh = false } = {}) {
     const insert = this.db.prepare('INSERT OR IGNORE INTO reviews(id,expose_id,status,body) VALUES(?,?,?,?)');
     return this.transaction(() => snapshots.flatMap(snapshot => {
-      const review = newReview({ id: randomUUID(), snapshot, now: this.now() });
+      const review = { ...newReview({ id: randomUUID(), snapshot, now: this.now() }), fresh };
       return insert.run(review.id, review.exposeId, review.status, JSON.stringify(review)).changes ? [review] : [];
     }));
   }
@@ -62,6 +63,7 @@ export class Store {
   has(exposeId) { return Boolean(this.db.prepare('SELECT 1 FROM reviews WHERE expose_id=?').get(String(exposeId))); }
   settings() { return Object.fromEntries(this.db.prepare('SELECT key, value FROM settings').all().map(row => [row.key, JSON.parse(row.value)])); }
   saveSetting(key, value) { this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
+  deleteSetting(key) { this.db.prepare('DELETE FROM settings WHERE key=?').run(key); }
   count() { return this.db.prepare('SELECT COUNT(*) AS count FROM reviews').get().count; }
   // Throws CONFLICT when the event does not apply to the review's current status.
   dispatch(id, event) {

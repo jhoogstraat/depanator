@@ -30,7 +30,12 @@ function chat(t) {
   const message = (text, from = 42) => telegram.handleUpdate({ message: { text, chat: { id: from, type: 'private' }, from: { id: from } } });
   const tap = (data, from = 42) => telegram.handleUpdate({ callback_query: { id: 'q', data, from: { id: from }, message: { message_id: 1, chat: { id: from, type: 'private' } } } });
   const texts = () => sent.filter(call => call.method === 'sendMessage').map(call => call.body.text);
-  return { store, settings, telegram, sent, events, message, tap, texts };
+  // The callback_data of the button labelled `label` (or the n-th button) on the newest keyboard.
+  const button = which => {
+    const buttons = sent.findLast(call => call.body.reply_markup?.inline_keyboard?.length).body.reply_markup.inline_keyboard.flat();
+    return (typeof which === 'number' ? buttons[which] : buttons.find(entry => entry.text === which)).callback_data;
+  };
+  return { store, settings, telegram, sent, events, message, tap, texts, button };
 }
 
 test('pairing, then a guided setup that resumes from stored answers and validates each one', async t => {
@@ -50,8 +55,8 @@ test('pairing, then a guided setup that resumes from stored answers and validate
     const field = c.settings.next();
     if (!field || field.key === 'formOptions') { await until(() => c.settings.next()?.key !== 'formOptions'); continue; }
     if (typed[field.key]) await c.message(typed[field.key]);
-    else if (c.settings.choices(field.key).length) await c.tap(`c:${field.key}:${field.key === 'pollIntervalMs' ? 1 : 0}`);
-    else await c.tap(`c:${field.key}:-`); // skip optional
+    else if (c.settings.choices(field.key).length) await c.tap(c.button(field.key === 'pollIntervalMs' ? 1 : 0));
+    else await c.tap(c.button('Skip'));
   }
   await until(() => c.events.ready === 1);
   assert.equal(c.events.logins, 1);
@@ -60,15 +65,22 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   assert.deepEqual([c.settings.config.accountEmail, c.settings.config.pollIntervalMs, c.settings.config.autoSend], ['me@example.com', 120_000, false]);
 
   await c.message('/interval');
-  await c.tap('c:pollIntervalMs:0');
+  const oneMinute = c.button(0);
+  await c.tap(oneMinute, 777);
+  assert.equal(c.settings.config.pollIntervalMs, 120_000, 'strangers cannot press buttons');
+  await c.tap(oneMinute);
   assert.equal(c.settings.config.pollIntervalMs, 60_000);
-  await c.tap('c:pollIntervalMs:0', 777);
-  await c.tap('c:persona.anrede:9');
+  await c.tap(oneMinute.replace(/:\w{4}$/, ':xxxx'));
   assert.deepEqual([c.sent.at(-1).method, c.sent.at(-1).body.text], ['answerCallbackQuery', 'These buttons are outdated; use /settings.']);
   await c.message('https://www.immobilienscout24.de/Suche/de/berlin/berlin/haus-kaufen');
   assert.match(c.texts().at(-1), /\/settings/, 'free text after setup changes nothing');
   assert.equal(c.settings.config.searchUrl, searchUrl);
   assert.equal(new Settings(c.store, { llm: {} }).complete(), true, 'stored answers survive a restart');
+
+  // Re-reading a form that no longer offers the chosen salutation asks for it again; checks pause until then.
+  c.settings.set('formOptions', { anrede: ['Herr'] });
+  assert.equal(c.settings.complete(), false);
+  assert.equal(c.settings.next().key, 'persona.anrede');
 });
 
 test('settings reject a search that would widen and keep the previous value', t => {
