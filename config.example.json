@@ -23,7 +23,6 @@
   "notification": { "chatId": "" },
   "maxPages": 5,
   "pollIntervalMs": 600000,
-  "approvalTtlMs": 86400000,
   "port": 8787,
   "dataDir": ".depanator"
 }

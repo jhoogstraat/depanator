@@ -156,7 +156,7 @@ export class IS24Adapter {
       const address = typeof expose.address === 'string' ? expose.address : expose.address?.line || '';
       // Attributes are unlabeled display strings such as "1.234 €", "54 m²", "2,5 Zi.".
       const attribute = unit => Number(String((expose.attributes || []).find(a => String(a.value).includes(unit))?.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
-      if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url});
+      if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
     }
     const complete = first.numberOfPages <= this.config.maxPages;
     return {listings:[...listings.values()],complete,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
@@ -202,7 +202,7 @@ export class IS24Adapter {
     try { detail = await page.evaluate(extractDetails,{priceType:this.validation.canonical.price.type}); }
     catch (error) { throw classify(error); }
     if (!detail.address) throw new Error('Missing listing address');
-    return {expose_id:String(listing.expose_id),title:detail.title,price:detail.price,area:detail.area,rooms:detail.rooms,address:detail.address,image_url:listing.image_url || '',url,description:detail.description,amenities:detail.amenities};
+    return {expose_id:String(listing.expose_id),title:detail.title,price:detail.price,area:detail.area,rooms:detail.rooms,address:detail.address,image_url:listing.image_url || '',url,published:listing.published,earlyAccess:listing.earlyAccess,description:detail.description,amenities:detail.amenities};
   }
   details(listing) { return this.serial(async () => this.readDetails(listing,await this.detailsPage())); }
   async assertAccount(page) {

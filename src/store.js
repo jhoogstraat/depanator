@@ -14,17 +14,18 @@ export function bindingFor(config) {
   return hash({ browserProfile: resolve(config.browserProfile), accountEmail: config.accountEmail.toLowerCase().trim() });
 }
 export function configHashFor(config) {
-  const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, approvalTtlMs, browser } = config;
+  const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, browser } = config;
   // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, approvalTtlMs, browser });
+  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, browser });
 }
 // The single source of truth for review lifecycle. Every status write is checked against it.
 export const TRANSITIONS = {
   discovered: ['analyzing'],
   analyzing: ['discovered', 'awaiting_approval', 'dismissed', 'analysis_failed'],
-  awaiting_approval: ['approved', 'dismissed', 'expired'],
-  approved: ['submitting', 'dismissed', 'expired', 'failed'],
+  awaiting_approval: ['approved', 'dismissed'],
+  approved: ['submitting', 'dismissed', 'failed'],
   submitting: ['sent', 'failed', 'unknown_outcome'],
+  // expired: legacy terminal state from when approvals had a time limit; nothing enters it now.
   analysis_failed: [], dismissed: [], expired: [], failed: [], sent: [], unknown_outcome: [],
 };
 // ponytail: fixed cap; a long LLM outage can exhaust it. Raise or add backoff if listings get lost.
@@ -38,10 +39,6 @@ const MIGRATIONS = [
   'CREATE INDEX IF NOT EXISTS reviews_status ON reviews(status);',
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
-// Expiry is time-based, so a stored status can be stale until the next write; readers use this.
-export function displayStatus(review, now = Date.now()) {
-  return ['awaiting_approval', 'approved'].includes(review.status) && review.expiresAt <= now ? 'expired' : review.status;
-}
 function conflict(message) {
   const error = new Error(message);
   error.code = 'CONFLICT';
@@ -78,7 +75,6 @@ export class Store {
     return row ? JSON.parse(row.body) : null;
   }
   list() {
-    this.expire();
     return this.db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all().map(row => JSON.parse(row.body));
   }
   count() { return this.db.prepare('SELECT COUNT(*) AS count FROM reviews').get().count; }
@@ -86,13 +82,13 @@ export class Store {
   discover(snapshot) {
     const exposeId = String(snapshot.expose_id ?? '');
     if (!/^\d+$/.test(exposeId)) throw new Error('Invalid expose ID');
-    const review = { id: randomUUID(), exposeId, status: 'discovered', snapshot: structuredClone(snapshot), version: 1, draft: '', draftHash: null, reasons: [], accountBinding: null, configHash: null, expiresAt: null, createdAt: this.now(), notifiedAt: null };
+    const review = { id: randomUUID(), exposeId, status: 'discovered', snapshot: structuredClone(snapshot), version: 1, draft: '', draftHash: null, reasons: [], accountBinding: null, configHash: null, createdAt: this.now(), notifiedAt: null };
     const result = this.db.prepare('INSERT OR IGNORE INTO reviews(id,expose_id,status,body) VALUES(?,?,?,?)').run(review.id, exposeId, review.status, JSON.stringify(review));
     return result.changes ? review : null;
   }
   pendingAnalysis() { return this.select('discovered'); }
-  pendingNotifications() { this.expire(); return this.select('awaiting_approval').filter(review => review.notifiedAt == null); }
-  approved() { this.expire(); return this.select('approved'); }
+  pendingNotifications() { return this.select('awaiting_approval').filter(review => review.notifiedAt == null); }
+  approved() { return this.select('approved'); }
   beginAnalysis(id) {
     const review = this.get(id);
     if (!review || review.status !== 'discovered') return null;
@@ -122,30 +118,23 @@ export class Store {
     const review = this.get(id);
     if (review?.status === 'awaiting_approval') this.write({ ...review, notificationError: detail }, 'awaiting_approval');
   }
-  expire() {
-    for (const status of ['awaiting_approval', 'approved']) for (const review of this.select(status)) {
-      if (displayStatus(review, this.now()) === 'expired') this.write({ ...review, status: 'expired', detail: 'Approval expired' }, status);
-    }
-  }
   intact(review, bindings) {
-    return review.expiresAt > this.now() && review.draftHash === hash(review.draft) && review.snapshotHash === hash(review.snapshot) && String(review.snapshot.expose_id) === review.exposeId && review.accountBinding === bindings.accountBinding && review.configHash === bindings.configHash;
+    return review.draftHash === hash(review.draft) && review.snapshotHash === hash(review.snapshot) && String(review.snapshot.expose_id) === review.exposeId && review.accountBinding === bindings.accountBinding && review.configHash === bindings.configHash;
   }
   approve(id, { version, draftHash, accountBinding, configHash }) {
     return this.transaction(() => {
-      this.expire();
       const review = this.get(id);
-      if (!review || review.status !== 'awaiting_approval' || review.version !== version || review.draftHash !== draftHash || !this.intact(review, { accountBinding, configHash })) conflict('Review is stale, expired, or has changed');
+      if (!review || review.status !== 'awaiting_approval' || review.version !== version || review.draftHash !== draftHash || !this.intact(review, { accountBinding, configHash })) conflict('Review is stale or has changed');
       return this.write({ ...review, status: 'approved', approvedAt: this.now() }, 'awaiting_approval');
     });
   }
   // A new version invalidates every Telegram button signed for the previous draft.
-  reviseDraft(id, { version, draft, reasons, expiresAt }) {
+  reviseDraft(id, { version, draft, reasons }) {
     if (typeof draft !== 'string' || !draft.trim()) throw new Error('Invalid revised draft');
     return this.transaction(() => {
-      this.expire();
       const review = this.get(id);
-      if (!review || review.status !== 'awaiting_approval' || review.version !== version) conflict('Review was already handled, changed, or expired');
-      return this.write({ ...review, version: version + 1, draft, draftHash: hash(draft), reasons, expiresAt, notifiedAt: null, notificationError: undefined }, 'awaiting_approval');
+      if (!review || review.status !== 'awaiting_approval' || review.version !== version) conflict('Review was already handled or changed');
+      return this.write({ ...review, version: version + 1, draft, draftHash: hash(draft), reasons, notifiedAt: null, notificationError: undefined }, 'awaiting_approval');
     });
   }
   dismiss(id, { version }) {
@@ -159,7 +148,7 @@ export class Store {
     return this.transaction(() => {
       const review = this.get(id);
       if (!review || review.status !== 'approved') return null;
-      if (!this.intact(review, bindings)) return this.write({ ...review, status: review.expiresAt <= this.now() ? 'expired' : 'failed', detail: 'Approval binding changed' }, 'approved') && null;
+      if (!this.intact(review, bindings)) return this.write({ ...review, status: 'failed', detail: 'Approval binding changed' }, 'approved') && null;
       if (this.db.prepare('SELECT review_id FROM attempts WHERE review_id=?').get(id)) return null;
       this.db.prepare('INSERT INTO attempts(review_id,started_at,outcome,draft_hash) VALUES(?,?,?,?)').run(id, this.now(), 'submitting', review.draftHash);
       return this.write({ ...review, status: 'submitting' }, 'approved');
@@ -182,7 +171,6 @@ export class Store {
   recover() {
     for (const review of this.select('analyzing')) this.write(this.retryOrGiveUp(review, 'Analysis interrupted; pending retry'), 'analyzing');
     for (const review of this.select('submitting')) this.finishSend(review.id, { outcome: 'unknown_outcome', detail: 'Process stopped during submission; verify account history before any further action' });
-    this.expire();
   }
   close() { this.db.close(); }
 }

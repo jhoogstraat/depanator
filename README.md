@@ -8,7 +8,7 @@ Tap **✏️ Edit** and reply with what to change (for example "shorter" or "men
 
 The agent heals itself before asking for help. Search outages and IS24 blocks trigger exponential backoff (up to an hour) and a browser restart; sends pause while IS24 blocks access. LLM outages pause analysis without using up a listing's retries. Telegram alerts you only when a component fails three times in a row, when it recovers, or when a listing is given up after five failed analyses.
 
-Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Edit / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered.
+Telegram reviews include a linked title, rent/size/room facts, expandable description and amenities, the listing photo, the complete quoted draft, and **Send / Edit / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Each listing arrives as one message; only a draft too long for one Telegram message is split, never truncated (listing details are shortened to fit), and the buttons appear on the final part.
 
 ## Setup
 
@@ -39,7 +39,7 @@ Log into the configured account manually in the opened Chromium window, then clo
 bun run start
 ```
 
-Keep the process running. It polls immediately and then every ten minutes by default. Telegram buttons work while the process is running. Each approval authorizes one exact draft for one listing/account; changed, expired, duplicate, or foreign approvals are rejected. A separate terminal can inspect persistent history:
+Keep the process running. It polls immediately and then every ten minutes by default. Telegram buttons work while the process is running. Each approval authorizes one exact draft for one listing/account; changed, duplicate, or foreign approvals are rejected. A separate terminal can inspect persistent history:
 
 ```sh
 bun run status
@@ -59,7 +59,7 @@ Puppeteer's browser installer runs explicitly under Bun rather than through a No
 
 ## Submission and recovery
 
-Stable listing IDs prevent reanalysis and repeat applications after price changes. SQLite stores decisions, exact drafts, approvals, and single submission attempts. Approval expires after 24 hours by default. The sender rechecks the details, signed-in email, form contents, and approval immediately before its single submit action. Captcha solving and automatic resubmission are disabled.
+Stable listing IDs prevent reanalysis and repeat applications after price changes. SQLite stores decisions, exact drafts, approvals, and single submission attempts. The sender rechecks the details, signed-in email, form contents, and approval immediately before its single submit action. Captcha solving and automatic resubmission are disabled.
 
 Failed or uncertain submissions never automatically retry. If confirmation is ambiguous or the process stops during submission, inspect your IS24 messages manually before further action. No requeue command is provided. SIGTERM stops starting new work immediately and allows at most 30 seconds to drain before exit 1; interrupted submissions remain uncertain. For private mounted secrets and the mandatory restore reconciliation marker, see the [operational contract](deploy/README.md#mounted-secrets-stopping-and-restores). The application cannot detect historical database rollback; the deployment restore hook must install the marker before resuming. If a hard stop leaves `agent.lock`, confirm no agent or login process is running before removing that file and restarting; normal shutdown removes it. Interrupted or failed analysis retries up to five times per listing, then stops as `analysis_failed`; interrupted submissions remain quarantined. Review statuses and their allowed transitions are defined in `TRANSITIONS` in `src/store.js`. The database schema is versioned; an older agent refuses a newer database.
 

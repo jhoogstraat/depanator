@@ -130,7 +130,7 @@ export class Workflow {
       this.assertRunning();
       await this.recovered('LLM');
       if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
-      const saved = this.store.saveAnalysis(review.id, snapshot, result, { ...bindings, expiresAt: this.store.now() + (this.config.approvalTtlMs ?? 86400000) });
+      const saved = this.store.saveAnalysis(review.id, snapshot, result, bindings);
       this.emit({ type: 'analysis', review: saved });
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.
@@ -156,11 +156,11 @@ export class Workflow {
   }
   async reviseInternal(id, version, instructions) {
     const review = this.store.get(id);
-    if (!review || review.status !== 'awaiting_approval' || review.version !== version) throw new Error('This draft was already handled, changed, or expired');
+    if (!review || review.status !== 'awaiting_approval' || review.version !== version) throw new Error('This draft was already handled or changed');
     const result = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
     if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
-    const saved = this.store.reviseDraft(id, { version, draft: result.draft, reasons: result.reasons, expiresAt: this.store.now() + (this.config.approvalTtlMs ?? 86400000) });
+    const saved = this.store.reviseDraft(id, { version, draft: result.draft, reasons: result.reasons });
     try { await this.notify(saved); this.store.markNotified(id); }
     catch (error) { this.store.notificationFailed(id, error.message); throw new Error('Draft revised, but delivering it failed; it will be resent on the next poll'); }
     return this.store.get(id);
@@ -183,7 +183,7 @@ export class Workflow {
         } else {
           const beforeSubmit = async () => {
             this.assertRunning();
-            if (!this.store.validateSubmission(review.id, { version: review.version, draftHash: review.draftHash, snapshotHash: review.snapshotHash, ...this.bindings() })) throw new Error('Approval expired or binding changed before submission');
+            if (!this.store.validateSubmission(review.id, { version: review.version, draftHash: review.draftHash, snapshotHash: review.snapshotHash, ...this.bindings() })) throw new Error('Approval binding changed before submission');
             return true;
           };
           await beforeSubmit();

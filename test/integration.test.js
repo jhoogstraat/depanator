@@ -13,7 +13,7 @@ function callback(data, user = '42', versionChange = false) {
   return { update_id: 1, callback_query: { id: 'callback', data: versionChange ? data.replace(':1:', ':2:') : data, from: { id: user }, message: { chat: { id: '42', type: 'private' } } } };
 }
 function setup(directory, options = {}) {
-  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', browserProfile: join(directory, 'browser'), accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline', baseUrl: 'https://llm.invalid/v1' }, llmApiKey: 'never-exposed-secret', telegramBotToken: 'offline-token', notification: { type: 'telegram', chatId: '42' }, dataDir: directory, approvalTtlMs: 10000 };
+  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', browserProfile: join(directory, 'browser'), accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline', baseUrl: 'https://llm.invalid/v1' }, llmApiKey: 'never-exposed-secret', telegramBotToken: 'offline-token', notification: { type: 'telegram', chatId: '42' }, dataDir: directory };
   const summaries = [{ expose_id: '111', title: 'Sunny' }, { expose_id: '222', title: 'Basement' }];
   const snapshots = summaries.map(summary => ({ ...summary, price: 1200, area: 60, rooms: 2, address: 'Berlin', url: `https://www.immobilienscout24.de/expose/${summary.expose_id}`, image_url: '', description: summary.expose_id === '111' ? 'Sunny apartment with balcony.' : 'Dark basement, no balcony.', amenities: summary.expose_id === '111' ? ['Balcony'] : [] }));
   const calls = { llm: [], telegram: [], sends: [] };
@@ -65,12 +65,12 @@ test('all real modules: scrape/enrich/evaluate/notify/signed approval/send once 
   assert.equal(reviews.find(item => item.exposeId === '222').status, 'dismissed');
   assert.equal(JSON.stringify(reviews).includes(f.config.llmApiKey), false);
   const notifications = f.calls.telegram.filter(call => call.method === 'sendMessage').map(call => call.body);
-  const draftStart = notifications.findIndex(message => message.text.startsWith('Exact draft for your approval:\n\n'));
   const buttons = notifications.findIndex(message => message.reply_markup);
-  const assembled = notifications.slice(draftStart, buttons).map(message => message.text).join('').replace('Exact draft for your approval:\n\n', '');
+  assert.equal(buttons, notifications.length - 1, 'buttons follow every part of the draft');
+  const assembled = notifications.flatMap(message => (message.entities || []).filter(entity => entity.type === 'blockquote').map(entity => message.text.slice(entity.offset, entity.offset + entity.length))).join('');
   assert.equal(assembled, review.draft);
-  assert.equal(notifications[0].text.includes(f.config.accountEmail), true);
-  const approvedData = notifications[buttons].reply_markup.inline_keyboard[0][0].callback_data;
+  assert.equal(notifications[0].text.includes(f.config.accountEmail), false);
+  const approvedData = notifications[buttons].reply_markup.inline_keyboard.at(-1)[0].callback_data;
   for (const update of [callback(approvedData, 'foreign-user'), callback(approvedData, '42', true), callback(approvedData.slice(0, -1) + (approvedData.endsWith('A') ? 'B' : 'A'))]) {
     await f.telegram.handleUpdate(update);
     assert.equal(f.store.get(review.id).status, 'awaiting_approval');

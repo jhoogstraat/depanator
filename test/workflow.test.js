@@ -5,7 +5,7 @@ import { Workflow } from '../src/workflow.js';
 
 function fixture(overrides = {}) {
   const snapshot = { expose_id: '123', title: 'Apartment', price: 1000, rooms: 2, area: 60, description: 'A balcony.', amenities: ['Balcony'], url: 'https://www.immobilienscout24.de/expose/123' };
-  const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: {}, preferences: 'balcony', llm: { model: 'fixture', baseUrl: 'fixture' }, approvalTtlMs: 1000 };
+  const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: {}, preferences: 'balcony', llm: { model: 'fixture', baseUrl: 'fixture' } };
   const store = new Store(':memory:', { now: () => 100 });
   const calls = { search: 0, evaluate: 0, notify: 0, send: 0 };
   const adapter = {
@@ -93,7 +93,7 @@ test('ambiguous remote outcomes and thrown sends never retry', async () => {
     await f.workflow.close();
   }
 });
-test('concurrent ticks share one execution and approval expires immediately before submit', async () => {
+test('concurrent ticks share one execution and a binding change immediately before submit blocks it', async () => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const f = fixture({ adapter: { search: async () => { await gate; return { listings: [], complete: true, pages: 1 }; } } });
@@ -103,7 +103,7 @@ test('concurrent ticks share one execution and approval expires immediately befo
   release();
   await first;
   await f.workflow.close();
-  const other = fixture({ adapter: { send: async (_review, { beforeSubmit }) => { other.store.now = () => 2000; await beforeSubmit(); throw new Error('Should never submit'); } } });
+  const other = fixture({ adapter: { send: async (_review, { beforeSubmit }) => { other.config.persona = { changed: true }; await beforeSubmit(); throw new Error('Should never submit'); } } });
   await other.workflow.poll();
   const review = approve(other);
   await other.workflow.sendApproved();

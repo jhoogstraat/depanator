@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig, assertReconciled } from './config.js';
-import { Store, displayStatus } from './store.js';
+import { Store } from './store.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
 import { createEvaluator } from './llm.js';
@@ -42,7 +42,7 @@ export async function main(args = process.argv.slice(2)) {
     try {
       for (const row of db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all()) {
         const review = JSON.parse(row.body);
-        console.log(`${displayStatus(review).padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
+        console.log(`${review.status.padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
       }
     } finally { db.close(); }
     return;

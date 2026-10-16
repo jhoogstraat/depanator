@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, hash, bindingFor, configHashFor, displayStatus, MAX_ANALYSIS_ATTEMPTS } from '../src/store.js';
+import { Store, hash, bindingFor, configHashFor, MAX_ANALYSIS_ATTEMPTS } from '../src/store.js';
 
 const snapshot = { expose_id: '123', title: 'Apartment', price: 1000, description: 'Balcony', amenities: ['Balcony'] };
 const bindings = { accountBinding: 'account', configHash: 'config' };
 function reviewed(store) {
   const review = store.discover(snapshot);
   store.beginAnalysis(review.id);
-  return store.saveAnalysis(review.id, snapshot, { decision: 'message', reasons: ['Fits'], draft: 'Hello\nI am interested.' }, { ...bindings, expiresAt: store.now() + 100 });
+  return store.saveAnalysis(review.id, snapshot, { decision: 'message', reasons: ['Fits'], draft: 'Hello\nI am interested.' }, bindings);
 }
 test('stable identity, exact approval, conditional single send and dismiss', () => {
   const store = new Store(':memory:', { now: () => 10 });
@@ -49,19 +49,17 @@ test('restart retries interrupted analysis but quarantines possible submission',
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });
-test('expiry and changed binding invalidate approval; tampered draft cannot claim', () => {
+test('approvals never expire; changed binding invalidates approval; tampered draft cannot claim', () => {
   let now = 10;
   const store = new Store(':memory:', { now: () => now });
   const review = reviewed(store);
   store.approve(review.id, { version: 1, draftHash: review.draftHash, ...bindings });
-  now = 111;
-  assert.equal(displayStatus(store.get(review.id), now), 'expired', 'read-only status shows expiry before any write');
-  assert.equal(store.claimSend(review.id, bindings), null);
-  assert.equal(store.get(review.id).status, 'expired');
-  now = 10;
+  now = 10 ** 12;
+  assert.equal(store.claimSend(review.id, { ...bindings, configHash: 'changed' }), null);
+  assert.equal(store.get(review.id).status, 'failed');
   const next = store.discover({ ...snapshot, expose_id: '222' });
   store.beginAnalysis(next.id);
-  const r = store.saveAnalysis(next.id, { ...snapshot, expose_id: '222' }, { decision: 'message', reasons: [], draft: 'Original' }, { ...bindings, expiresAt: 100 });
+  const r = store.saveAnalysis(next.id, { ...snapshot, expose_id: '222' }, { decision: 'message', reasons: [], draft: 'Original' }, bindings);
   store.approve(r.id, { version: 1, draftHash: r.draftHash, ...bindings });
   const changed = { ...store.get(r.id), draft: 'Injected' };
   store.write(changed, 'approved');
@@ -71,7 +69,7 @@ test('expiry and changed binding invalidate approval; tampered draft cannot clai
 });
 test('hash canonicalizes objects; only meaningful settings affect config binding', () => {
   assert.equal(hash({ b: 2, a: 1 }), hash({ a: 1, b: 2 }));
-  const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: { name: 'Person' }, preferences: 'balcony', llm: { model: 'model', baseUrl: 'https://api.example.com' }, approvalTtlMs: 100 };
+  const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: { name: 'Person' }, preferences: 'balcony', llm: { model: 'model', baseUrl: 'https://api.example.com' } };
   assert.equal(configHashFor(config), configHashFor({ ...config, llmApiKey: 'secret', port: 3 }));
   assert.notEqual(configHashFor(config), configHashFor({ ...config, persona: { name: 'Other' } }));
   assert.notEqual(bindingFor(config), bindingFor({ ...config, browserProfile: '/tmp/other' }));

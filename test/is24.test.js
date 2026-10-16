@@ -12,7 +12,7 @@ function network(pages) {
   let calls=0;
   return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1],numberOfPages:pages.length})};},count:()=>calls};
 }
-const item=id=>({id,title:'Home',attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
+const item=id=>({id,title:'Home',published:'vor 2 Stunden',paywallListing:{active:true},attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
 test('container browser path and sandbox flags apply to automated and manual launch',async()=>{
   const serverConfig={...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}};
   let automated, manual;
@@ -43,6 +43,7 @@ test('pagination never stops on duplicates and exposes capped coverage',async()=
   const result=await new IS24Adapter(config,fixture).search();
   assert.equal(fixture.count(),3); assert.equal(result.complete,true); assert.equal(result.listings.length,21);
   assert.deepEqual([result.listings[0].price,result.listings[0].area,result.listings[0].rooms],[1234,54,2.5],'live unlabeled attribute format');
+  assert.deepEqual([result.listings[0].published,result.listings[0].earlyAccess],['vor 2 Stunden',true]);
   const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
 });
