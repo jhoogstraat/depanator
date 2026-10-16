@@ -11,7 +11,7 @@ import { evaluateWithCodex, codexArguments, codexEnvironment, codexExecutable } 
 import { loadConfig } from '../src/config.js';
 import { validateEvaluation } from '../src/llm.js';
 import { prepareSetup } from '../src/setup.js';
-import { configHashFor } from '../src/store.js';
+import { configHashFor } from '../src/review.js';
 
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-codex-test-'));

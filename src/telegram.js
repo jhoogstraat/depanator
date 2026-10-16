@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { conflict } from './review.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
 
@@ -27,15 +28,10 @@ export function previewImage(raw) {
   } catch { return null; }
 }
 
-function conflict() {
-  const error = new Error('Review was already handled');
-  error.code = 'CONFLICT';
-  throw error;
-}
-
+// The user's interface. Reads reviews to verify signed buttons; every decision goes to the workflow.
 export class Telegram {
-  constructor({ config, store, bindings, onApproved, onRevise = async () => { throw new Error('Editing is unavailable'); }, fetchImpl = fetch, onError = () => {} }) {
-    Object.assign(this, { config, store, bindings, onApproved, onRevise, fetchImpl, onError });
+  constructor({ config, store, workflow, fetchImpl = fetch, onError = () => {} }) {
+    Object.assign(this, { config, store, workflow, fetchImpl, onError });
     this.chatId = String(config.notification.chatId);
     this.token = config.telegramBotToken;
     this.offsetFile = join(config.dataDir, 'telegram-offset.json');
@@ -147,7 +143,7 @@ export class Telegram {
     this.editPrompts.delete(promptId);
     await this.send('✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
-    Promise.resolve().then(() => this.onRevise(target.id, target.version, instructions))
+    Promise.resolve().then(() => this.workflow.revise(target.id, target.version, instructions))
       .catch(error => this.send(`Could not revise the draft: ${error.message}`).catch(failure => this.onError(failure.message)));
   }
   async handleUpdate(update) {
@@ -165,18 +161,17 @@ export class Telegram {
         if (review && review.version === Number(version) && timingSafeEqual(Buffer.from(supplied), Buffer.from(this.signature(review, action)))) {
           try {
             if (action === 'a') {
-              this.store.approve(id, { version: review.version, draftHash: review.draftHash, ...this.bindings() });
+              this.workflow.approve(id, review.version, review.draftHash);
               answer = 'Approved. The agent will verify and send this exact draft.';
-              Promise.resolve().then(() => this.onApproved()).catch(error => this.onError(error.message));
             } else if (action === 'e') {
-              if (review.status !== 'awaiting_approval') conflict();
+              if (review.status !== 'awaiting_approval') conflict('Review was already handled');
               // Threaded under the review it edits, so the listing need not be repeated.
               const prompt = await this.send('✏️ What should change?', { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
                 reply_markup: { force_reply: true, input_field_placeholder: 'e.g. shorter, mention move-in 1 March' } });
               this.editPrompts.set(prompt.message_id, { id, version: review.version });
               answer = 'Reply to the prompt with your changes.';
             } else {
-              this.store.dismiss(id, { version: review.version });
+              this.workflow.dismiss(id, review.version);
               answer = 'Dismissed. No message will be sent.';
             }
           } catch (error) { answer = error.code === 'CONFLICT' ? 'This review was already handled or changed.' : 'The action failed; check the agent terminal.'; }

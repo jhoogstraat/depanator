@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
 }
 function approve(f) {
   const review = f.store.list()[0];
-  f.store.approve(review.id, { version: review.version, draftHash: review.draftHash, ...f.workflow.bindings() });
+  f.store.dispatch(review.id, { type: 'approve', version: review.version, draftHash: review.draftHash, bindings: f.workflow.bindings() });
   return review;
 }
 test('offline five-step path is approval gated, durable and stable across repeated polls', async () => {
@@ -36,7 +36,7 @@ test('offline five-step path is approval gated, durable and stable across repeat
   await f.workflow.tick();
   assert.deepEqual(f.calls, { search: 3, evaluate: 1, notify: 1, send: 1 });
   assert.equal(f.store.get(review.id).status, 'sent');
-  assert.equal(f.store.attempts(review.id).length, 1);
+  assert.ok(f.store.get(review.id).claimedAt);
   await f.workflow.close();
 });
 test('failed notifications retry durable draft without another LLM invocation', async () => {
@@ -61,7 +61,7 @@ test('LLM dismiss and user dismiss never invoke sender', async () => {
   const other = fixture();
   await other.workflow.poll();
   const review = approve(other);
-  other.store.dismiss(review.id, { version: 1 });
+  other.workflow.dismiss(review.id, 1);
   await other.workflow.sendApproved();
   assert.equal(other.calls.send, 0);
   await other.workflow.close();
@@ -119,7 +119,6 @@ test('an unrelated search outage does not block an already approved send', async
   await assert.rejects(f.workflow.tick(), /Search unavailable/);
   assert.equal(f.store.get(review.id).status, 'sent');
   assert.equal(f.calls.send, 1);
-  assert.equal(f.workflow.status.lastError, 'Search unavailable');
   await f.workflow.close();
 });
 
@@ -168,8 +167,8 @@ test('shutdown drains an already-started send and never claims the next approval
   f.adapter.details = async snapshot => snapshot;
   await f.workflow.poll();
   const reviews = f.store.list();
-  for (const review of reviews) f.store.approve(review.id, { version: review.version, draftHash: review.draftHash, ...f.workflow.bindings() });
-  const ordered = f.store.approved();
+  for (const review of reviews) f.store.dispatch(review.id, { type: 'approve', version: review.version, draftHash: review.draftHash, bindings: f.workflow.bindings() });
+  const ordered = f.store.list('approved');
   f.adapter.send = async (_review, { beforeSubmit, assertCanSubmit }) => {
     await beforeSubmit(); assertCanSubmit(); f.calls.send++; entered(); await waiting;
     return { outcome: 'unknown_outcome', detail: 'Transport lost after click' };
@@ -181,7 +180,7 @@ test('shutdown drains an already-started send and never claims the next approval
   assert.equal(f.calls.send, 1);
   assert.equal(f.store.get(ordered[0].id).status, 'unknown_outcome');
   assert.equal(f.store.get(ordered[1].id).status, 'approved');
-  assert.equal(f.store.attempts(ordered[1].id).length, 0);
+  assert.equal(f.store.get(ordered[1].id).claimedAt, undefined);
   await f.workflow.close();
 });
 
@@ -225,7 +224,7 @@ test('IS24 blocks back off exponentially, pause sends, and a gone listing is not
   assert.equal(f.calls.send, 1);
   assert.equal(f.store.get(review.id).status, 'sent');
   assert.match(alerts.at(-1), /IS24 recovered/);
-  assert.equal(f.workflow.health.IS24, undefined);
+  assert.equal(f.workflow.failures.IS24, 0);
   await f.workflow.close();
 });
 
@@ -242,8 +241,8 @@ test('agent revises a draft on request; the old approval is invalidated', async 
   assert.equal(revised.version, 2);
   assert.equal(revised.notifiedAt, 100);
   assert.equal(f.calls.notify, 2);
-  assert.throws(() => f.store.approve(original.id, { version: 1, draftHash: original.draftHash, ...f.workflow.bindings() }), /stale/);
+  assert.throws(() => f.workflow.approve(original.id, 1, original.draftHash), /stale/);
   await assert.rejects(f.workflow.revise(original.id, 1, 'again'), /already handled/);
-  f.store.approve(original.id, { version: 2, draftHash: revised.draftHash, ...f.workflow.bindings() });
+  f.store.dispatch(original.id, { type: 'approve', version: 2, draftHash: revised.draftHash, bindings: f.workflow.bindings() });
   await f.workflow.close();
 });

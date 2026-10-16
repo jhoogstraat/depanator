@@ -1,0 +1,123 @@
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+
+// The review lifecycle. MACHINE below is the complete state machine: a review's status changes only
+// through these handlers, and any (status, event) pair not listed is a CONFLICT.
+//
+//   discovered ─analyzed→ awaiting_approval ─approve→ approved ─claim→ submitting ─finish→ sent
+//       │  ↺ start, fail        │  ↺ revise, delivered,     │                 │                   failed
+//       │                       │     deliveryFailed        │                 │                   unknown_outcome
+//       ├─analyzed(dismiss)→ dismissed ←─dismiss───────────┤                 │
+//       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
+//
+// Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them.
+// `submitting` is the only in-flight state: it is durable before the remote submit, and a restart
+// finishes it as unknown_outcome, so an application is never sent twice.
+
+// ponytail: fixed cap; a long non-systemic failure streak can exhaust it. Raise if listings get lost.
+export const MAX_ANALYSIS_ATTEMPTS = 5;
+export const OUTCOMES = ['sent', 'failed', 'unknown_outcome'];
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, canonical(value[key])]));
+  return value;
+}
+export function hash(value) {
+  return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(canonical(value))).digest('hex');
+}
+export function bindingFor(config) {
+  return hash({ browserProfile: resolve(config.browserProfile), accountEmail: config.accountEmail.toLowerCase().trim() });
+}
+export function configHashFor(config) {
+  const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, browser } = config;
+  // Secrets and notification destinations do not authorize or change a message.
+  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, browser });
+}
+
+export function conflict(message) {
+  const error = new Error(message);
+  error.code = 'CONFLICT';
+  throw error;
+}
+
+export function newReview({ id, snapshot, now }) {
+  const exposeId = String(snapshot.expose_id ?? '');
+  if (!/^\d+$/.test(exposeId)) throw new Error('Invalid expose ID');
+  return { id, exposeId, status: 'discovered', snapshot: structuredClone(snapshot), version: 1, draft: '', draftHash: null, reasons: [], analysisAttempts: 0, accountBinding: null, configHash: null, createdAt: now, notifiedAt: null };
+}
+
+// Draft, listing and account/config are exactly what the user saw when approving.
+function intact(review, bindings) {
+  return review.draftHash === hash(review.draft) && review.snapshotHash === hash(review.snapshot) && String(review.snapshot.expose_id) === review.exposeId
+    && review.accountBinding === bindings.accountBinding && review.configHash === bindings.configHash;
+}
+// The last check before the browser's submit click: the claimed review is still active and unchanged.
+export function authorizes(current, claimed, bindings) {
+  return Boolean(current && current.status === 'submitting' && current.version === claimed.version && current.draftHash === claimed.draftHash
+    && current.snapshotHash === claimed.snapshotHash && intact(current, bindings));
+}
+
+function sameVersion(review, version) {
+  if (review.version !== version) conflict('Review was already handled or changed');
+}
+function giveUpOr(review, detail) {
+  return review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS
+    ? { ...review, status: 'analysis_failed', detail: `Gave up after ${review.analysisAttempts} attempts: ${detail}` }
+    : { ...review, detail };
+}
+
+const dismiss = (review, { version }) => {
+  sameVersion(review, version);
+  return { ...review, status: 'dismissed', detail: 'Dismissed by user' };
+};
+
+const MACHINE = {
+  discovered: {
+    // Counted before the work, so a crash mid-analysis still uses up the attempt.
+    start: review => review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS
+      ? giveUpOr(review, review.detail || 'Analysis interrupted')
+      : { ...review, analysisAttempts: review.analysisAttempts + 1, detail: undefined },
+    // systemic: shutdown or an outage, not the listing's fault, so the attempt is refunded.
+    fail: (review, { detail, systemic }) => giveUpOr({ ...review, analysisAttempts: review.analysisAttempts - (systemic ? 1 : 0) }, detail),
+    analyzed: (review, { snapshot, result, bindings }) => {
+      if (String(snapshot.expose_id) !== review.exposeId) conflict('Listing identity changed');
+      if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string' || (result.decision === 'message' && !result.draft.trim())) throw new Error('Invalid analysis result');
+      return { ...review, status: result.decision === 'message' ? 'awaiting_approval' : 'dismissed', snapshot: structuredClone(snapshot), snapshotHash: hash(snapshot),
+        reasons: result.reasons, draft: result.draft, draftHash: hash(result.draft), accountBinding: bindings.accountBinding, configHash: bindings.configHash };
+    },
+  },
+  awaiting_approval: {
+    delivered: (review, { version }, now) => { sameVersion(review, version); return { ...review, notifiedAt: now, notificationError: undefined }; },
+    deliveryFailed: (review, { version, detail }) => { sameVersion(review, version); return { ...review, notificationError: detail }; },
+    // A new version invalidates every Telegram button signed for the previous draft, and is delivered again.
+    revise: (review, { version, draft, reasons }) => {
+      sameVersion(review, version);
+      if (typeof draft !== 'string' || !draft.trim()) throw new Error('Invalid revised draft');
+      return { ...review, version: version + 1, draft, draftHash: hash(draft), reasons, notifiedAt: null, notificationError: undefined };
+    },
+    approve: (review, { version, draftHash, bindings }, now) => {
+      if (review.version !== version || review.draftHash !== draftHash || !intact(review, bindings)) conflict('Review is stale or has changed');
+      return { ...review, status: 'approved', approvedAt: now };
+    },
+    dismiss,
+  },
+  approved: {
+    claim: (review, { bindings }, now) => intact(review, bindings)
+      ? { ...review, status: 'submitting', claimedAt: now }
+      : { ...review, status: 'failed', detail: 'Approval binding changed', finishedAt: now },
+    dismiss,
+  },
+  submitting: {
+    finish: (review, { outcome, detail = '' }, now) => {
+      if (!OUTCOMES.includes(outcome)) throw new Error('Invalid submission outcome');
+      return { ...review, status: outcome, detail, finishedAt: now };
+    },
+  },
+};
+// Pure: returns the next review or throws. Persisting it is the store's job.
+export function transition(review, event, now) {
+  const handler = MACHINE[review.status]?.[event.type];
+  if (!handler) conflict(`Cannot ${event.type} a ${review.status} review`);
+  return handler(review, event, now);
+}

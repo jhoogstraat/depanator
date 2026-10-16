@@ -39,14 +39,14 @@ function setup(directory, options = {}) {
     close: async () => {},
     ...options.adapter,
   };
-  let workflow;
-  const telegram = new Telegram({ config, store, bindings: () => workflow.bindings(), onApproved: () => workflow.sendApproved(), fetchImpl: async (url, request) => {
+  let telegram;
+  const workflow = new Workflow({ store, adapter, evaluate, notify: review => telegram.notify(review), config });
+  telegram = new Telegram({ config, store, workflow, fetchImpl: async (url, request) => {
     const method = url.split('/').at(-1);
     const body = JSON.parse(request.body);
     calls.telegram.push({ method, body });
     return { ok: true, json: async () => ({ ok: true, result: { message_id: calls.telegram.length } }) };
   } });
-  workflow = new Workflow({ store, adapter, evaluate, notify: review => telegram.notify(review), config });
   return { config, calls, store, workflow, telegram, snapshots };
 }
 
@@ -84,7 +84,7 @@ test('all real modules: scrape/enrich/evaluate/notify/signed approval/send once 
   await f.workflow.tick();
   assert.equal(f.calls.sends.length, 1);
   assert.equal(f.calls.llm.length, 2);
-  assert.equal(f.store.attempts(review.id).length, 1);
+  assert.equal(f.store.get(review.id).status, 'sent');
 });
 
 test('persisted uncertain submission survives restart; old Telegram actions cannot requeue', async t => {
@@ -94,8 +94,8 @@ test('persisted uncertain submission survives restart; old Telegram actions cann
   await f.workflow.poll();
   const review = f.store.list().find(item => item.exposeId === '111');
   const signed = f.telegram.callback(review, 'a');
-  f.store.approve(review.id, { version: review.version, draftHash: review.draftHash, ...f.workflow.bindings() });
-  assert.ok(f.store.claimSend(review.id, f.workflow.bindings()));
+  f.store.dispatch(review.id, { type: 'approve', version: review.version, draftHash: review.draftHash, bindings: f.workflow.bindings() });
+  assert.equal(f.store.dispatch(review.id, { type: 'claim', bindings: f.workflow.bindings() }).status, 'submitting');
   // Simulate a process exit after the durable claim, when the remote result is unknowable.
   await f.telegram.close();
   await f.workflow.close();
@@ -106,5 +106,5 @@ test('persisted uncertain submission survives restart; old Telegram actions cann
   await f.workflow.queue;
   assert.equal(f.calls.sends.length, 0);
   assert.equal(f.calls.llm.length, 0);
-  assert.equal(f.store.attempts(review.id).length, 1);
+  assert.equal(f.store.get(review.id).status, 'unknown_outcome');
 });

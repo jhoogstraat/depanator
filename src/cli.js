@@ -89,12 +89,12 @@ export async function main(args = process.argv.slice(2)) {
       onEvent(event) {
         if (event.type === 'submission') {
           console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
-          if (!closing) telegram.notifyOutcome(event.review).catch(error => { console.error(error.message); workflow.status.telegramError = error.message; });
+          if (!closing) telegram.notifyOutcome(event.review).catch(error => console.error(error.message));
         }
         if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
       },
     });
-    telegram = new Telegram({ config, store, bindings: () => workflow.bindings(), onApproved: () => workflow.sendApproved(), onRevise: (id, version, text) => workflow.revise(id, version, text), onError: message => { workflow.status.telegramError = message; console.error(message); } });
+    telegram = new Telegram({ config, store, workflow, onError: message => console.error(message) });
     console.log('Agent running. Reviews and approvals arrive in your private Telegram chat. Keep this terminal open.');
     const shutdown = () => { close().then(() => process.exit(process.exitCode || 0), error => { console.error(error.message); process.exit(1); }); };
     process.once('SIGINT', shutdown);
@@ -102,8 +102,8 @@ export async function main(args = process.argv.slice(2)) {
     telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
     const tick = () => workflow.tick().then(result => {
       if (closing) return;
-      console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : `Poll complete. ${store.count()} listings tracked.`);
-      if (workflow.status.warning) console.error(workflow.status.warning);
+      console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : `Poll complete. ${result.tracked} listings tracked.`);
+      if (result?.warning) console.error(result.warning);
     }).catch(error => { console.error(`Agent: ${error.message}`); });
     interval = setInterval(tick, config.pollIntervalMs);
     tick();
