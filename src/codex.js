@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync, chmodSync, mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SCHEMA, INSTRUCTIONS } from './llm.js';
+import { SCHEMA, INSTRUCTIONS, reviewInput, unavailable } from './llm.js';
 
 const require = createRequire(import.meta.url);
 export function codexExecutable() {
@@ -15,7 +15,7 @@ export function codexExecutable() {
 export function codexEnvironment(config, home) {
   mkdirSync(config.llm.codexHome, { recursive: true, mode: 0o700 });
   chmodSync(config.llm.codexHome, 0o700);
-  // No API keys, Telegram credentials, browser settings, or inherited MCP env.
+  // No Telegram credentials, browser settings, or inherited MCP env.
   return { PATH: process.env.PATH, HOME: home, CODEX_HOME: config.llm.codexHome, TERM: 'dumb' };
 }
 
@@ -52,7 +52,7 @@ export function codexArguments(config, directory) {
     ...disabled.flatMap(feature => ['--disable', feature]), '-'];
 }
 
-export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal } = {}) {
+export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal, revision } = {}) {
   signal?.throwIfAborted();
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-'));
   try {
@@ -61,14 +61,14 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
     const complete = new Promise((resolve, reject) => {
       const abort = () => { child.kill('SIGKILL'); };
       signal?.addEventListener('abort', abort, { once: true });
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Codex review timed out; nothing was sent')); }, 120000);
+      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(unavailable('Codex review timed out; nothing was sent')); }, 120000);
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); };
-      child.once('error', () => { cleanup(); reject(new Error('Cannot start bundled Codex CLI')); });
-      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(new Error('Codex review failed or cancelled; check subscription login with llm-login (no API fallback)')); });
+      child.once('error', () => { cleanup(); reject(unavailable('Cannot start bundled Codex CLI')); });
+      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('ChatGPT review failed; if this repeats, send /login in Telegram to reconnect your subscription')); });
       if (signal?.aborted) abort();
     });
     child.stdin.on('error', () => {});
-    child.stdin.end(JSON.stringify({ preferences: config.preferences, verifiedPersona: config.persona, listing: snapshot }));
+    child.stdin.end(reviewInput(config, snapshot, revision));
     await complete;
     const filename = join(directory, 'result.json');
     if (statSync(filename).size > 65000) throw new Error('Codex output exceeded the review limit');
@@ -77,14 +77,27 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
-export async function loginWithCodex(config) {
-  if (config.llm.backend !== 'codex') throw new Error('Set llm.backend to codex before subscription login');
+const LOGIN_FLAGS = ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login'];
+function runCodex(config, args, { spawnImpl = spawn, onOutput = () => {} } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-login-'));
-  try {
-    const child = spawn(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login', '--device-auth'], { cwd: directory, env: codexEnvironment(config, directory), stdio: 'inherit' });
-    await new Promise((resolve, reject) => {
-      child.once('error', () => reject(new Error('Cannot start bundled Codex CLI')));
-      child.once('close', code => code === 0 ? resolve() : reject(new Error('Codex subscription login failed')));
-    });
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const child = spawnImpl(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  const collect = chunk => { output += String(chunk).replace(/\x1b\[[0-9;]*m/g, ''); onOutput(output); };
+  child.stdout?.on('data', collect);
+  child.stderr?.on('data', collect);
+  return new Promise(resolve => {
+    child.once('error', () => resolve(false));
+    child.once('close', code => resolve(code === 0));
+  }).finally(() => rmSync(directory, { recursive: true, force: true }));
+}
+export function codexLoggedIn(config, options) { return runCodex(config, ['status'], options); }
+// Device-code login for the ChatGPT subscription: onCode({ url, code }) is called once both are printed.
+export async function loginWithCodex(config, { onCode, ...options } = {}) {
+  let reported = false;
+  const ok = await runCodex(config, ['--device-auth'], { ...options, onOutput(output) {
+    const url = /https:\/\/\S+/.exec(output)?.[0];
+    const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(output)?.[0];
+    if (!reported && url && code) { reported = true; onCode({ url, code }); }
+  } });
+  if (!ok) throw new Error('ChatGPT login did not complete (the code expires after 15 minutes)');
 }

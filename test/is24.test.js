@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { IS24Adapter, listingUrl, readAccount, extractDetails, verifyForm } from '../src/is24.js';
-import { validateSearchUrl } from '../src/url-translator.js';
+import { validateSearchUrl, buildMobileApiUrl } from '../src/url-translator.js';
 import { IS24Contactor } from '../src/is24-contactor.js';
 const searchUrl='https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten';
 const config={searchUrl,maxPages:3,browserProfile:'/tmp/test-is24-profile',accountEmail:'me@example.com',persona:{vorname:'Me',nachname:'Example',email:'me@example.com'}};
 const snapshot={expose_id:'123',title:'Home',price:900,area:60,rooms:2,address:'Berlin',image_url:'',url:listingUrl('123'),description:'Full listing description',amenities:['Balcony: yes']};
 function network(pages) {
   let calls=0;
-  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1]})};},count:()=>calls};
+  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1],numberOfPages:pages.length})};},count:()=>calls};
 }
-const item=id=>({id,title:'Home',attributes:[],address:{line:'Berlin'}});
+const item=id=>({id,title:'Home',published:'vor 2 Stunden',paywallListing:{active:true},attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
 test('container browser path and sandbox flags apply to automated and manual launch',async()=>{
   const serverConfig={...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}};
   let automated, manual;
@@ -30,20 +30,29 @@ test('container browser path and sandbox flags apply to automated and manual lau
   assert.deepEqual(new IS24Adapter(config).browserArgs(),[],'local browser keeps its sandbox by default');
 });
 test('strict translation rejects every known widening route',()=>{
-  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`,{strict:true}).ok,false,query);
-  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url,{strict:true}).ok,false,url);
-  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony&utm_source=test`,{strict:true});
+  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false','pets-allowed=true','energy-efficiency=A','apartmenttypes=bogus']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`).ok,false,query);
+  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('wohnung-mieten','haus-kaufen'),searchUrl.replace('wohnung-mieten','wohnung-mieten-tausch'),searchUrl.replace(/wohnung-mieten.*$/,'wohnung-bis-1000-euro-warm?price=-1500'),searchUrl.replace(/wohnung-mieten.*$/,'penthouse-mieten?apartmenttypes=loft'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url).ok,false,url);
+  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony,elevator&onlywithkitchen=true&utm_source=test`);
   assert.equal(valid.ok,true);
-  assert.equal(new URL(valid.mobileUrl).searchParams.get('price'),'-1000');
-  assert.equal(new URL(valid.mobileUrl).searchParams.has('exclusioncriteria'),false);
+  assert.equal(buildMobileApiUrl(valid.canonical,{page:2}),'https://api.mobile.immobilienscout24.de/search/list?geocodes=%2Fde%2Fberlin%2Fberlin&searchType=region&realestatetype=apartmentrent&pricetype=calculatedtotalrent&price=-1000&equipment=balcony%2Clift%2CbuiltinKitchen&sorting=-firstactivation&pagenumber=2&pagesize=20');
 });
 test('pagination never stops on duplicates and exposes capped coverage',async()=>{
   const full=Array.from({length:20},(_,i)=>item(i+1));
   const fixture=network([full,full,[item(99)]]);
   const result=await new IS24Adapter(config,fixture).search();
   assert.equal(fixture.count(),3); assert.equal(result.complete,true); assert.equal(result.listings.length,21);
-  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full])).search();
+  assert.deepEqual([result.listings[0].price,result.listings[0].area,result.listings[0].rooms],[1234,54,2.5],'live unlabeled attribute format');
+  assert.deepEqual([result.listings[0].published,result.listings[0].earlyAccess],['vor 2 Stunden',true]);
+  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
+  // Newest first: a routine poll stops once a page ends with an already known listing...
+  const routine=network([full,full,[item(99)]]);
+  const known=await new IS24Adapter(config,routine).search({known:id=>id==='20'});
+  assert.equal(routine.count(),1); assert.deepEqual([known.complete,known.caughtUp,known.listings.length],[true,true,20]);
+  // ...but a known listing promoted to the top of page 1 does not hide the new ones below.
+  const promoted=network([full,full,[item(99)]]);
+  assert.equal((await new IS24Adapter(config,promoted).search({known:id=>id==='1'})).listings.length,21);
+  assert.equal(result.caughtUp,false,'a first check has not caught up');
 });
 test('malformed/block search fails rather than reporting empty coverage',async()=>{
   const adapter=new IS24Adapter(config,{fetch:async()=>({ok:true,status:200,headers:{get:()=> 'text/html'}})});
@@ -54,7 +63,7 @@ test('malformed/block search fails rather than reporting empty coverage',async()
 function fixture({account=config.accountEmail,detail={},success=true,throwAfterClick=false,revoke=false}={}) {
   let clicks=0;
   const page={goto:async()=>({ok:()=>true}),url:()=>snapshot.url,evaluate:async(fn)=>fn===readAccount ? account : fn===extractDetails ? {...snapshot,...detail} : true};
-  const contactor={apply:async(id,draft,key,tabs,options)=>{await options.beforeSubmit(page); options.onSubmitAttempt(); clicks++; if(throwAfterClick) throw new Error('transport lost'); return {success,detail:'confirmation'};}};
+  const contactor={apply:async(id,draft,options)=>{await options.beforeSubmit(page); options.onSubmitAttempt(); clicks++; if(throwAfterClick) throw new Error('transport lost'); return {success,detail:'confirmation'};}};
   const adapter=new IS24Adapter(config,{launch:async()=>({newPage:async()=>page,close:async()=>{}}),contactor});
   return {adapter,clicks:()=>clicks,beforeSubmit:async()=>!revoke};
 }
@@ -87,12 +96,21 @@ test('browser tasks serialize to preserve page and account context',async()=>{
 test('contactor has one submit call and captcha cannot trigger resubmit',async()=>{
   const source=await readFile(new URL('../src/is24-contactor.js',import.meta.url),'utf8');
   assert.equal((source.match(/await this\._clickAbschicken\(/g)||[]).length,1);
-  const contactor=new IS24Contactor(null,{});
+  const contactor=new IS24Contactor();
   let commands=0; let marks=0;
   contactor.page={evaluate:async()=>{commands++;return true;}};
   await contactor._clickAbschicken(()=>marks++);
   assert.equal(commands,1);assert.equal(marks,1);
-  assert.equal(await contactor._solveCaptcha(),false);
+});
+test('contactor failure screenshots stay private and pruned to 20',async()=>{
+  const {mkdtemp,writeFile,readdir,stat}=await import('node:fs/promises');
+  const dir=(await mkdtemp('/tmp/contactor-shots-'))+'/screenshots';
+  const contactor=new IS24Contactor({screenshotDir:dir,page:{screenshot:async({path})=>writeFile(path,'x')}});
+  for(let i=0;i<25;i++) await contactor._screenshot(`shot${i}`);
+  assert.equal((await readdir(dir)).length,20);
+  assert.equal((await stat(dir)).mode&0o777,0o700);
+  contactor.page={screenshot:async()=>{throw new Error('boom');}};
+  await contactor._screenshot('fails');
 });
 test('account proof excludes listing/contact email and ambiguous account indicators',()=>{
   const oldDocument=globalThis.document;
@@ -138,4 +156,26 @@ test('final form verification binds exact message and identity, rejects site def
     values['select[name="income"]']={value:'High income'};
     await assert.rejects(verifyForm(page,'Approved draft',config.persona),/Exact approved/);
   } finally {globalThis.document=oldDocument;}
+});
+
+test('authentication waits for manual login, verifies identity again, and propagates site failure', async () => {
+  const adapter = new IS24Adapter({ searchUrl, maxPages: 5, accountEmail: 'me@example.com' });
+  let authenticated = false, prompts = 0, logins = 0;
+  const page = { goto: async () => ({ ok: () => true }), url: () => 'https://www.immobilienscout24.de/', evaluate: async () => authenticated ? 'me@example.com' : null };
+  adapter.ensureBrowser = async () => page;
+  adapter.login = async () => { logins++; authenticated = true; };
+  await adapter.authenticate(async () => { prompts++; });
+  assert.equal(prompts, 1); assert.equal(logins, 1);
+  await adapter.authenticate(async () => { throw new Error('Unexpected prompt'); });
+  page.goto = async () => { throw new Error('offline'); };
+  await assert.rejects(adapter.authenticate(async () => { prompts++; }), /offline/);
+  assert.equal(prompts, 1);
+});
+
+test('manual login cancellation cannot spawn a browser after shutdown', async () => {
+  let spawned = false;
+  const adapter = new IS24Adapter({ searchUrl, maxPages: 5 }, { spawn: () => { spawned = true; } });
+  adapter.browser = { close: async () => { adapter.cancelLogin(); } };
+  await assert.rejects(adapter.login(), /cancelled/);
+  assert.equal(spawned, false);
 });

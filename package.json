@@ -11,13 +11,10 @@
   "packageManager": "bun@1.4.3",
   "scripts": {
     "browser:install": "bun node_modules/puppeteer/install.mjs",
-    "init": "bun src/cli.js init",
     "start": "bun src/cli.js start",
-    "login": "bun src/cli.js login",
     "status": "bun src/cli.js status",
     "test": "bun test test/*.test.js",
-    "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check",
-    "llm-login": "bun src/cli.js llm-login"
+    "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check"
   },
   "dependencies": {
     "@openai/codex": "0.162.1",
