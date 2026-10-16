@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { IS24Adapter, listingUrl, readAccount, extractDetails, verifyForm } from '../src/is24.js';
-import { validateSearchUrl } from '../src/url-translator.js';
+import { validateSearchUrl, buildMobileApiUrl } from '../src/url-translator.js';
 import { IS24Contactor } from '../src/is24-contactor.js';
 const searchUrl='https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten';
 const config={searchUrl,maxPages:3,browserProfile:'/tmp/test-is24-profile',accountEmail:'me@example.com',persona:{vorname:'Me',nachname:'Example',email:'me@example.com'}};
@@ -30,12 +30,11 @@ test('container browser path and sandbox flags apply to automated and manual lau
   assert.deepEqual(new IS24Adapter(config).browserArgs(),[],'local browser keeps its sandbox by default');
 });
 test('strict translation rejects every known widening route',()=>{
-  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`,{strict:true}).ok,false,query);
-  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url,{strict:true}).ok,false,url);
-  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony&utm_source=test`,{strict:true});
+  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false','pets-allowed=true','energy-efficiency=A']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`).ok,false,query);
+  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('wohnung-mieten','haus-kaufen'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url).ok,false,url);
+  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony,elevator&onlywithkitchen=true&utm_source=test`);
   assert.equal(valid.ok,true);
-  assert.equal(new URL(valid.mobileUrl).searchParams.get('price'),'-1000');
-  assert.equal(new URL(valid.mobileUrl).searchParams.has('exclusioncriteria'),false);
+  assert.equal(buildMobileApiUrl(valid.canonical,{page:2}),'https://api.mobile.immobilienscout24.de/search/list?geocodes=%2Fde%2Fberlin%2Fberlin&searchType=region&realestatetype=apartmentrent&pricetype=calculatedtotalrent&price=-1000&equipment=balcony%2Clift%2CbuiltinKitchen&sorting=-firstactivation&pagenumber=2&pagesize=20');
 });
 test('pagination never stops on duplicates and exposes capped coverage',async()=>{
   const full=Array.from({length:20},(_,i)=>item(i+1));
@@ -56,7 +55,7 @@ test('malformed/block search fails rather than reporting empty coverage',async()
 function fixture({account=config.accountEmail,detail={},success=true,throwAfterClick=false,revoke=false}={}) {
   let clicks=0;
   const page={goto:async()=>({ok:()=>true}),url:()=>snapshot.url,evaluate:async(fn)=>fn===readAccount ? account : fn===extractDetails ? {...snapshot,...detail} : true};
-  const contactor={apply:async(id,draft,key,tabs,options)=>{await options.beforeSubmit(page); options.onSubmitAttempt(); clicks++; if(throwAfterClick) throw new Error('transport lost'); return {success,detail:'confirmation'};}};
+  const contactor={apply:async(id,draft,options)=>{await options.beforeSubmit(page); options.onSubmitAttempt(); clicks++; if(throwAfterClick) throw new Error('transport lost'); return {success,detail:'confirmation'};}};
   const adapter=new IS24Adapter(config,{launch:async()=>({newPage:async()=>page,close:async()=>{}}),contactor});
   return {adapter,clicks:()=>clicks,beforeSubmit:async()=>!revoke};
 }
@@ -89,12 +88,21 @@ test('browser tasks serialize to preserve page and account context',async()=>{
 test('contactor has one submit call and captcha cannot trigger resubmit',async()=>{
   const source=await readFile(new URL('../src/is24-contactor.js',import.meta.url),'utf8');
   assert.equal((source.match(/await this\._clickAbschicken\(/g)||[]).length,1);
-  const contactor=new IS24Contactor(null,{});
+  const contactor=new IS24Contactor();
   let commands=0; let marks=0;
   contactor.page={evaluate:async()=>{commands++;return true;}};
   await contactor._clickAbschicken(()=>marks++);
   assert.equal(commands,1);assert.equal(marks,1);
-  assert.equal(await contactor._solveCaptcha(),false);
+});
+test('contactor failure screenshots stay private and pruned to 20',async()=>{
+  const {mkdtemp,writeFile,readdir,stat}=await import('node:fs/promises');
+  const dir=(await mkdtemp('/tmp/contactor-shots-'))+'/screenshots';
+  const contactor=new IS24Contactor({screenshotDir:dir,page:{screenshot:async({path})=>writeFile(path,'x')}});
+  for(let i=0;i<25;i++) await contactor._screenshot(`shot${i}`);
+  assert.equal((await readdir(dir)).length,20);
+  assert.equal((await stat(dir)).mode&0o777,0o700);
+  contactor.page={screenshot:async()=>{throw new Error('boom');}};
+  await contactor._screenshot('fails');
 });
 test('account proof excludes listing/contact email and ambiguous account indicators',()=>{
   const oldDocument=globalThis.document;

@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import puppeteer from 'puppeteer';
@@ -122,10 +122,9 @@ export class IS24Adapter {
     this.fetch = deps.fetch || globalThis.fetch;
     this.queue = Promise.resolve();
     this.browser = null;
-    this.validation = validateSearchUrl(config.searchUrl, {strict:true});
+    this.validation = validateSearchUrl(config.searchUrl);
     if (!this.validation.ok) throw new Error(this.validation.error);
     if (!['calculatedtotalrent','rentpermonth'].includes(this.validation.canonical.price.type)) throw new Error('Unsupported rent price type');
-    if (this.validation.canonical.realEstateType !== 'apartmentrent') throw new Error('Only apartment rental searches are supported');
     if (!Number.isInteger(config.maxPages) || config.maxPages < 1 || config.maxPages > 100) throw new Error('Invalid maxPages');
   }
   serial(fn) {
@@ -230,10 +229,8 @@ export class IS24Adapter {
         const fresh = await this.readDetails(review.snapshot,page);
         if (digest(fresh) !== digest(review.snapshot)) throw new Error('Listing changed since approval');
         await this.assertAccount(page);
-        const contactor = this.deps.contactor || new IS24Contactor(null,this.config.persona);
-        contactor.browser = this.browser;
-        contactor.page = page;
-        const result = await contactor.apply(review.exposeId || review.snapshot.expose_id,review.draft,null,1,{
+        const contactor = this.deps.contactor || new IS24Contactor({page,persona:this.config.persona,screenshotDir:join(this.config.dataDir,'screenshots')});
+        const result = await contactor.apply(review.exposeId || review.snapshot.expose_id,review.draft,{
           beforeSubmit: async current => {
             const currentUrl = new URL(current.url());
             if (currentUrl.origin !== ORIGIN || currentUrl.pathname !== new URL(listingUrl(review.snapshot.expose_id)).pathname) throw new Error('Unexpected contact page destination');
