@@ -11,9 +11,11 @@ case "$agent_data_dir" in
 esac
 case "$mode" in
   setup) shift; exec bun /app/src/setup.js "$@" ;;
+  # Container healthcheck for `start`: the agent renews this deadline after every poll.
+  health) [ "$(cat "$agent_data_dir/heartbeat" 2>/dev/null || echo 0)" -gt "$(date +%s)" ]; exit $? ;;
   status|llm-login) exec bun /app/src/cli.js "$mode" --config "$config_file" ;;
   start|login) ;;
-  *) echo 'Use setup, start, login, llm-login, or status' >&2; exit 64 ;;
+  *) echo 'Use setup, start, login, llm-login, status, or health' >&2; exit 64 ;;
 esac
 
 VNC_PASSWORD=$(bun -e 'import { readSecret } from "/app/src/config.js"; process.stdout.write(readSecret(process.env, "VNC_PASSWORD"));')
@@ -29,6 +31,9 @@ mkdir -p "$agent_data_dir" "$HOME"
 exec 9>"$agent_data_dir/container.lock"
 flock -n 9 || { echo 'Another agent/login container is using this data volume' >&2; exit 75; }
 rm -f "$agent_data_dir/agent.lock"
+# A hard stop leaves Chromium's profile lock naming the old container's hostname, which would make
+# every later launch refuse the profile. The flock above proves no browser is using it now.
+rm -f "${DEPANATOR_BROWSER_PROFILE:-$agent_data_dir/browser}"/Singleton*
 
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
 ready=0

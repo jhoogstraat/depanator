@@ -10,10 +10,12 @@ const MIGRATIONS = [
   // Every poll selects by status.
   'CREATE INDEX IF NOT EXISTS reviews_status ON reviews(status);',
   // Retired states: analysis in progress is now a counted attempt on `discovered`, and approvals no
-  // longer expire. The attempts table duplicated each review's own submission status.
+  // longer expire. The attempts table duplicated each review's own submission status. Earlier
+  // outcomes were reported live, so they count as reported.
   `UPDATE reviews SET status='discovered', body=json_set(body, '$.status', 'discovered') WHERE status='analyzing';
    UPDATE reviews SET status='dismissed', body=json_set(body, '$.status', 'dismissed', '$.detail', 'Approval expired') WHERE status='expired';
    UPDATE reviews SET body=json_set(body, '$.analysisAttempts', 0) WHERE json_extract(body, '$.analysisAttempts') IS NULL;
+   UPDATE reviews SET body=json_set(body, '$.reportedAt', COALESCE(json_extract(body, '$.finishedAt'), 0)) WHERE status IN ('sent', 'failed', 'unknown_outcome');
    DROP TABLE attempts;`,
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;

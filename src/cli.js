@@ -1,4 +1,4 @@
-import { copyFileSync, constants } from 'node:fs';
+import { copyFileSync, constants, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -65,6 +65,9 @@ export async function main(args = process.argv.slice(2)) {
     });
     return closePromise;
   };
+  const shutdown = () => { close().then(() => process.exit(process.exitCode || 0), error => { console.error(error.message); process.exit(1); }); };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
   try {
     adapter = new IS24Adapter(config);
     if (command === 'login') {
@@ -77,6 +80,7 @@ export async function main(args = process.argv.slice(2)) {
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
       notify: review => telegram.notify(review),
+      report: review => telegram.notifyOutcome(review),
       alert: text => { console.error(text); return telegram.send(text); },
       beforeWork: async () => {
         if (!config.autoLogin) return;
@@ -87,24 +91,22 @@ export async function main(args = process.argv.slice(2)) {
         });
       },
       onEvent(event) {
-        if (event.type === 'submission') {
-          console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
-          if (!closing) telegram.notifyOutcome(event.review).catch(error => console.error(error.message));
-        }
+        if (event.type === 'submission') console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
         if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
       },
     });
     telegram = new Telegram({ config, store, workflow, onError: message => console.error(message) });
+    await telegram.verify();
     console.log('Agent running. Reviews and approvals arrive in your private Telegram chat. Keep this terminal open.');
-    const shutdown = () => { close().then(() => process.exit(process.exitCode || 0), error => { console.error(error.message); process.exit(1); }); };
-    process.once('SIGINT', shutdown);
-    process.once('SIGTERM', shutdown);
+    // Liveness: "healthy until" (epoch seconds), renewed by every finished tick. A stalled tick lets it lapse.
+    const heartbeat = () => writeFileSync(join(config.dataDir, 'heartbeat'), String(Math.ceil((Date.now() + 2 * config.pollIntervalMs + 600_000) / 1000)));
+    heartbeat();
     telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
     const tick = () => workflow.tick().then(result => {
       if (closing) return;
       console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : `Poll complete. ${result.tracked} listings tracked.`);
       if (result?.warning) console.error(result.warning);
-    }).catch(error => { console.error(`Agent: ${error.message}`); });
+    }).catch(error => { console.error(`Agent: ${error.message}`); }).finally(() => { if (!closing) heartbeat(); });
     interval = setInterval(tick, config.pollIntervalMs);
     tick();
     // Resume persisted approvals independently of a temporary search outage.

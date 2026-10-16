@@ -12,8 +12,10 @@
     "plz": "",
     "ort": "",
     "einzug": "",
+    "einzug_datum": "",
     "personen": "",
     "haustiere": "",
+    "haustiere_zusatz": "",
     "beschaeftigung": "",
     "einkommen": "",
     "unterlagen": ""
@@ -23,6 +25,5 @@
   "notification": { "chatId": "" },
   "maxPages": 5,
   "pollIntervalMs": 600000,
-  "port": 8787,
   "dataDir": ".depanator"
 }

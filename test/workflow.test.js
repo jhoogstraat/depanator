@@ -241,8 +241,35 @@ test('agent revises a draft on request; the old approval is invalidated', async 
   assert.equal(revised.version, 2);
   assert.equal(revised.notifiedAt, 100);
   assert.equal(f.calls.notify, 2);
-  assert.throws(() => f.workflow.approve(original.id, 1, original.draftHash), /stale/);
+  assert.throws(() => f.workflow.approve(original.id, 1, original.draftHash), /newer draft/);
   await assert.rejects(f.workflow.revise(original.id, 1, 'again'), /already handled/);
   f.store.dispatch(original.id, { type: 'approve', version: 2, draftHash: revised.draftHash, bindings: f.workflow.bindings() });
+  await f.workflow.close();
+});
+
+test('send outcomes are reported until delivered, including after a failed report', async () => {
+  const reported = [];
+  let failReport = true;
+  const f = fixture({ workflow: { report: async review => { if (failReport) { failReport = false; throw new Error('Telegram down'); } reported.push(review.status); } } });
+  await f.workflow.poll();
+  const review = approve(f);
+  await f.workflow.sendApproved();
+  assert.equal(f.store.get(review.id).reportedAt, null);
+  await f.workflow.tick();
+  assert.deepEqual(reported, ['sent']);
+  assert.equal(f.store.get(review.id).reportedAt, 100);
+  await f.workflow.tick();
+  assert.deepEqual(reported, ['sent'], 'reported once');
+  await f.workflow.close();
+});
+
+test('a settings change strands no draft: approving explains, editing renews it', async () => {
+  const f = fixture({ workflow: { evaluate: async (_snapshot, { revision } = {}) => ({ decision: 'message', reasons: ['Fits'], draft: revision ? 'Renewed draft.' : 'Hello, I would like to view this apartment.' }) } });
+  await f.workflow.poll();
+  const review = f.store.list()[0];
+  f.config.persona = { name: 'Changed' };
+  assert.throws(() => f.workflow.approve(review.id, 1, review.draftHash), /Settings changed/);
+  const renewed = await f.workflow.revise(review.id, 1, 'same, please');
+  assert.equal(f.store.dispatch(review.id, { type: 'approve', version: 2, draftHash: renewed.draftHash, bindings: f.workflow.bindings() }).status, 'approved');
   await f.workflow.close();
 });

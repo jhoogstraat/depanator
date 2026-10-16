@@ -42,7 +42,7 @@ export class Telegram {
     // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Edit again is enough.
     this.editPrompts = new Map();
   }
-  async api(method, body, signal = AbortSignal.timeout(30_000)) {
+  async api(method, body, signal = AbortSignal.timeout(30_000), retried = false) {
     // Never include the token-bearing URL or response body in errors/logs.
     let response;
     try {
@@ -50,6 +50,12 @@ export class Telegram {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
       });
     } catch { throw new Error(`Telegram ${method} network request failed`); }
+    // Bursts (the first poll can deliver dozens of reviews) hit Telegram's rate limit: wait as told, once.
+    if (response.status === 429 && !retried) {
+      const wait = Math.min(Number((await response.json().catch(() => ({}))).parameters?.retry_after) || 5, 60);
+      await new Promise(resolve => setTimeout(resolve, wait * 1000));
+      return this.api(method, body, AbortSignal.timeout(30_000), true);
+    }
     if (!response.ok) throw new Error(`Telegram ${method} failed (HTTP ${response.status})`);
     const result = await response.json();
     if (!result.ok) throw new Error(`Telegram ${method} was rejected`);
@@ -152,16 +158,19 @@ export class Telegram {
     const query = update.callback_query;
     if (!query) return;
     let answer = 'This approval is invalid.';
+    let accepted = false;
     if (query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId) {
       const match = /^([ade]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
       if (match) {
         const [, action, rawId, version, supplied] = match;
         const id = `${rawId.slice(0, 8)}-${rawId.slice(8, 12)}-${rawId.slice(12, 16)}-${rawId.slice(16, 20)}-${rawId.slice(20)}`;
         const review = this.store.get(id);
-        if (review && review.version === Number(version) && timingSafeEqual(Buffer.from(supplied), Buffer.from(this.signature(review, action)))) {
+        if (review && review.version !== Number(version)) answer = 'A newer draft replaced this one.';
+        else if (review && timingSafeEqual(Buffer.from(supplied), Buffer.from(this.signature(review, action)))) {
           try {
             if (action === 'a') {
               this.workflow.approve(id, review.version, review.draftHash);
+              accepted = true;
               answer = 'Approved. The agent will verify and send this exact draft.';
             } else if (action === 'e') {
               if (review.status !== 'awaiting_approval') conflict('Review was already handled');
@@ -172,19 +181,27 @@ export class Telegram {
               answer = 'Reply to the prompt with your changes.';
             } else {
               this.workflow.dismiss(id, review.version);
+              accepted = true;
               answer = 'Dismissed. No message will be sent.';
             }
-          } catch (error) { answer = error.code === 'CONFLICT' ? 'This review was already handled or changed.' : 'The action failed; check the agent terminal.'; }
+          } catch (error) { answer = error.code === 'CONFLICT' ? error.message : 'The action failed; check the agent logs.'; }
         }
       }
     }
     await this.api('answerCallbackQuery', { callback_query_id: query.id, text: answer });
+    // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones.
+    if (accepted) await this.api('editMessageReplyMarkup', { chat_id: this.chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
   }
   saveOffset(offset) {
     const temp = `${this.offsetFile}.tmp`;
     writeFileSync(temp, JSON.stringify({ offset }), { mode: 0o600 });
     renameSync(temp, this.offsetFile);
     this.offset = offset;
+  }
+  // Fails fast on a wrong token, or a webhook that would make getUpdates fail forever.
+  async verify() {
+    await this.api('getMe', {});
+    if ((await this.api('getWebhookInfo', {})).url) throw new Error('This Telegram bot has a webhook set; use a dedicated bot without one (or call deleteWebhook)');
   }
   start() {
     if (this.loop) return this.loop;
@@ -198,7 +215,8 @@ export class Telegram {
         const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query', 'message'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
         for (const update of updates) {
           if (signal.aborted) break;
-          await this.handleUpdate(update);
+          // A failing update (e.g. a button tapped long ago) must not block every later one.
+          try { await this.handleUpdate(update); } catch (error) { this.onError(error.message); }
           this.saveOffset(update.update_id + 1);
         }
       } catch (error) {

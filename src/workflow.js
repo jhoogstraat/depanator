@@ -14,8 +14,9 @@ const ADVICE = {
 // Moves reviews through the review.js state machine: search → analyze → deliver → (user decides) → send.
 // Everything about a review is durable in the store. Process-local state is only scheduling and health.
 export class Workflow {
-  constructor({ store, adapter, evaluate, notify, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {} }) {
-    Object.assign(this, { store, adapter, evaluate, notify, config, onEvent, beforeWork, alert });
+  // notify delivers a draft for approval, report tells the user a send outcome, alert raises an operator problem.
+  constructor({ store, adapter, evaluate, notify, report = async () => {}, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {} }) {
+    Object.assign(this, { store, adapter, evaluate, notify, report, config, onEvent, beforeWork, alert });
     this.controller = new AbortController(); // Aborted once closed.
     this.queue = Promise.resolve(); // Polls and sends run one at a time.
     this.runningTick = null;
@@ -163,25 +164,28 @@ export class Workflow {
       this.tryDispatch(review.id, { type: 'delivered', version: review.version });
       return true;
     } catch (error) {
-      this.tryDispatch(review.id, { type: 'deliveryFailed', version: review.version, detail: error.message });
+      const failed = this.tryDispatch(review.id, { type: 'deliveryFailed', version: review.version, detail: error.message });
       this.emit({ type: 'notification_error', id: review.id, detail: error.message });
+      if (failed?.deliveryFailures === ALERT_AFTER) await this.raise(`⚠️ A draft for "${review.snapshot.title}" (${review.exposeId}) failed to reach Telegram ${ALERT_AFTER} times: ${error.message}. It is retried every poll.`);
       return false;
     }
   }
   async reviseInternal(id, version, instructions) {
     const review = this.store.get(id);
     if (review?.status !== 'awaiting_approval' || review.version !== version) throw new Error('This draft was already handled or changed');
+    const bindings = this.bindings();
     const result = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
     if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
-    const revised = this.store.dispatch(id, { type: 'revise', version, draft: result.draft, reasons: result.reasons });
+    if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during revision; tap Edit again');
+    const revised = this.store.dispatch(id, { type: 'revise', version, draft: result.draft, reasons: result.reasons, bindings });
     if (!await this.deliver(revised)) throw new Error('Draft revised, but delivering it failed; it will be resent on the next poll');
     return this.store.get(id);
   }
   async sendInternal() {
     const results = [];
-    if (this.backoff.blocked) return results;
-    for (const candidate of this.store.list('approved')) {
+    // Approvals stay durable and are sent once IS24 stops blocking.
+    for (const candidate of this.backoff.blocked ? [] : this.store.list('approved')) {
       this.assertRunning();
       // The claim is durable before any remote operation; a claimed review is never sent again.
       let review = this.tryDispatch(candidate.id, { type: 'claim', bindings: this.bindings() });
@@ -190,7 +194,16 @@ export class Workflow {
       results.push(review);
       this.emit({ type: 'submission', review });
     }
+    await this.reportOutcomes();
     return results;
+  }
+  // Outcomes reach the user even if reporting failed before, or the process stopped right after a send.
+  async reportOutcomes() {
+    for (const review of OUTCOMES.flatMap(status => this.store.list(status)).filter(review => review.reportedAt === null)) {
+      if (this.closed) return; // Still unreported, so it goes out after the restart.
+      try { await this.report(review); this.tryDispatch(review.id, { type: 'reported' }); }
+      catch (error) { this.emit({ type: 'report_error', id: review.id, detail: error.message }); }
+    }
   }
   // Never throws: any failure after the browser may have submitted is an unknown outcome.
   async submit(review) {

@@ -49,7 +49,6 @@ export function loadConfig(filename = 'config.json', { env = process.env, loginO
     preferences: input.preferences || '',
     maxPages: integer(input.maxPages, 5, 1, 100, 'maxPages'),
     pollIntervalMs: integer(input.pollIntervalMs, 600_000, 30_000, 86_400_000, 'pollIntervalMs'),
-    port: integer(input.port, 8787, 1024, 65535, 'port'),
     llm: {
       backend: input.llm?.backend || 'api',
       baseUrl: input.llm?.baseUrl || 'https://api.openai.com/v1',

@@ -26,5 +26,7 @@ ENV DISPLAY=:99 \
 
 USER bun
 EXPOSE 6080
+# Docker format only (podman: build with --format docker). Fails when no poll finished for 2 intervals + 10 min.
+HEALTHCHECK --interval=5m --timeout=10s --start-period=15m CMD ["/usr/local/bin/depanator-entrypoint", "health"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/depanator-entrypoint"]
 CMD ["start"]

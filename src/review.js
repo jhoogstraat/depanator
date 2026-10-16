@@ -4,13 +4,16 @@ import { resolve } from 'node:path';
 // The review lifecycle. MACHINE below is the complete state machine: a review's status changes only
 // through these handlers, and any (status, event) pair not listed is a CONFLICT.
 //
-//   discovered ─analyzed→ awaiting_approval ─approve→ approved ─claim→ submitting ─finish→ sent
-//       │  ↺ start, fail        │  ↺ revise, delivered,     │                 │                   failed
-//       │                       │     deliveryFailed        │                 │                   unknown_outcome
+//   discovered ─analyzed→ awaiting_approval ─approve→ approved ─claim→ submitting ─finish→ sent             ↺ reported
+//       │  ↺ start, fail        │  ↺ revise, delivered,     │                 │                   failed           ↺ reported
+//       │                       │     deliveryFailed        │                 │                   unknown_outcome  ↺ reported
 //       ├─analyzed(dismiss)→ dismissed ←─dismiss───────────┤                 │
 //       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
 //
-// Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them.
+// Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them; a send
+// outcome only records that the user was told about it (reported).
+// Not a status: whether the draft reached Telegram (notifiedAt) and the outcome report (reportedAt).
+// Both are durable outboxes, retried every tick until delivered.
 // `submitting` is the only in-flight state: it is durable before the remote submit, and a restart
 // finishes it as unknown_outcome, so an application is never sent twice.
 
@@ -59,7 +62,7 @@ export function authorizes(current, claimed, bindings) {
 }
 
 function sameVersion(review, version) {
-  if (review.version !== version) conflict('Review was already handled or changed');
+  if (review.version !== version) conflict('A newer draft replaced this one');
 }
 function giveUpOr(review, detail) {
   return review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS
@@ -89,15 +92,21 @@ const MACHINE = {
   },
   awaiting_approval: {
     delivered: (review, { version }, now) => { sameVersion(review, version); return { ...review, notifiedAt: now, notificationError: undefined }; },
-    deliveryFailed: (review, { version, detail }) => { sameVersion(review, version); return { ...review, notificationError: detail }; },
+    deliveryFailed: (review, { version, detail }) => {
+      sameVersion(review, version);
+      return { ...review, notificationError: detail, deliveryFailures: (review.deliveryFailures ?? 0) + 1 };
+    },
     // A new version invalidates every Telegram button signed for the previous draft, and is delivered again.
-    revise: (review, { version, draft, reasons }) => {
+    // It is bound to the current account/config, so editing also renews a draft stranded by a settings change.
+    revise: (review, { version, draft, reasons, bindings }) => {
       sameVersion(review, version);
       if (typeof draft !== 'string' || !draft.trim()) throw new Error('Invalid revised draft');
-      return { ...review, version: version + 1, draft, draftHash: hash(draft), reasons, notifiedAt: null, notificationError: undefined };
+      return { ...review, version: version + 1, draft, draftHash: hash(draft), reasons, accountBinding: bindings.accountBinding, configHash: bindings.configHash,
+        notifiedAt: null, notificationError: undefined, deliveryFailures: 0 };
     },
     approve: (review, { version, draftHash, bindings }, now) => {
-      if (review.version !== version || review.draftHash !== draftHash || !intact(review, bindings)) conflict('Review is stale or has changed');
+      if (review.version !== version || review.draftHash !== draftHash) conflict('A newer draft replaced this one');
+      if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Edit to renew it, or Dismiss.');
       return { ...review, status: 'approved', approvedAt: now };
     },
     dismiss,
@@ -105,19 +114,20 @@ const MACHINE = {
   approved: {
     claim: (review, { bindings }, now) => intact(review, bindings)
       ? { ...review, status: 'submitting', claimedAt: now }
-      : { ...review, status: 'failed', detail: 'Approval binding changed', finishedAt: now },
+      : { ...review, status: 'failed', detail: 'Settings changed after approval; nothing was sent', finishedAt: now, reportedAt: null },
     dismiss,
   },
   submitting: {
     finish: (review, { outcome, detail = '' }, now) => {
       if (!OUTCOMES.includes(outcome)) throw new Error('Invalid submission outcome');
-      return { ...review, status: outcome, detail, finishedAt: now };
+      return { ...review, status: outcome, detail, finishedAt: now, reportedAt: null };
     },
   },
+  ...Object.fromEntries(OUTCOMES.map(outcome => [outcome, { reported: (review, _, now) => ({ ...review, reportedAt: now }) }])),
 };
 // Pure: returns the next review or throws. Persisting it is the store's job.
 export function transition(review, event, now) {
   const handler = MACHINE[review.status]?.[event.type];
-  if (!handler) conflict(`Cannot ${event.type} a ${review.status} review`);
+  if (!handler) conflict(`This review was already handled (${review.status.replaceAll('_', ' ')})`);
   return handler(review, event, now);
 }
