@@ -360,7 +360,7 @@ export class IS24Contactor {
           const ssDir = DEBUG.screenshotDir();
           try { await this.page.screenshot({ path: join(ssDir, `${exposeId}_session_expired.png`), fullPage: true }); } catch (err) { swallow(err, 'screenshot/session_expired'); }
           return {
-            success: false, reason: 'SESSION_EXPIRED (IS24 login required — re-login via Settings)',
+            success: false, reason: 'SESSION_EXPIRED (IS24 login required — run the login command)',
             timing_ms: Date.now() - tStart, timing, captcha, form_state: 'session_expired',
             fields_typed: 0, field_retries: 0,
           };
@@ -377,7 +377,7 @@ export class IS24Contactor {
           const ssDir = DEBUG.screenshotDir();
           try { await this.page.screenshot({ path: join(ssDir, `${exposeId}_session_expired.png`), fullPage: true }); } catch (err) { swallow(err, 'screenshot/session_expired'); }
           return {
-            success: false, reason: 'SESSION_EXPIRED (IS24 login required — re-login via Settings)',
+            success: false, reason: 'SESSION_EXPIRED (IS24 login required — run the login command)',
             timing_ms: Date.now() - tStart, timing, captcha, form_state: 'session_expired',
             fields_typed: 0, field_retries: 0,
           };
@@ -389,7 +389,7 @@ export class IS24Contactor {
         const ssDir = DEBUG.screenshotDir();
         try { await this.page.screenshot({ path: join(ssDir, `${exposeId}_session_expired.png`), fullPage: true }); } catch (err) { swallow(err, 'screenshot/session_expired'); }
         return {
-          success: false, reason: 'SESSION_EXPIRED (IS24 login required — re-login via Settings)',
+          success: false, reason: 'SESSION_EXPIRED (IS24 login required — run the login command)',
           timing_ms: Date.now() - tStart, timing, captcha, form_state: 'session_expired',
           fields_typed: 0, field_retries: 0,
         };
