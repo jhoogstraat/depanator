@@ -21,6 +21,7 @@ export class Workflow {
     this.queue = Promise.resolve(); // Polls and sends run one at a time.
     this.runningTick = null;
     this.revisions = new Set(); // Run beside the queue so an edit never waits for a poll; close() awaits them.
+    this.reporting = Promise.resolve(); // Outcome reports, serialized but independent of IS24 work.
     this.failures = { IS24: 0, LLM: 0 }; // Consecutive outage streaks.
     this.backoff = { skip: 0, blocked: false }; // Polls to skip; sends pause while IS24 blocks us.
   }
@@ -55,6 +56,8 @@ export class Workflow {
   poll() { return this.run(() => this.pollInternal()); }
   sendApproved() { return this.run(() => this.sendInternal()); }
   tick() {
+    // Every interval, even while a previous tick is stuck (e.g. waiting for an IS24 login).
+    this.reportOutcomes();
     if (this.runningTick) return this.runningTick;
     this.runningTick = this.run(async () => {
       let result;
@@ -190,26 +193,43 @@ export class Workflow {
       // The claim is durable before any remote operation; a claimed review is never sent again.
       let review = this.tryDispatch(candidate.id, { type: 'claim', bindings: this.bindings() });
       if (!review) continue;
-      if (review.status === 'submitting') review = this.store.dispatch(review.id, { type: 'finish', ...await this.submit(review) });
+      if (review.status === 'submitting') {
+        const result = await this.submit(review);
+        if (result.retry) {
+          this.store.dispatch(review.id, { type: 'release' });
+          if (!this.closed) await this.is24Failure(result.retry, { restartBrowser: true });
+          break;
+        }
+        review = this.store.dispatch(review.id, { type: 'finish', ...result });
+      }
       results.push(review);
       this.emit({ type: 'submission', review });
     }
     await this.reportOutcomes();
     return results;
   }
-  // Outcomes reach the user even if reporting failed before, or the process stopped right after a send.
-  async reportOutcomes() {
+  // Outcomes reach the user even if reporting failed before, the process stopped right after a send,
+  // or IS24 work is stuck (e.g. waiting for a login): Telegram does not need IS24.
+  reportOutcomes() {
+    this.reporting = this.reporting.then(() => this.reportPending()).catch(error => this.emit({ type: 'report_error', detail: error.message }));
+    return this.reporting;
+  }
+  async reportPending() {
+    if (this.closed) return; // Still unreported, so it goes out after the restart.
     for (const review of OUTCOMES.flatMap(status => this.store.list(status)).filter(review => review.reportedAt === null)) {
-      if (this.closed) return; // Still unreported, so it goes out after the restart.
+      if (this.closed) return;
       try { await this.report(review); this.tryDispatch(review.id, { type: 'reported' }); }
       catch (error) { this.emit({ type: 'report_error', id: review.id, detail: error.message }); }
     }
   }
+  // Returns an outcome, or { retry } when a temporary failure hit before anything was clicked.
   // Never throws: any failure after the browser may have submitted is an unknown outcome.
   async submit(review) {
     let sending = false;
     try {
-      const snapshot = await this.adapter.details(review.snapshot);
+      let snapshot;
+      try { snapshot = await this.adapter.details(review.snapshot); }
+      catch (error) { if (error.code !== 'LISTING_GONE') return { retry: error }; throw error; }
       if (hash(snapshot) !== review.snapshotHash) return { outcome: 'failed', detail: 'Listing details changed; approval invalidated' };
       const beforeSubmit = async () => {
         this.assertRunning();
@@ -224,7 +244,7 @@ export class Workflow {
   }
   async close() {
     this.stop();
-    await Promise.allSettled([this.queue, ...this.revisions]);
+    await Promise.allSettled([this.queue, this.reporting, ...this.revisions]);
     try { await this.adapter.close?.(); }
     finally { this.store.close(); }
   }

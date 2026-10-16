@@ -273,3 +273,30 @@ test('a settings change strands no draft: approving explains, editing renews it'
   assert.equal(f.store.dispatch(review.id, { type: 'approve', version: 2, draftHash: renewed.draftHash, bindings: f.workflow.bindings() }).status, 'approved');
   await f.workflow.close();
 });
+
+test('a temporary outage before the click keeps the approval; reports do not wait for IS24', async () => {
+  const reported = [];
+  let down = true;
+  let release;
+  const stuck = new Promise(resolve => { release = resolve; });
+  const f = fixture({ workflow: { report: async review => { reported.push(review.status); } } });
+  await f.workflow.poll();
+  const review = approve(f);
+  const details = f.adapter.details;
+  f.adapter.details = async listing => { if (down) throw new Error('Navigation timeout'); return details(listing); };
+  await f.workflow.sendApproved();
+  assert.equal(f.store.get(review.id).status, 'approved', 'nothing was clicked, so the approval stays');
+  assert.equal(f.calls.send, 0);
+  down = false;
+  await f.workflow.sendApproved();
+  assert.equal(f.store.get(review.id).status, 'sent');
+  f.workflow.beforeWork = () => stuck; // e.g. waiting for a manual IS24 login
+  reported.length = 0;
+  f.store.db.prepare("UPDATE reviews SET body=json_set(body, '$.reportedAt', json('null')) WHERE id=?").run(review.id);
+  const ticking = f.workflow.tick().catch(() => {}); // Stays stuck until close.
+  await f.workflow.reporting;
+  assert.deepEqual(reported, ['sent']);
+  release();
+  await f.workflow.close();
+  await ticking;
+});

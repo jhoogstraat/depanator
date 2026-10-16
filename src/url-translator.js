@@ -30,6 +30,7 @@ const SEO_PATH_FILTERS = {
   'barrierefreie-wohnung-mieten': { equipment: ['handicappedaccessible'] },
 };
 const SEO_MAX_WARMRENT_PATH = /^wohnung-bis-(\d+)-euro-warm$/;
+const APARTMENT_TYPES = new Set(Object.values(SEO_PATH_FILTERS).flatMap(filter => filter.apartmentTypes || []));
 
 const SAFE_IGNORED_PARAM = /^(enteredfrom|utm_.*|referrer|referrerurl|from|viewmode|sorting|pagenumber|pagesize)$/i;
 
@@ -125,7 +126,7 @@ function parse(webUrl) {
     livingSpace: { min: null, max: null },
     heatingTypes: [],
     equipment: [...(seo?.equipment || [])],
-    apartmentTypes: seo?.apartmentTypes || [],
+    apartmentTypes: [...(seo?.apartmentTypes || [])],
     directParams: [],
   };
   const rejected = [];
@@ -137,7 +138,9 @@ function parse(webUrl) {
     if (key === 'centerofsearchaddress') continue; // display-only
     if (seen.has(key) || !value.trim()) { rejected.push(`${rawKey}=Duplicate or empty filter`); continue; }
     seen.add(key);
-    if (key === 'price') canonical.price = { ...parseRange(value, 'price'), type: canonical.price.type };
+    // A path filter and a parameter for the same thing: one would silently replace the other.
+    if ((warmrent && (key === 'price' || key === 'pricetype')) || (seo?.apartmentTypes && key === 'apartmenttypes')) rejected.push(`${rawKey}=Conflicts with the search path filter`);
+    else if (key === 'price') canonical.price = { ...parseRange(value, 'price'), type: canonical.price.type };
     else if (key === 'numberofrooms') canonical.rooms = parseRange(value, 'number of rooms');
     else if (key === 'livingspace') canonical.livingSpace = parseRange(value, 'living space');
     else if (key === 'pricetype') canonical.price.type = value;
@@ -156,7 +159,12 @@ function parse(webUrl) {
       if (!['true', '1'].includes(value)) rejected.push(`${rawKey}=${value}`);
       else if (key === 'newbuilding') canonical.newBuildingOnly = true;
       else canonical.equipment.push(EQUIPMENT[key]);
-    } else if (key === 'apartmenttypes') canonical.apartmentTypes = splitValues(value);
+    } else if (key === 'apartmenttypes') {
+      for (const v of splitValues(value)) {
+        if (APARTMENT_TYPES.has(v.toLowerCase())) canonical.apartmentTypes.push(v.toLowerCase());
+        else rejected.push(`${rawKey}=${v}`);
+      }
+    }
     else if (key === 'exclusioncriteria') {
       canonical.directParams.push({ key, value: splitValues(value).map(v => v.toLowerCase() === 'swapflat' ? 'swap_flat' : v).join(',') });
     } else if (DIRECT_PARAMS.has(key)) canonical.directParams.push({ key, value });

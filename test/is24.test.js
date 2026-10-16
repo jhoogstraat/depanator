@@ -30,8 +30,8 @@ test('container browser path and sandbox flags apply to automated and manual lau
   assert.deepEqual(new IS24Adapter(config).browserArgs(),[],'local browser keeps its sandbox by default');
 });
 test('strict translation rejects every known widening route',()=>{
-  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false','pets-allowed=true','energy-efficiency=A']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`).ok,false,query);
-  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('wohnung-mieten','haus-kaufen'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url).ok,false,url);
+  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false','pets-allowed=true','energy-efficiency=A','apartmenttypes=bogus']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`).ok,false,query);
+  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('wohnung-mieten','haus-kaufen'),searchUrl.replace('wohnung-mieten','wohnung-mieten-tausch'),searchUrl.replace(/wohnung-mieten.*$/,'wohnung-bis-1000-euro-warm?price=-1500'),searchUrl.replace(/wohnung-mieten.*$/,'penthouse-mieten?apartmenttypes=loft'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url).ok,false,url);
   const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony,elevator&onlywithkitchen=true&utm_source=test`);
   assert.equal(valid.ok,true);
   assert.equal(buildMobileApiUrl(valid.canonical,{page:2}),'https://api.mobile.immobilienscout24.de/search/list?geocodes=%2Fde%2Fberlin%2Fberlin&searchType=region&realestatetype=apartmentrent&pricetype=calculatedtotalrent&price=-1000&equipment=balcony%2Clift%2CbuiltinKitchen&sorting=-firstactivation&pagenumber=2&pagesize=20');

@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 //       │                       │     deliveryFailed        │                 │                   unknown_outcome  ↺ reported
 //       ├─analyzed(dismiss)→ dismissed ←─dismiss───────────┤                 │
 //       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
+//                                                          approved ←release─ submitting  (only before the click)
 //
 // Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them; a send
 // outcome only records that the user was told about it (reported).
@@ -118,6 +119,8 @@ const MACHINE = {
     dismiss,
   },
   submitting: {
+    // A temporary failure (outage, block) before anything was clicked: the approval stays valid.
+    release: review => ({ ...review, status: 'approved', claimedAt: undefined }),
     finish: (review, { outcome, detail = '' }, now) => {
       if (!OUTCOMES.includes(outcome)) throw new Error('Invalid submission outcome');
       return { ...review, status: outcome, detail, finishedAt: now, reportedAt: null };
