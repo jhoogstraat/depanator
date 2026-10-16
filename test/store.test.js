@@ -84,7 +84,7 @@ test('approvals never expire; changed binding invalidates approval; tampered dra
 test('hash canonicalizes objects; only meaningful settings affect config binding', () => {
   assert.equal(hash({ b: 2, a: 1 }), hash({ a: 1, b: 2 }));
   const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: { name: 'Person' }, preferences: 'balcony', llm: { model: 'model', baseUrl: 'https://api.example.com' } };
-  assert.equal(configHashFor(config), configHashFor({ ...config, llmApiKey: 'secret', port: 3 }));
+  assert.equal(configHashFor(config), configHashFor({ ...config, telegramBotToken: 'secret', pollIntervalMs: 60000 }));
   assert.notEqual(configHashFor(config), configHashFor({ ...config, persona: { name: 'Other' } }));
   assert.notEqual(bindingFor(config), bindingFor({ ...config, browserProfile: '/tmp/other' }));
 });

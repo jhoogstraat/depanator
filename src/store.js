@@ -17,6 +17,8 @@ const MIGRATIONS = [
    UPDATE reviews SET body=json_set(body, '$.analysisAttempts', 0) WHERE json_extract(body, '$.analysisAttempts') IS NULL;
    UPDATE reviews SET body=json_set(body, '$.reportedAt', COALESCE(json_extract(body, '$.finishedAt'), 0)) WHERE status IN ('sent', 'failed', 'unknown_outcome');
    DROP TABLE attempts;`,
+  // Settings made in the Telegram chat.
+  'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);',
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -57,6 +59,9 @@ export class Store {
     const rows = status ? this.db.prepare('SELECT body FROM reviews WHERE status=? ORDER BY rowid').all(status) : this.db.prepare('SELECT body FROM reviews ORDER BY rowid').all();
     return rows.map(row => JSON.parse(row.body));
   }
+  has(exposeId) { return Boolean(this.db.prepare('SELECT 1 FROM reviews WHERE expose_id=?').get(String(exposeId))); }
+  settings() { return Object.fromEntries(this.db.prepare('SELECT key, value FROM settings').all().map(row => [row.key, JSON.parse(row.value)])); }
+  saveSetting(key, value) { this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
   count() { return this.db.prepare('SELECT COUNT(*) AS count FROM reviews').get().count; }
   // Throws CONFLICT when the event does not apply to the review's current status.
   dispatch(id, event) {

@@ -45,6 +45,10 @@ test('pagination never stops on duplicates and exposes capped coverage',async()=
   assert.deepEqual([result.listings[0].published,result.listings[0].earlyAccess],['vor 2 Stunden',true]);
   const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
+  // Newest first: a routine poll stops at the first page holding an already known listing.
+  const routine=network([full,full,[item(99)]]);
+  const known=await new IS24Adapter(config,routine).search({known:id=>id==='7'});
+  assert.equal(routine.count(),1); assert.equal(known.complete,true); assert.equal(known.listings.length,20);
 });
 test('malformed/block search fails rather than reporting empty coverage',async()=>{
   const adapter=new IS24Adapter(config,{fetch:async()=>({ok:true,status:200,headers:{get:()=> 'text/html'}})});
@@ -148,4 +152,26 @@ test('final form verification binds exact message and identity, rejects site def
     values['select[name="income"]']={value:'High income'};
     await assert.rejects(verifyForm(page,'Approved draft',config.persona),/Exact approved/);
   } finally {globalThis.document=oldDocument;}
+});
+
+test('authentication waits for manual login, verifies identity again, and propagates site failure', async () => {
+  const adapter = new IS24Adapter({ searchUrl, maxPages: 5, accountEmail: 'me@example.com' });
+  let authenticated = false, prompts = 0, logins = 0;
+  const page = { goto: async () => ({ ok: () => true }), url: () => 'https://www.immobilienscout24.de/', evaluate: async () => authenticated ? 'me@example.com' : null };
+  adapter.ensureBrowser = async () => page;
+  adapter.login = async () => { logins++; authenticated = true; };
+  await adapter.authenticate(async () => { prompts++; });
+  assert.equal(prompts, 1); assert.equal(logins, 1);
+  await adapter.authenticate(async () => { throw new Error('Unexpected prompt'); });
+  page.goto = async () => { throw new Error('offline'); };
+  await assert.rejects(adapter.authenticate(async () => { prompts++; }), /offline/);
+  assert.equal(prompts, 1);
+});
+
+test('manual login cancellation cannot spawn a browser after shutdown', async () => {
+  let spawned = false;
+  const adapter = new IS24Adapter({ searchUrl, maxPages: 5 }, { spawn: () => { spawned = true; } });
+  adapter.browser = { close: async () => { adapter.cancelLogin(); } };
+  await assert.rejects(adapter.login(), /cancelled/);
+  assert.equal(spawned, false);
 });

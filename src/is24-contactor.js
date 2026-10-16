@@ -8,6 +8,8 @@ const IS24_EXPOSE_URL = 'https://www.immobilienscout24.de/expose';
 const LOGIN_URL_RE = /\/login|\/registrierung|sso\.immobilienscout24/;
 const SESSION_EXPIRED = 'SESSION_EXPIRED (IS24 login required — run the login command)';
 const MAX_SCREENSHOTS = 20;
+// Persona key -> contact form <select> name. Their values must equal an option label.
+export const FORM_SELECTS = { anrede: 'salutation', einzug: 'moveInDateType', personen: 'numberOfPersons', haustiere: 'hasPets', beschaeftigung: 'employmentRelationship', einkommen: 'income', unterlagen: 'applicationPackageCompleted' };
 const OK_BUTTON = '.DatePicker_datepicker-okay-button__JxpMI';
 // Timing in ms (formerly the 'balanced' preset).
 const T = {
@@ -111,6 +113,27 @@ export class IS24Contactor {
       return fail(`ERROR: ${err.message}`, 'error');
     } finally {
       // Blank the page so the filled form (personal data) does not linger.
+      if (!this.page.isClosed()) await this._navigate('about:blank', { timeout: 5000 }).catch(() => {});
+    }
+  }
+
+  /**
+   * Open a listing's contact form and read its dropdown options without filling or submitting anything.
+   * Returns { personaKey: [option labels] }; the persona must use these labels exactly.
+   */
+  async readFormOptions(exposeId) {
+    try {
+      await this._navigate(`${IS24_EXPOSE_URL}/${exposeId}#/basicContact/email`);
+      await jitter(...T.spaRenderWait);
+      if (LOGIN_URL_RE.test(this.page.url())) throw new Error(SESSION_EXPIRED);
+      await this._openContactFormIfNeeded();
+      if (!(await this._waitForForm(T.formWaitTimeout))) throw new Error('The contact form did not open');
+      return await this.page.evaluate((selects) => Object.fromEntries(Object.entries(selects).flatMap(([key, name]) => {
+        const el = document.querySelector(`select[name="${name}"]`);
+        const labels = el ? Array.from(el.options).filter((o) => o.value).map((o) => o.textContent.trim()).filter(Boolean) : [];
+        return labels.length ? [[key, labels]] : [];
+      })), FORM_SELECTS);
+    } finally {
       if (!this.page.isClosed()) await this._navigate('about:blank', { timeout: 5000 }).catch(() => {});
     }
   }

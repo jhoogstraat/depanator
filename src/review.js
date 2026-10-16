@@ -36,7 +36,7 @@ export function bindingFor(config) {
 export function configHashFor(config) {
   const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, browser } = config;
   // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, browser });
+  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, codexHome: llm.codexHome }, browser });
 }
 
 export function conflict(message) {
@@ -105,10 +105,11 @@ const MACHINE = {
       return { ...review, version: version + 1, draft, draftHash: hash(draft), reasons, accountBinding: bindings.accountBinding, configHash: bindings.configHash,
         notifiedAt: null, notificationError: undefined, deliveryFailures: 0 };
     },
-    approve: (review, { version, draftHash, bindings }, now) => {
+    // by: 'user' (a Telegram tap) or 'auto' (auto-send on, and the LLM was confident).
+    approve: (review, { version, draftHash, bindings, by = 'user' }, now) => {
       if (review.version !== version || review.draftHash !== draftHash) conflict('A newer draft replaced this one');
       if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Edit to renew it, or Dismiss.');
-      return { ...review, status: 'approved', approvedAt: now };
+      return { ...review, status: 'approved', approvedAt: now, approvedBy: by };
     },
     dismiss,
   },

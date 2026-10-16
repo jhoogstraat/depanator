@@ -300,3 +300,31 @@ test('a temporary outage before the click keeps the approval; reports do not wai
   await f.workflow.close();
   await ticking;
 });
+
+test('workflow waits for authentication before any action and shutdown cancels that wait', async () => {
+  let unblock, actions = 0;
+  const waiting = new Promise(resolve => { unblock = resolve; });
+  const workflow = new Workflow({ config: {}, adapter: { cancelLogin: () => unblock(), close: async () => {} }, store: { close() {} }, beforeWork: () => waiting });
+  const action = workflow.run(async () => { actions++; });
+  await Promise.resolve();
+  const rejection = assert.rejects(action, /closed/);
+  await workflow.close(); await rejection;
+  assert.equal(actions, 0);
+});
+
+test('auto-send sends confident matches in the same tick and still asks about the rest', async () => {
+  const reported = [];
+  const f = fixture({ workflow: {
+    report: async review => { reported.push(review.approvedBy); },
+    evaluate: async listing => ({ decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.', confident: listing.expose_id === '123' }),
+  } });
+  f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }], complete: true });
+  f.adapter.details = async listing => ({ ...f.snapshot, expose_id: listing.expose_id });
+  f.config.autoSend = true;
+  await f.workflow.tick();
+  const [confident, unsure] = f.store.list();
+  assert.deepEqual([confident.status, confident.approvedBy, unsure.status], ['sent', 'auto', 'awaiting_approval']);
+  assert.equal(f.calls.notify, 1, 'only the unsure match asks for approval');
+  assert.deepEqual(reported, ['auto']);
+  await f.workflow.close();
+});

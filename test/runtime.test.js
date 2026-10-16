@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEvaluator, validateEvaluation } from '../src/llm.js';
+import { validateEvaluation } from '../src/llm.js';
 import { Telegram } from '../src/telegram.js';
 import { Store } from '../src/store.js';
 import { acquireLock } from '../src/lock.js';
@@ -27,7 +27,8 @@ function telegram(t, store, onApproved = () => {}) {
     dismiss: (id, version) => store.dispatch(id, { type: 'dismiss', version }),
     revise: async () => {},
   };
-  const agent = new Telegram({ config: { dataDir: temp(t), notification: { chatId: '12345' }, telegramBotToken: 'secret', accountEmail: 'person@example.com' }, store, workflow,
+  const assistant = { asking: null, texts: [], text: async text => { assistant.texts.push(text); }, command: async () => {}, choice: async () => ({ text: 'Saved.', used: true }) };
+  const agent = new Telegram({ config: { dataDir: temp(t), chatId: '12345', telegramBotToken: 'secret', accountEmail: 'person@example.com' }, store, workflow, assistant,
     fetchImpl: async (url, options) => {
       calls.push({ method: url.split('/').at(-1), body: JSON.parse(options.body) });
       return { ok: true, json: async () => ({ ok: true, result: { message_id: calls.length } }) };
@@ -39,25 +40,10 @@ function update(data, from = 12345, type = 'private') {
   return { callback_query: { id: 'callback', data, from: { id: from }, message: { chat: { id: 12345, type } } } };
 }
 
-test('evaluator keeps listing data untrusted and rejects malformed or truncated model decisions', async () => {
-  const config = { llm: { baseUrl: 'https://example.com/v1', model: 'fixture' }, llmApiKey: 'SECRET', preferences: 'Balcony', persona: { name: 'Person' } };
-  let payload;
-  const evaluation = { decision: 'message', reasons: ['A suitable listing'], draft: 'Hello.' };
-  const evaluator = createEvaluator(config, { fetchImpl: async (_, options) => {
-    payload = JSON.parse(options.body);
-    assert.equal(options.headers.Authorization, 'Bearer SECRET');
-    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(evaluation) } }] }) };
-  } });
-  assert.deepEqual(await evaluator(snapshot), evaluation);
-  assert.equal(payload.messages[0].role, 'system');
-  assert.match(payload.messages[0].content, /untrusted DATA/);
-  assert.deepEqual(JSON.parse(payload.messages[1].content).listing, snapshot);
-  assert.ok(!JSON.stringify(payload).includes('SECRET'));
-  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, reasons: [] }, { ...evaluation, decision: 'dismiss' }, { ...evaluation, draft: 'x'.repeat(5001) }]) assert.throws(() => validateEvaluation(result), /invalid/);
-  for (const choice of [{ finish_reason: 'length', message: { content: JSON.stringify(evaluation) } }, { finish_reason: 'stop', message: { content: 'not json' } }, { finish_reason: 'stop', message: { refusal: 'No', content: JSON.stringify(evaluation) } }]) {
-    const invalid = createEvaluator(config, { fetchImpl: async () => ({ ok: true, json: async () => ({ choices: [choice] }) }) });
-    await assert.rejects(invalid(snapshot));
-  }
+test('model decisions are validated before anything is stored or sent', () => {
+  const evaluation = { decision: 'message', reasons: ['A suitable listing'], draft: 'Hello.', confident: true };
+  assert.deepEqual(validateEvaluation(evaluation), evaluation);
+  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, reasons: [] }, { ...evaluation, decision: 'dismiss' }, { ...evaluation, draft: 'x'.repeat(5001) }, { ...evaluation, confident: 'yes' }, { decision: 'dismiss', reasons: ['No'], draft: '', confident: true }]) assert.throws(() => validateEvaluation(result), /invalid/);
 });
 
 test('Telegram approves exact review only for configured private actor and rejects replay/tampering', async (t) => {

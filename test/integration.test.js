@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { Workflow } from '../src/workflow.js';
-import { createEvaluator } from '../src/llm.js';
+import { validateEvaluation } from '../src/llm.js';
 import { Telegram } from '../src/telegram.js';
 
 const fullDraft = `Guten Tag,\n${'Ich interessiere mich für die Wohnung. 🏠 '.repeat(110)}\nMit freundlichen Grüßen\nAlex`;
@@ -13,21 +13,17 @@ function callback(data, user = '42', versionChange = false) {
   return { update_id: 1, callback_query: { id: 'callback', data: versionChange ? data.replace(':1:', ':2:') : data, from: { id: user }, message: { chat: { id: '42', type: 'private' } } } };
 }
 function setup(directory, options = {}) {
-  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', browserProfile: join(directory, 'browser'), accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline', baseUrl: 'https://llm.invalid/v1' }, llmApiKey: 'never-exposed-secret', telegramBotToken: 'offline-token', notification: { type: 'telegram', chatId: '42' }, dataDir: directory };
+  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', browserProfile: join(directory, 'browser'), accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline' }, telegramBotToken: 'offline-token', chatId: '42', dataDir: directory };
   const summaries = [{ expose_id: '111', title: 'Sunny' }, { expose_id: '222', title: 'Basement' }];
   const snapshots = summaries.map(summary => ({ ...summary, price: 1200, area: 60, rooms: 2, address: 'Berlin', url: `https://www.immobilienscout24.de/expose/${summary.expose_id}`, image_url: '', description: summary.expose_id === '111' ? 'Sunny apartment with balcony.' : 'Dark basement, no balcony.', amenities: summary.expose_id === '111' ? ['Balcony'] : [] }));
   const calls = { llm: [], telegram: [], sends: [] };
   const store = new Store(join(directory, 'state.sqlite'), { now: () => 100 });
-  const evaluate = createEvaluator(config, { fetchImpl: async (url, request) => {
-    assert.equal(url, 'https://llm.invalid/v1/chat/completions');
-    const body = JSON.parse(request.body);
-    const data = JSON.parse(body.messages[1].content);
-    calls.llm.push(data);
-    assert.deepEqual(data.listing, snapshots.find(item => item.expose_id === data.listing.expose_id));
-    assert.equal(JSON.stringify(body).includes(config.llmApiKey), false);
-    const result = data.listing.expose_id === '111' ? { decision: 'message', reasons: ['Balcony matches preferences'], draft: fullDraft } : { decision: 'dismiss', reasons: ['Missing balcony'], draft: '' };
-    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] }) };
-  } });
+  // The model is replaced, but its output passes the same validation as a real Codex result.
+  const evaluate = async listing => {
+    calls.llm.push(listing);
+    assert.deepEqual(listing, snapshots.find(item => item.expose_id === listing.expose_id));
+    return validateEvaluation(listing.expose_id === '111' ? { decision: 'message', reasons: ['Balcony matches preferences'], draft: fullDraft, confident: false } : { decision: 'dismiss', reasons: ['Missing balcony'], draft: '', confident: false });
+  };
   const adapter = {
     search: async () => ({ listings: summaries, complete: true, pages: 1 }),
     details: async summary => snapshots.find(snapshot => snapshot.expose_id === summary.expose_id),
@@ -63,7 +59,6 @@ test('all real modules: scrape/enrich/evaluate/notify/signed approval/send once 
   assert.equal(review.status, 'awaiting_approval');
   assert.equal(review.draft, fullDraft);
   assert.equal(reviews.find(item => item.exposeId === '222').status, 'dismissed');
-  assert.equal(JSON.stringify(reviews).includes(f.config.llmApiKey), false);
   const notifications = f.calls.telegram.filter(call => call.method === 'sendMessage').map(call => call.body);
   const buttons = notifications.findIndex(message => message.reply_markup);
   assert.equal(buttons, notifications.length - 1, 'buttons follow every part of the draft');

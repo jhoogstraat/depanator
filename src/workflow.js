@@ -109,7 +109,7 @@ export class Workflow {
   async pollInternal() {
     let search;
     try {
-      search = await this.adapter.search({ signal: this.controller.signal });
+      search = await this.adapter.search({ signal: this.controller.signal, known: exposeId => this.store.has(exposeId) });
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
@@ -143,7 +143,12 @@ export class Workflow {
       this.assertRunning();
       await this.recovered('LLM');
       if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
-      this.emit({ type: 'analysis', review: this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings }) });
+      const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
+      this.emit({ type: 'analysis', review: saved });
+      // Auto-send: the owner's standing approval for clear matches. It is sent in this same tick.
+      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true) {
+        this.store.dispatch(review.id, { type: 'approve', version: saved.version, draftHash: saved.draftHash, bindings, by: 'auto' });
+      }
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.
       const systemic = this.closed || error.code === 'BLOCKED' || error.code === 'LLM_UNAVAILABLE';

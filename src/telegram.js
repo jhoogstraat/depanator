@@ -28,11 +28,11 @@ export function previewImage(raw) {
   } catch { return null; }
 }
 
-// The user's interface. Reads reviews to verify signed buttons; every decision goes to the workflow.
+// The user's interface. Reads reviews to verify signed buttons; every decision goes to the workflow,
+// every configuration message to the assistant. Until paired, only `/start <pairingCode>` is accepted.
 export class Telegram {
-  constructor({ config, store, workflow, fetchImpl = fetch, onError = () => {} }) {
-    Object.assign(this, { config, store, workflow, fetchImpl, onError });
-    this.chatId = String(config.notification.chatId);
+  constructor({ config, store, workflow, assistant = null, pairingCode = null, onPair = () => {}, fetchImpl = fetch, onError = () => {} }) {
+    Object.assign(this, { config, store, workflow, assistant, pairingCode, onPair, fetchImpl, onError });
     this.token = config.telegramBotToken;
     this.offsetFile = join(config.dataDir, 'telegram-offset.json');
     this.offset = 0;
@@ -91,7 +91,8 @@ export class Telegram {
   }
   // One message per listing. Only a draft near the 5000-character cap splits it; the draft is never
   // shortened (listing details are, to fit), and the buttons sit on the final part.
-  async notify(review) {
+  // heading/note: an outcome shown above the listing instead of approval buttons (auto-sent reviews).
+  async notify(review, { heading = '', note = '' } = {}) {
     const listing = review.snapshot;
     let text = '';
     const entities = [];
@@ -99,6 +100,7 @@ export class Telegram {
       if (type) entities.push({ type, offset: text.length, length: part.length, ...extra });
       text += part;
     };
+    if (heading) { append(heading, 'bold'); append(`\n${note}\n\n`); }
     const address = String(listing.address || '').replace(/\s*\([^)]*\)/g, '').trim();
     append(String(listing.title), 'bold');
     append(`\n\n📍 ${address || 'Address unavailable'}`);
@@ -126,7 +128,7 @@ export class Telegram {
     }
     for (const [part, type, extra] of tail) append(part, type, extra);
     const image = previewImage(listing.image_url);
-    await this.formatted(text, entities, { image, last: {
+    await this.formatted(text, entities, { image, last: heading ? {} : {
       reply_markup: { inline_keyboard: [[{ text: '✅ Send', callback_data: this.callback(review, 'a') }, { text: '✏️ Edit', callback_data: this.callback(review, 'e') }, { text: '✖️ Dismiss', callback_data: this.callback(review, 'd') }]] },
     } });
   }
@@ -135,16 +137,33 @@ export class Telegram {
       : review.status === 'unknown_outcome' ? 'Submission outcome is uncertain. Check your IS24 messages before taking any further action. The agent will not retry.'
       : 'The message was not sent. No automatic retry will occur.';
     const heading = review.status === 'sent' ? '✅ Message sent' : review.status === 'unknown_outcome' ? '⚠️ Check your IS24 account' : '❌ Message not sent';
+    // You never saw an auto-sent listing, so it comes with the full listing and the message.
+    if (review.approvedBy === 'auto') return this.notify(review, { heading: `${heading} (auto-send)`, note: `${text}${review.detail ? `\n${review.detail}` : ''}` });
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
   }
+  get chatId() { return String(this.config.chatId || ''); }
   send(text, extra = {}) { return this.api('sendMessage', { chat_id: this.chatId, text, ...extra }); }
-  // Edit instructions are replies to the prompt sent by ✏️ Edit; a plain message right after it also counts.
+  // The private chat that sent the pairing code becomes the owner; everyone else is ignored.
+  async pair(message, text) {
+    const [command, code] = text.split(/\s+/);
+    if (message.chat?.type !== 'private' || String(message.from?.id) !== String(message.chat.id) || command !== '/start') return;
+    if (!this.pairingCode || code !== this.pairingCode) return this.api('sendMessage', { chat_id: message.chat.id, text: 'To connect, send /start followed by the code shown in the agent log, for example: /start 123456' });
+    this.pairingCode = null;
+    this.onPair(String(message.chat.id));
+    await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes about five minutes.');
+    await this.assistant.continue();
+  }
+  // Commands and setup answers go to the assistant; replies to an ✏️ Edit prompt revise that draft.
   async handleMessage(message) {
+    const text = typeof message.text === 'string' ? message.text.trim() : '';
+    if (!this.chatId) return this.pair(message, text);
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
-    const promptId = message.reply_to_message ? message.reply_to_message.message_id : [...this.editPrompts.keys()].at(-1);
+    if (text.startsWith('/')) return this.assistant.command(text.split(/[\s@]/)[0].toLowerCase());
+    const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts.keys()].at(-1);
     const target = this.editPrompts.get(promptId);
-    const instructions = typeof message.text === 'string' ? message.text.trim() : '';
-    if (!target || !instructions) return this.send('To change a draft, tap ✏️ Edit under it and reply to the prompt.');
+    const instructions = text;
+    if (!target) return instructions ? this.assistant.text(instructions) : undefined;
+    if (!instructions) return;
     if (instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
     this.editPrompts.delete(promptId);
     await this.send('✍️ Revising the draft…');
@@ -159,7 +178,11 @@ export class Telegram {
     if (!query) return;
     let answer = 'This approval is invalid.';
     let accepted = false;
-    if (query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId) {
+    const owner = this.chatId && query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId;
+    if (owner && /^[ck]:/.test(query.data || '')) {
+      try { ({ text: answer, used: accepted = false } = await this.assistant.choice(query.data)); }
+      catch (error) { answer = error.message; }
+    } else if (owner) {
       const match = /^([ade]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
       if (match) {
         const [, action, rawId, version, supplied] = match;
@@ -200,7 +223,7 @@ export class Telegram {
   }
   // Fails fast on a wrong token, or a webhook that would make getUpdates fail forever.
   async verify() {
-    await this.api('getMe', {});
+    await this.api('getMe', {}).catch(error => { throw /HTTP 401|HTTP 404/.test(error.message) ? new Error('Telegram rejected TELEGRAM_BOT_TOKEN; copy the token from @BotFather again') : error; });
     if ((await this.api('getWebhookInfo', {})).url) throw new Error('This Telegram bot has a webhook set; use a dedicated bot without one (or call deleteWebhook)');
   }
   start() {

@@ -4,46 +4,40 @@ Image: `ghcr.io/jhoogstraat/depanator:latest`, for Linux x86_64 and ARM64. The i
 
 The operator chooses the container runtime, service manager, host paths, volume names, user mapping, published ports, domain, proxy, and authentication provider. The image does not create host services, modify system configuration, install Quadlets, or provision tunnels/DNS/access policies.
 
-## Configuration wizard
+## Getting started
 
-Run the image interactively with command `setup --output-dir DIRECTORY`, where `DIRECTORY` is an existing writable directory you provide inside the container. The wizard writes only `config.json` and `secrets.env` there. It does not overwrite existing files or start services. No viewer password or display is needed to run setup.
+1. Create a Telegram bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and keep its token.
+2. Run the image with `TELEGRAM_BOT_TOKEN`, `VNC_PASSWORD`, and a persistent volume at `/data`. Publish port 6080 (the login viewer) through authenticated HTTPS, and set `DEPANATOR_VIEWER_URL` to that address so the bot can link to it.
+3. Read the container log. It prints `Open your bot in Telegram and send:  /start <code>`. Send that to your bot; the bot then guides you through ChatGPT login, your search, contact details, the IS24 login (in the viewer), check interval, and auto-send. All answers are stored in `/data`.
 
-The wizard asks for the filtered search URL, preferences, contact name/email, LLM backend (`api` or ChatGPT subscription through `codex`), Telegram bot token, and optional viewer URL. Only API mode asks for an LLM API key. Credentials are hidden while typing. After you send `/start` to your bot, it discovers the private chat and asks you to confirm it. It generates an eight-character viewer password and enables automatic login handoff. Additional contact facts can be added under `persona` later.
-
-Mount the generated configuration wherever you choose and pass the secret values as environment variables through your deployment tooling. Restrict access to both files. `secrets.env` is a plain `KEY=value` file, not a shell script; how it is loaded depends on your runtime. Keys must not be included in the image or committed to source control.
-
-You can also run the wizard from the source checkout: `bun src/cli.js setup --output-dir DIRECTORY`.
+There is no configuration file. `deploy/secrets.env.example` lists every input.
 
 ## Runtime inputs
 
 | Input | Default / purpose |
 | --- | --- |
-| `DEPANATOR_CONFIG` | `/config/config.json`; path to the supplied JSON config |
-| `DEPANATOR_DATA_DIR` | `/data`; absolute writable path for persistent SQLite state and browser profile |
+| `TELEGRAM_BOT_TOKEN` | Required. Token of a dedicated bot without a webhook |
+| `VNC_PASSWORD` | Required. Viewer password, at least eight characters (VNC uses only the first eight) |
+| `DEPANATOR_VIEWER_URL` | Optional. Your HTTPS link to the viewer, sent when IS24 asks you to log in |
+| `DEPANATOR_DATA_DIR` | `/data`; absolute writable path for the database, settings, browser profile and ChatGPT login |
 | `DEPANATOR_BROWSER_PROFILE` | `browser` under the data directory; optional independent profile path |
 | `HOME` | `/data/home`; writable browser home directory |
-| `OPENAI_API_KEY` or `DEPANATOR_LLM_API_KEY` | Required only for `llm.backend: api` |
-| `TELEGRAM_BOT_TOKEN` | Required dedicated bot credential |
-| `TELEGRAM_CHAT_ID` | Required positive private chat ID; also accepted in config |
-| `VNC_PASSWORD` | Required for `start`/`login`; viewer authentication, at least eight characters (VNC uses only the first eight) |
 
 Internal paths are image defaults, not prescribed host locations. Persist the data directory and any independently configured browser profile. These paths must be writable by the container process; the image defaults to user `bun` (UID/GID 1000), and your runtime controls permissions and user mapping. If changing the data path, also configure a writable `HOME` as appropriate. Run one instance per data directory and Telegram bot.
 
-Commands: `start` (default), `login` (explicit manual maintenance), `status` (read-only history), `llm-login` (ChatGPT device-code login), `health` (exit 0 while `start` is polling), and `setup`.
+Commands: `start` (default), `status` (read-only history), and `health` (exit 0 while `start` is polling).
 
-`start` checks the Telegram token and rejects a bot with a webhook before doing any work, so a misconfigured bot exits instead of silently failing. The image's `HEALTHCHECK` runs `health`: after every poll the agent renews a deadline of two poll intervals plus ten minutes in `heartbeat`, so a hung browser or an IS24 login nobody completes turns the container unhealthy. Docker uses it as is; Podman keeps it only for images built with `--format docker`, otherwise pass `--health-cmd '/usr/local/bin/depanator-entrypoint health'`. Restarting an unhealthy container is safe: interrupted submissions are quarantined, never resent. Configuration and secrets must be supplied before starting. Runtime lifecycle, restarts, upgrades, and backups are controlled by your deployment tooling.
-
-For subscription mode, run the image with command `llm-login`, the generated configuration, and the same persistent data storage used by `start`. It prints a link and one-time code; complete login in your phone's browser. No viewer password, display, inbound port, or phone VPN is required for this command. Enable device-code login in ChatGPT security settings if requested. Authentication is saved under `codex` in the data directory, or at `llm.codexHome` if configured independently; persist and protect that location. Run `start` afterward. The bundled Codex CLI uses your plan's allowance and never falls back to API billing. [Subscription backend details](../README.md#chatgpt-subscription).
+`start` checks the Telegram token and rejects a bot with a webhook before doing any work, so a misconfigured bot exits instead of silently failing. The image's `HEALTHCHECK` runs `health`: after every check the agent renews a deadline of two check intervals plus ten minutes in `heartbeat`, so a hung browser or an IS24 login nobody completes turns the container unhealthy. Docker uses it as is; Podman keeps it only for images built with `--format docker`, otherwise pass `--health-cmd '/usr/local/bin/depanator-entrypoint health'`. Restarting an unhealthy container is safe: interrupted submissions are quarantined, never resent.
 
 ## Mounted secrets, stopping, and restores
 
-Instead of values in container environment metadata, supply `TELEGRAM_BOT_TOKEN_FILE`, `VNC_PASSWORD_FILE`, and, for API mode, `OPENAI_API_KEY_FILE` or `DEPANATOR_LLM_API_KEY_FILE`. Each points to a readable mounted file containing a single nonempty line, optionally newline-terminated. Setting both a value and its corresponding `_FILE` path is rejected. Values are read internally, never copied into the container's configured environment. Private mounts and UID/idmap/SELinux permissions are operator responsibilities. Telegram chat ID can remain in configuration or environment metadata. Setup still writes a private `secrets.env`; stage its values into your secret store before permanent deployment. `llm-login` and `status` do not load runtime secret files.
+Instead of values in container environment metadata, supply `TELEGRAM_BOT_TOKEN_FILE` and `VNC_PASSWORD_FILE`. Each points to a readable mounted file containing a single nonempty line, optionally newline-terminated. Setting both a value and its corresponding `_FILE` path is rejected. Values are read internally, never copied into the container's configured environment. Private mounts and UID/idmap/SELinux permissions are operator responsibilities. `status` does not load secret files.
 
-For `start`, SIGTERM/SIGINT immediately stop accepting queued work and starting further reviews/submissions. Search and LLM requests are cancelled, manual login is terminated, and an already-started browser operation can settle. A synchronous guard runs immediately before the browser submit command. Shutdown drains and closes browser/SQLite for **at most 30 seconds**, then exits with status **1** if still blocked. The container wrapper preserves that exit status. Configure your runtime's stop timeout above 30 seconds (for example, 40 seconds); keep its final kill safeguard for event-loop or process stalls. Successful shutdown exits 0. Hard stops retain durable submission claims; restart quarantines those as `unknown_outcome` without retrying. Unclaimed approvals can resume on normal restart.
+For `start`, SIGTERM/SIGINT immediately stop accepting queued work and starting further reviews/submissions. Search and LLM requests are cancelled, a pending IS24 login is cancelled, and an already-started browser operation can settle. A synchronous guard runs immediately before the browser submit command. Shutdown drains and closes browser/SQLite for **at most 30 seconds**, then exits with status **1** if still blocked. The container wrapper preserves that exit status. Configure your runtime's stop timeout above 30 seconds (for example, 40 seconds); keep its final kill safeguard for event-loop or process stalls. Successful shutdown exits 0. Hard stops retain durable submission claims; restart quarantines those as `unknown_outcome` without retrying. Unclaimed approvals can resume on normal restart.
 
 A historical backup can predate a successful remote send; the application cannot detect that rollback or undo IS24 messages. **Your restore lifecycle must create `/data/reconciliation-required` after restoring data and before any start/resume.** The marker blocks startup, queued work, and the final submit seam. Keep it present while using `status` to inspect restored history and manually reconciling IS24 account history, stale approvals, and listings that were already contacted. Do not remove the marker merely because the restore succeeded. Remove it only after reconciliation and safe repair of restored state, then start explicitly. No automatic reconciliation or marker removal is provided. Preserve the marker during upgrades/backups until deliberately cleared. Restores must also occur with all data consumers stopped; the marker is not permission to replace a live SQLite database.
 
-Back up the entire stopped data directory: SQLite database and any WAL/SHM files, browser profile/cookies, browser home, Telegram offset, and Codex authentication/state. Treat this backup as sensitive. Setup and maintenance containers must use the permanent deployment's container paths, UID/GID and compatible mount mapping. No host service manager or deployment topology is assumed here.
+Back up the entire stopped data directory: SQLite database and any WAL/SHM files, settings, browser profile/cookies, browser home, Telegram offset, and the ChatGPT (Codex) login. Treat this backup as sensitive. No host service manager or deployment topology is assumed here.
 
 ## Viewer and account login
 
@@ -51,7 +45,7 @@ The viewer listens on container TCP port **6080**, with its page at `/vnc.html` 
 
 For remote access, place authenticated HTTPS in front of the entire viewer service, including WebSockets. Forward WebSocket upgrades and avoid caching. Choose your own proxy or tunnel; no provider is bundled. The viewer password is an additional layer, distinct from your external access controls and IS24 credentials. An already open WebSocket can outlive an external login session; use your infrastructure to terminate access when required.
 
-With `"autoLogin": true`, the agent verifies the signed-in IS24 account before work. If it cannot verify the configured identity, it pauses, notifies Telegram, and opens the manual login browser. Open your configured viewer, sign into IS24 including 2FA, and close Chromium. The agent rechecks identity and resumes automatically. The optional `viewerUrl` config field is your HTTPS login link for notifications; leaving it empty does not disable authentication handoff. No mode edits or service-manager commands are required by this flow.
+Before every check the agent verifies the signed-in IS24 account. If it cannot verify your account, it pauses, messages you in Telegram, and opens the login browser. Open the viewer, sign in to IS24 (including 2FA), and close the browser window. The agent rechecks your identity and resumes automatically. `DEPANATOR_VIEWER_URL` is the link the message contains; leaving it unset does not disable the handoff.
 
 The container disables Chromium's own sandbox by default. Isolation is the operator's responsibility; `DEPANATOR_BROWSER_NO_SANDBOX=0` enables Chromium's sandbox when your runtime supports it. The viewer is only for account login/maintenance; listing approvals remain in Telegram.
 

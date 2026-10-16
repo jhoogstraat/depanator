@@ -77,14 +77,27 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
-export async function loginWithCodex(config) {
-  if (config.llm.backend !== 'codex') throw new Error('Set llm.backend to codex before subscription login');
+const LOGIN_FLAGS = ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login'];
+function runCodex(config, args, { spawnImpl = spawn, onOutput = () => {} } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-login-'));
-  try {
-    const child = spawn(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login', '--device-auth'], { cwd: directory, env: codexEnvironment(config, directory), stdio: 'inherit' });
-    await new Promise((resolve, reject) => {
-      child.once('error', () => reject(new Error('Cannot start bundled Codex CLI')));
-      child.once('close', code => code === 0 ? resolve() : reject(new Error('Codex subscription login failed')));
-    });
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const child = spawnImpl(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  const collect = chunk => { output += String(chunk).replace(/\x1b\[[0-9;]*m/g, ''); onOutput(output); };
+  child.stdout?.on('data', collect);
+  child.stderr?.on('data', collect);
+  return new Promise(resolve => {
+    child.once('error', () => resolve(false));
+    child.once('close', code => resolve(code === 0));
+  }).finally(() => rmSync(directory, { recursive: true, force: true }));
+}
+export function codexLoggedIn(config, options) { return runCodex(config, ['status'], options); }
+// Device-code login for the ChatGPT subscription: onCode({ url, code }) is called once both are printed.
+export async function loginWithCodex(config, { onCode, ...options } = {}) {
+  let reported = false;
+  const ok = await runCodex(config, ['--device-auth'], { ...options, onOutput(output) {
+    const url = /https:\/\/\S+/.exec(output)?.[0];
+    const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(output)?.[0];
+    if (!reported && url && code) { reported = true; onCode({ url, code }); }
+  } });
+  if (!ok) throw new Error('ChatGPT login did not complete (the code expires after 15 minutes)');
 }

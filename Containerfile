@@ -14,9 +14,8 @@ COPY src ./src
 COPY THIRD_PARTY_NOTICES.md ./
 COPY licenses ./licenses
 COPY .puppeteerrc.cjs ./
-COPY config.example.json ./
 COPY deploy/container-entrypoint.sh /usr/local/bin/depanator-entrypoint
-RUN chmod 755 /usr/local/bin/depanator-entrypoint && mkdir -p /data /config && chown bun:bun /data
+RUN chmod 755 /usr/local/bin/depanator-entrypoint && mkdir -p /data && chown bun:bun /data
 
 ENV DISPLAY=:99 \
     HOME=/data/home \

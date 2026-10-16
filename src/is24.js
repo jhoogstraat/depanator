@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import puppeteer from 'puppeteer';
-import { IS24Contactor } from './is24-contactor.js';
+import { IS24Contactor, FORM_SELECTS } from './is24-contactor.js';
 import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
 
 const ORIGIN = 'https://www.immobilienscout24.de';
@@ -88,11 +88,10 @@ export function extractDetails({priceType = 'calculatedtotalrent'} = {}) {
 }
 
 export async function verifyForm(page, message, persona) {
-  const result = await page.evaluate(({message, persona}) => {
+  const result = await page.evaluate(({message, persona, selects}) => {
     const form = document.querySelector('[data-testid="contact-form"]') || document.querySelector('textarea[name="message"]')?.closest('form');
     if (!form || form.querySelector('textarea[name="message"]')?.value !== message) return false;
     const fields = {vorname:'firstName', nachname:'lastName', email:'emailAddress', telefon:'phoneNumber', strasse:'street', hausnummer:'houseNumber', plz:'postcode', ort:'city', haustiere_zusatz:'petsInHousehold'};
-    const selects = {anrede:'salutation', einzug:'moveInDateType', personen:'numberOfPersons', haustiere:'hasPets', beschaeftigung:'employmentRelationship', einkommen:'income', unterlagen:'applicationPackageCompleted'};
     for (const [key,name] of Object.entries(fields)) {
       const el = form.querySelector(`input[name="${name}"]`);
       const expected = String(persona[key] ?? '');
@@ -111,21 +110,30 @@ export async function verifyForm(page, message, persona) {
     // Reject site-added defaults/claims that are absent from the approved persona.
     for (const input of form.querySelectorAll('input[type="checkbox"], input[type="radio"]')) if (input.checked) return false;
     return true;
-  }, {message, persona});
+  }, {message, persona, selects:FORM_SELECTS});
   if (!result) throw new Error('Exact approved message/persona cannot be verified in contact form');
 }
 
+// Throws a user-facing reason when the search URL cannot be polled exactly.
+export function searchFilters(searchUrl) {
+  const validation = validateSearchUrl(searchUrl);
+  if (!validation.ok) throw new Error(validation.error);
+  if (!['calculatedtotalrent','rentpermonth'].includes(validation.canonical.price.type)) throw new Error('Unsupported rent price type');
+  return validation.canonical;
+}
+
 export class IS24Adapter {
+  // config is the live settings object: a changed search URL or persona applies to the next task.
   constructor(config, deps = {}) {
-    this.config = structuredClone(config);
+    this.config = config;
     this.deps = deps;
     this.fetch = deps.fetch || globalThis.fetch;
     this.queue = Promise.resolve();
     this.browser = null;
-    this.validation = validateSearchUrl(config.searchUrl);
-    if (!this.validation.ok) throw new Error(this.validation.error);
-    if (!['calculatedtotalrent','rentpermonth'].includes(this.validation.canonical.price.type)) throw new Error('Unsupported rent price type');
-    if (!Number.isInteger(config.maxPages) || config.maxPages < 1 || config.maxPages > 100) throw new Error('Invalid maxPages');
+  }
+  get filters() {
+    if (this.filtersFor !== this.config.searchUrl) { this.cachedFilters = searchFilters(this.config.searchUrl); this.filtersFor = this.config.searchUrl; }
+    return this.cachedFilters;
   }
   serial(fn) {
     const task = this.queue.then(fn);
@@ -134,20 +142,27 @@ export class IS24Adapter {
   }
   async searchPage(page, signal) {
     signal?.throwIfAborted();
-    const response = await this.fetch(buildMobileApiUrl(this.validation.canonical, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect:'error'});
+    const response = await this.fetch(buildMobileApiUrl(this.filters, {page}), {method:'POST', headers:{'User-Agent':'ImmoScout_27.12_26.2_._', Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify({supportedResultListTypes:[],userData:{}}), signal:signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect:'error'});
     if ([401, 403, 429].includes(response.status)) throw coded(new Error(`IS24 blocked access to search (HTTP ${response.status})`), 'BLOCKED');
     if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`Search unavailable (HTTP ${response.status}); resolve blocks manually`);
     const data = await response.json();
     if (!Array.isArray(data.resultListItems) || !Number.isSafeInteger(data.numberOfPages) || data.numberOfPages < 0) throw new Error('Unexpected search response');
     return data;
   }
-  async search({ signal } = {}) {
-    const first = await this.searchPage(1, signal);
-    const pages = Math.max(1, Math.min(first.numberOfPages, this.config.maxPages));
-    // The page count is known after page 1, so the rest load in parallel.
-    const rest = await Promise.all(Array.from({length:pages - 1}, (_, index) => this.searchPage(index + 2, signal)));
+  // Results are newest first, so paging stops at the first page holding an already known listing:
+  // a routine poll is one request, which keeps short intervals cheap. known(exposeId) -> boolean.
+  async search({ signal, known = () => false } = {}) {
+    const results = [];
+    let complete = false;
+    for (let page = 1; page <= this.config.maxPages; page++) {
+      const data = await this.searchPage(page, signal);
+      results.push(data);
+      const ids = data.resultListItems.map(item => String((item.item || item).id || (item.item || item).exposeId || ''));
+      if (page >= data.numberOfPages || ids.some(id => known(id))) { complete = true; break; }
+    }
+    const pages = results.length;
     const listings = new Map();
-    for (const data of [first, ...rest]) for (const item of data.resultListItems) {
+    for (const data of results) for (const item of data.resultListItems) {
       const expose = item.item || item;
       const id = String(expose.id || expose.exposeId || '');
       const url = listingUrl(id);
@@ -157,7 +172,6 @@ export class IS24Adapter {
       const attribute = unit => Number(String((expose.attributes || []).find(a => String(a.value).includes(unit))?.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
       if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
     }
-    const complete = first.numberOfPages <= this.config.maxPages;
     return {listings:[...listings.values()],complete,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
   }
   async ensureBrowser() {
@@ -198,7 +212,7 @@ export class IS24Adapter {
     const url = listingUrl(listing.expose_id);
     await this.navigate(page,url);
     let detail;
-    try { detail = await page.evaluate(extractDetails,{priceType:this.validation.canonical.price.type}); }
+    try { detail = await page.evaluate(extractDetails,{priceType:this.filters.price.type}); }
     catch (error) { throw classify(error); }
     if (!detail.address) throw new Error('Missing listing address');
     return {expose_id:String(listing.expose_id),title:detail.title,price:detail.price,area:detail.area,rooms:detail.rooms,address:detail.address,image_url:listing.image_url || '',url,published:listing.published,earlyAccess:listing.earlyAccess,description:detail.description,amenities:detail.amenities};
@@ -234,7 +248,7 @@ export class IS24Adapter {
           beforeSubmit: async current => {
             const currentUrl = new URL(current.url());
             if (currentUrl.origin !== ORIGIN || currentUrl.pathname !== new URL(listingUrl(review.snapshot.expose_id)).pathname) throw new Error('Unexpected contact page destination');
-            const finalDetails = await current.evaluate(extractDetails,{priceType:this.validation.canonical.price.type});
+            const finalDetails = await current.evaluate(extractDetails,{priceType:this.filters.price.type});
             const finalSnapshot = {...fresh,title:finalDetails.title,price:finalDetails.price,area:finalDetails.area,rooms:finalDetails.rooms,address:finalDetails.address,description:finalDetails.description,amenities:finalDetails.amenities};
             if (digest(finalSnapshot) !== digest(review.snapshot)) throw new Error('Listing changed before submission');
             await this.assertAccount(current);
@@ -249,6 +263,15 @@ export class IS24Adapter {
         });
         return {outcome:result.success ? 'sent' : attempted ? 'unknown_outcome' : 'failed',detail:result.detail || result.reason};
       } catch (err) { return {outcome:attempted ? 'unknown_outcome' : 'failed',detail:err.message}; }
+    });
+  }
+  // The dropdown labels of a real contact form (salutation, income, ...), read from the newest listing.
+  formOptions() {
+    return this.serial(async () => {
+      const [listing] = (await this.searchPage(1)).resultListItems;
+      if (!listing) throw new Error('Your search has no listings to read the contact form from yet');
+      const page = await this.ensureBrowser();
+      return (this.deps.contactor || new IS24Contactor({page})).readFormOptions(String((listing.item || listing).id));
     });
   }
   login() {
