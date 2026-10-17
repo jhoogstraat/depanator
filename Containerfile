@@ -2,8 +2,7 @@ FROM docker.io/oven/bun:1.4.3-debian
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates chromium fonts-liberation novnc websockify \
-    xvfb x11vnc x11-utils openbox tini util-linux \
+    ca-certificates chromium fonts-liberation xvfb x11-utils tini util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,7 +23,8 @@ ENV DISPLAY=:99 \
     DEPANATOR_BROWSER_NO_SANDBOX=1
 
 USER bun
-EXPOSE 6080
+# IS24 login page for the Telegram Mini App; publish it behind HTTPS and set DEPANATOR_PUBLIC_URL.
+EXPOSE 8080
 # Docker format only (podman: build with --format docker). Fails when no poll finished for 2 intervals + 10 min.
 HEALTHCHECK --interval=5m --timeout=10s --start-period=15m CMD ["/usr/local/bin/depanator-entrypoint", "health"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/depanator-entrypoint"]

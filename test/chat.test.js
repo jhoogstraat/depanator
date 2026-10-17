@@ -16,7 +16,7 @@ function chat(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-chat-'));
   t.after(() => rmSync(dataDir, { recursive: true, force: true }));
   const store = new Store(':memory:');
-  const settings = new Settings(store, { dataDir, telegramBotToken: 'secret', browserProfile: join(dataDir, 'browser'), browser: {}, viewerUrl: '', llm: { codexHome: join(dataDir, 'codex') } });
+  const settings = new Settings(store, { dataDir, telegramBotToken: 'secret', browserProfile: join(dataDir, 'browser'), browser: {}, publicUrl: '', llm: { codexHome: join(dataDir, 'codex') } });
   const sent = [];
   const events = { ready: 0, logins: 0 };
   const telegram = new Telegram({ config: settings.config, store, workflow: {}, pairingCode: '123456', onPair: chatId => settings.set('chatId', chatId),
@@ -26,7 +26,7 @@ function chat(t) {
     } });
   telegram.assistant = new Assistant({ settings, store, send: (text, extra) => telegram.send(text, extra), onReady: () => { events.ready++; },
     codex: { loggedIn: async () => false, login: async ({ onCode }) => { await onCode({ url: 'https://auth.openai.com/codex/device', code: 'AB12-CD34' }); } },
-    is24: { authenticate: async onRequired => { events.logins++; await onRequired(); }, formOptions: async () => ({ anrede: ['Frau', 'Herr'], einkommen: ['1.000 - 2.000 €', 'über 2.000 €'] }) } });
+    is24: { authenticate: async () => { events.logins++; }, formOptions: async () => ({ anrede: ['Frau', 'Herr'], einkommen: ['1.000 - 2.000 €', 'über 2.000 €'] }) } });
   const message = (text, from = 42) => telegram.handleUpdate({ message: { text, chat: { id: from, type: 'private' }, from: { id: from } } });
   const tap = (data, from = 42) => telegram.handleUpdate({ callback_query: { id: 'q', data, from: { id: from }, message: { message_id: 1, chat: { id: from, type: 'private' } } } });
   const texts = () => sent.filter(call => call.method === 'sendMessage').map(call => call.body.text);
@@ -60,7 +60,6 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   }
   await until(() => c.events.ready === 1);
   assert.equal(c.events.logins, 1);
-  assert.ok(c.texts().some(text => text.includes('log in to ImmobilienScout24 as me@example.com')));
   assert.deepEqual(c.settings.config.persona, { vorname: 'Alex', nachname: 'Doe', anrede: 'Frau', einkommen: '1.000 - 2.000 €', email: 'me@example.com' });
   assert.deepEqual([c.settings.config.accountEmail, c.settings.config.pollIntervalMs, c.settings.config.autoSend], ['me@example.com', 120_000, false]);
 

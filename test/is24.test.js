@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { EventEmitter } from 'node:events';
 import { IS24Adapter, listingUrl, readAccount, extractDetails, verifyForm } from '../src/is24.js';
 import { validateSearchUrl, buildMobileApiUrl } from '../src/url-translator.js';
 import { IS24Contactor } from '../src/is24-contactor.js';
@@ -13,20 +12,12 @@ function network(pages) {
   return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1],numberOfPages:pages.length})};},count:()=>calls};
 }
 const item=id=>({id,title:'Home',published:'vor 2 Stunden',paywallListing:{active:true},attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
-test('container browser path and sandbox flags apply to automated and manual launch',async()=>{
-  const serverConfig={...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}};
-  let automated, manual;
-  const adapter=new IS24Adapter(serverConfig,{
-    launch:async options=>{automated=options;return {newPage:async()=>({}),close:async()=>{}};},
-    spawn:(path,args)=>{manual={path,args};const child=new EventEmitter();queueMicrotask(()=>child.emit('exit',0));return child;},
-  });
+test('container browser path and sandbox flags apply to the agent browser',async()=>{
+  let automated;
+  const adapter=new IS24Adapter({...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}},{launch:async options=>{automated=options;return {newPage:async()=>({}),close:async()=>{}};}});
   await adapter.ensureBrowser();
-  await adapter.login();
   assert.equal(automated.executablePath,'/usr/bin/chromium');
-  assert.equal(manual.path,'/usr/bin/chromium');
-  for(const flag of ['--no-sandbox','--disable-setuid-sandbox']) {
-    assert.ok(automated.args.includes(flag));assert.ok(manual.args.includes(flag));
-  }
+  for(const flag of ['--no-sandbox','--disable-setuid-sandbox']) assert.ok(automated.args.includes(flag));
   assert.deepEqual(new IS24Adapter(config).browserArgs(),[],'local browser keeps its sandbox by default');
 });
 test('strict translation rejects every known widening route',()=>{
@@ -158,24 +149,38 @@ test('final form verification binds exact message and identity, rejects site def
   } finally {globalThis.document=oldDocument;}
 });
 
-test('authentication waits for manual login, verifies identity again, and propagates site failure', async () => {
+test('authentication opens a login tab until the account is verified, and propagates site failure', async () => {
   const adapter = new IS24Adapter({ searchUrl, maxPages: 5, accountEmail: 'me@example.com' });
-  let authenticated = false, prompts = 0, logins = 0;
+  let authenticated = false, prompts = 0;
   const page = { goto: async () => ({ ok: () => true }), url: () => 'https://www.immobilienscout24.de/', evaluate: async () => authenticated ? 'me@example.com' : null };
   adapter.ensureBrowser = async () => page;
-  adapter.login = async () => { logins++; authenticated = true; };
-  await adapter.authenticate(async () => { prompts++; });
-  assert.equal(prompts, 1); assert.equal(logins, 1);
+  adapter.login = async ({ onPage }) => { await onPage(page); prompts++; authenticated = true; };
+  await adapter.authenticate(async () => {});
+  assert.equal(prompts, 1);
   await adapter.authenticate(async () => { throw new Error('Unexpected prompt'); });
   page.goto = async () => { throw new Error('offline'); };
   await assert.rejects(adapter.authenticate(async () => { prompts++; }), /offline/);
   assert.equal(prompts, 1);
 });
 
-test('manual login cancellation cannot spawn a browser after shutdown', async () => {
-  let spawned = false;
-  const adapter = new IS24Adapter({ searchUrl, maxPages: 5 }, { spawn: () => { spawned = true; } });
-  adapter.browser = { close: async () => { adapter.cancelLogin(); } };
+test('login tab: signed-in account, the owner, or a closed tab ends the wait; shutdown cancels it', async () => {
+  const tab = (account = null) => {
+    const handlers = {};
+    return { closed: false, account, setViewport: async () => {}, goto: async () => {}, evaluate: async () => tab.current.account,
+      once: (event, fn) => { handlers[event] = fn; }, isClosed() { return this.closed; }, close: async function () { this.closed = true; handlers.close?.(); } };
+  };
+  const adapter = new IS24Adapter({ searchUrl, maxPages: 5, accountEmail: 'me@example.com' });
+  adapter.browser = { newPage: async () => (tab.current = tab()) };
+  adapter.ensureBrowser = async () => {};
+  let ownerDone;
+  const waiting = adapter.login({ onPage: async page => { assert.equal(page.closed, false); return { done: new Promise(resolve => { ownerDone = resolve; }) }; } });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  ownerDone();
+  await waiting;
+  assert.equal(tab.current.closed, true, 'the login tab is closed afterwards');
+  const cancelled = adapter.login();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  adapter.cancelLogin();
+  await assert.rejects(cancelled, /cancelled/);
   await assert.rejects(adapter.login(), /cancelled/);
-  assert.equal(spawned, false);
 });

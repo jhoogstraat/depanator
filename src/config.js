@@ -23,18 +23,22 @@ export function assertReconciled(config) {
 // Deployment inputs only. Everything else is configured in the Telegram chat (settings.js).
 export function loadRuntime(env = process.env) {
   const dataDir = resolve(env.DEPANATOR_DATA_DIR || '.depanator');
-  const viewerUrl = env.DEPANATOR_VIEWER_URL || '';
-  if (viewerUrl) {
-    const viewer = new URL(viewerUrl);
-    if (viewer.protocol !== 'https:' || viewer.username || viewer.password || viewer.search || viewer.hash) throw new Error('DEPANATOR_VIEWER_URL must be HTTPS without credentials/query/fragment');
+  // Public HTTPS address of this agent's port (reverse proxy or tunnel): enables the IS24 login inside Telegram.
+  const publicUrl = (env.DEPANATOR_PUBLIC_URL || '').replace(/\/+$/, '');
+  if (publicUrl) {
+    const url = new URL(publicUrl);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('DEPANATOR_PUBLIC_URL must be HTTPS without credentials/query/fragment');
   }
+  const port = Number(env.DEPANATOR_PORT || 8080);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('DEPANATOR_PORT must be a port number');
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   chmodSync(dataDir, 0o700);
   return {
     dataDir,
     browserProfile: resolve(env.DEPANATOR_BROWSER_PROFILE || join(dataDir, 'browser')),
     browser: { executablePath: env.DEPANATOR_BROWSER_EXECUTABLE || null, disableSandbox: env.DEPANATOR_BROWSER_NO_SANDBOX === '1' },
-    viewerUrl,
+    publicUrl,
+    port,
     llm: { codexHome: resolve(env.DEPANATOR_CODEX_HOME || join(dataDir, 'codex')) },
     telegramBotToken: readSecret(env, 'TELEGRAM_BOT_TOKEN'),
   };

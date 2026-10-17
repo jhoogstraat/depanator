@@ -2,11 +2,11 @@
 
 A local, Telegram-first apartment agent for ImmobilienScout24. It polls a filtered website search URL, extracts listing details, asks ChatGPT to message or dismiss each new listing, drafts the application, and sends it once you approve (or right away for clear matches, if you turn on auto-send). Setup and approvals happen in Telegram; there is no web UI.
 
-For container deployment on x86_64 or ARM64, see [deploy/README.md](deploy/README.md). The browser viewer is only for logging in to IS24; everything else happens in Telegram.
+For container deployment on x86_64 or ARM64, see [deploy/README.md](deploy/README.md). Everything, including the IS24 login, happens in Telegram.
 
 ## Setup
 
-Everything is configured by chatting with your Telegram bot. Outside the chat you only provide a bot token (and, for the container, a viewer password).
+Everything is configured by chatting with your Telegram bot. Outside the chat you only provide a bot token, plus, on a server, a public HTTPS address so the IS24 login can open inside Telegram.
 
 1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token it gives you. Use a new bot just for this.
 2. Start the agent with that token:
@@ -23,7 +23,7 @@ Everything is configured by chatting with your Telegram bot. Outside the chat yo
    - **ChatGPT:** it sends a link and a code; open the link on your phone, sign in, enter the code. Depanator uses your ChatGPT subscription (Codex allowance), never paid API credit.
    - **Search:** set your filters on immobilienscout24.de and paste the results page address. Only apartment rentals are supported; a filter that cannot be applied exactly is rejected rather than silently widening the search.
    - **What you look for**, your **name** and optional contact details (phone, address).
-   - **IS24 login:** when asked, open the browser viewer, log in to ImmobilienScout24, and close the window. The bot then reads the real contact form and offers its options (salutation, income, move-in, ...) as buttons, so your answers always match what IS24 accepts.
+   - **IS24 login:** the bot sends a **🔐 Log in to IS24** button. It opens the agent's own browser inside Telegram: tap to click, type in the box below it, log in (including any 2FA code), then tap **I'm logged in**. Only your Telegram account can open it. When the agent runs on your own computer without a public address, it opens a browser window there instead; log in and close the tab. The bot then reads the real contact form and offers its options (salutation, income, move-in, ...) as buttons, so your answers always match what IS24 accepts.
    - **How often to check** and whether to **auto-send** clear matches.
 
 The answers are stored in the data directory and survive restarts; an interrupted setup continues where it stopped. Afterwards:

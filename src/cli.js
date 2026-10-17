@@ -12,6 +12,7 @@ import { createEvaluator } from './llm.js';
 import { codexLoggedIn, loginWithCodex } from './codex.js';
 import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
+import { RemoteLogin } from './remote-login.js';
 import { acquireLock } from './lock.js';
 
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
@@ -44,7 +45,7 @@ export async function main(args = process.argv.slice(2)) {
   if (!runtime.telegramBotToken) throw new Error('Set TELEGRAM_BOT_TOKEN to the token of a new bot from @BotFather in Telegram');
   assertReconciled(runtime);
   const unlock = acquireLock(runtime.dataDir);
-  let adapter, workflow, telegram, timer;
+  let adapter, workflow, telegram, remote, timer;
   let closing = false, closePromise;
   const close = () => {
     if (closePromise) return closePromise;
@@ -54,7 +55,7 @@ export async function main(args = process.argv.slice(2)) {
     adapter?.cancelLogin();
     closePromise = boundedShutdown(async () => {
       try {
-        const results = await Promise.allSettled([telegram?.close(), workflow ? workflow.close() : adapter?.close()]);
+        const results = await Promise.allSettled([telegram?.close(), remote?.close(), workflow ? workflow.close() : adapter?.close()]);
         const failure = results.find(result => result.status === 'rejected');
         if (failure) throw failure.reason;
       } finally { unlock(); }
@@ -69,10 +70,18 @@ export async function main(args = process.argv.slice(2)) {
     const settings = new Settings(store, runtime);
     const config = settings.config;
     adapter = new IS24Adapter(config);
-    const loginRequired = async () => {
-      const message = `IS24 login required for ${config.accountEmail}. Open ${config.viewerUrl || 'the browser viewer'}, sign in, then close the browser window. I continue automatically.`;
-      console.log(message);
-      await telegram.send(message).catch(error => console.error(error.message));
+    // With a public URL, the login tab opens inside Telegram (Mini App); otherwise it is a window on this computer.
+    if (config.publicUrl) { remote = new RemoteLogin({ config, port: config.port }); await remote.listen(); }
+    const loginRequired = async page => {
+      const intro = `🔐 IS24 login needed for ${config.accountEmail}.`;
+      console.log(`${intro} Waiting for the owner to log in.`);
+      // A failed stream must not count as "logged in": then only the tab check or closing it ends the wait.
+      const done = remote?.attach(page).catch(error => { console.error(`Login stream: ${error.message}`); return new Promise(() => {}); });
+      const message = remote
+        ? telegram.send(`${intro}\n\nTap the button, log in (including any 2FA code), then tap “I'm logged in”. I continue automatically.`, { reply_markup: { inline_keyboard: [[{ text: '🔐 Log in to IS24', web_app: { url: `${config.publicUrl}/login` } }]] } })
+        : telegram.send(`${intro}\n\nA browser window opened on the computer running the agent. Log in there (including any 2FA code), then close that tab. I continue automatically.`);
+      await message.catch(error => console.error(error.message));
+      return { done };
     };
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
@@ -90,7 +99,7 @@ export async function main(args = process.argv.slice(2)) {
     telegram.assistant = new Assistant({
       settings, store, send: (text, extra) => telegram.send(text, extra),
       codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options) },
-      is24: { authenticate: onRequired => adapter.authenticate(onRequired), formOptions: () => adapter.formOptions() },
+      is24: { authenticate: () => adapter.authenticate(loginRequired), formOptions: () => adapter.formOptions() },
       onReady: () => tick(), onError: message => console.error(message),
     });
     await telegram.verify();

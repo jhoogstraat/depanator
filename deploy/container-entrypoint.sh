@@ -16,12 +16,6 @@ case "$mode" in
   *) echo 'Use start, status, or health' >&2; exit 64 ;;
 esac
 
-VNC_PASSWORD=$(bun -e 'import { readSecret } from "/app/src/config.js"; process.stdout.write(readSecret(process.env, "VNC_PASSWORD"));')
-: "${VNC_PASSWORD:?Set VNC_PASSWORD or VNC_PASSWORD_FILE}"
-if [ "${#VNC_PASSWORD}" -lt 8 ]; then
-  echo 'VNC_PASSWORD must contain at least 8 characters' >&2
-  exit 64
-fi
 mkdir -p "$agent_data_dir" "$HOME"
 
 # All agent containers share this kernel lock, independent of PID namespaces.
@@ -33,6 +27,8 @@ rm -f "$agent_data_dir/agent.lock"
 # every later launch refuse the profile. The flock above proves no browser is using it now.
 rm -f "${DEPANATOR_BROWSER_PROFILE:-$agent_data_dir/browser}"/Singleton*
 
+# Chromium runs headful (sites treat headless browsers as bots) on a virtual display nobody views:
+# the IS24 login tab is streamed into Telegram instead.
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
 ready=0
 while ! xdpyinfo -display :99 >/dev/null 2>&1; do
@@ -40,12 +36,6 @@ while ! xdpyinfo -display :99 >/dev/null 2>&1; do
   [ "$ready" -lt 50 ] || { echo 'Virtual display failed to start' >&2; exit 1; }
   sleep 0.1
 done
-openbox >/dev/null 2>&1 &
-printf '%s\n' "$VNC_PASSWORD" >/tmp/depanator-vnc-password
-unset VNC_PASSWORD
-x11vnc -display :99 -localhost -rfbport 5900 -forever -shared \
-  -passwdfile /tmp/depanator-vnc-password >/dev/null 2>&1 &
-websockify --web=/usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
 # Keep the shell alive holding flock while Bun runs. Forward shutdown to Bun so
 # it commits the outcome and releases its own lock before the container exits.

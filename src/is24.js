@@ -1,5 +1,4 @@
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import puppeteer from 'puppeteer';
 import { IS24Contactor, FORM_SELECTS } from './is24-contactor.js';
@@ -234,7 +233,7 @@ export class IS24Adapter {
         return current;
       });
       try { await this.assertAccount(page); return; }
-      catch { await onRequired(); await this.login(); }
+      catch { await this.login({ onPage: onRequired }); }
     }
   }
   send(review,{beforeSubmit, assertCanSubmit} = {}) {
@@ -277,19 +276,32 @@ export class IS24Adapter {
       return (this.deps.contactor || new IS24Contactor({page})).readFormOptions(String((listing.item || listing).id));
     });
   }
-  login() {
+  // Opens IS24 in a phone-sized tab of the agent's own browser (same profile, so the session sticks) and
+  // waits until the account is signed in there, the tab is closed, or the owner says so (onPage's `done`).
+  // authenticate() re-verifies afterwards. onPage(page) shows the tab to the owner and may return { done }.
+  login({ onPage = async () => {} } = {}) {
     return this.serial(async () => {
       if (this.loginCancelled) throw new Error('Login cancelled');
-      if (this.browser) { await this.browser.close(); this.browser = null; }
-      if (this.loginCancelled) throw new Error('Login cancelled');
-      const launch = this.deps.spawn || spawn;
-      const child = launch(this.config.browser?.executablePath || await puppeteer.executablePath(),[...this.browserArgs(), `--user-data-dir=${resolve(this.config.browserProfile)}`, '--no-first-run', ORIGIN],{stdio:'ignore'});
-      this.loginChild = child;
+      await this.ensureBrowser();
+      const page = await this.browser.newPage();
+      let finished = false;
+      const finish = () => { finished = true; this.wakeLogin?.(); };
       try {
-        await new Promise((resolve,reject) => { child.once('error',reject); child.once('exit',(code) => code === 0 ? resolve() : reject(new Error(`Browser exited (${code})`))); });
-      } finally { this.loginChild = null; }
+        await page.setViewport({width:412,height:860,deviceScaleFactor:2,isMobile:true,hasTouch:true});
+        await page.goto(ORIGIN + '/', {waitUntil:'domcontentloaded',timeout:30000}).catch(() => {});
+        page.once('close', finish);
+        (await onPage(page))?.done?.then(finish, finish);
+        while (!finished) {
+          if (this.loginCancelled) throw new Error('Login cancelled');
+          if ((await page.evaluate(readAccount).catch(() => null)) === this.config.accountEmail.toLowerCase()) return;
+          await new Promise(resolve => { this.wakeLogin = resolve; setTimeout(resolve, 3000); });
+        }
+      } finally {
+        this.wakeLogin = null;
+        if (!page.isClosed()) await page.close().catch(() => {});
+      }
     });
   }
-  cancelLogin() { this.loginCancelled = true; this.loginChild?.kill('SIGTERM'); }
+  cancelLogin() { this.loginCancelled = true; this.wakeLogin?.(); }
   close() { return this.serial(async () => { if (this.browser) await this.browser.close(); this.browser=null; }); }
 }

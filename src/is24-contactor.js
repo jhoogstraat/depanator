@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const IS24_EXPOSE_URL = 'https://www.immobilienscout24.de/expose';
 const LOGIN_URL_RE = /\/login|\/registrierung|sso\.immobilienscout24/;
-const SESSION_EXPIRED = 'SESSION_EXPIRED (IS24 login required — log in again in the browser viewer)';
+const SESSION_EXPIRED = 'SESSION_EXPIRED (IS24 login required — the bot asks you to log in again)';
 const MAX_SCREENSHOTS = 20;
 // Persona key -> contact form <select> name. Their values must equal an option label.
 export const FORM_SELECTS = { anrede: 'salutation', einzug: 'moveInDateType', personen: 'numberOfPersons', haustiere: 'hasPets', beschaeftigung: 'employmentRelationship', einkommen: 'income', unterlagen: 'applicationPackageCompleted' };

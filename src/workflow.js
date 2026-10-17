@@ -7,7 +7,7 @@ const MAX_BACKOFF_MS = 3_600_000;
 // The browser fetches details one at a time; this many LLM calls overlap with it.
 const ANALYSIS_CONCURRENCY = 3;
 const ADVICE = {
-  IS24: 'Self-healing restarted the browser and is backing off. Check the browser viewer for a captcha, block, or expired login.',
+  IS24: 'Self-healing restarted the browser and keeps retrying with longer pauses. If it continues, IS24 may be blocking this connection or showing a captcha.',
   LLM: 'Analysis is paused and retries every check. Check your ChatGPT plan, or send /login to reconnect it.',
 };
 

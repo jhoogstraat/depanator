@@ -120,9 +120,8 @@ export class Assistant {
   }
   // Logs in to IS24 if needed, then reads the dropdown options of a real contact form.
   async readForm() {
-    const email = this.settings.config.accountEmail;
-    await this.send('Next I read the IS24 contact form, so your answers match its options exactly. This needs your IS24 login.');
-    await this.is24.authenticate(() => this.send(`Please log in to ImmobilienScout24 as ${email}: open ${this.settings.config.viewerUrl || 'the browser viewer'}, sign in, then close the browser window. I continue automatically.`));
+    await this.send('Next I read the IS24 contact form, so your answers match its options exactly. This needs your IS24 login; if you are not logged in yet, I send you a login button.');
+    await this.is24.authenticate();
     let options;
     try { options = await this.is24.formOptions(); }
     catch (error) { throw new Error(`I could not read the contact form: ${error.message}.`); }

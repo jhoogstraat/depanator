@@ -18,7 +18,7 @@ test('mounted secrets are read without mutating environment; invalid files fail 
   }
   const env = { DEPANATOR_DATA_DIR: join(directory, 'data'), TELEGRAM_BOT_TOKEN_FILE: key };
   assert.equal(loadRuntime(env).telegramBotToken, 'private-value');
-  assert.throws(() => loadRuntime({ ...env, DEPANATOR_VIEWER_URL: 'http://viewer.example.com' }), /HTTPS/);
+  assert.throws(() => loadRuntime({ ...env, DEPANATOR_PUBLIC_URL: 'http://agent.example.com' }), /HTTPS/);
   writeFileSync(key, 'private-value\nextra-secret');
   assert.throws(() => readSecret(env, 'TELEGRAM_BOT_TOKEN'), /must contain one nonempty line/);
   assert.throws(() => readSecret({ TELEGRAM_BOT_TOKEN_FILE: '/missing' }, 'TELEGRAM_BOT_TOKEN'), /^Error: Cannot read TELEGRAM_BOT_TOKEN_FILE$/);
