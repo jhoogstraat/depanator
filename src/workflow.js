@@ -112,7 +112,11 @@ export class Workflow {
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
-    this.store.discover(search.listings, { fresh: search.caughtUp === true });
+    // A search that has not caught up with known listings is new to the agent (first check, or a changed
+    // search): what it finds was online before, so it is only noted. The owner hears about new listings only.
+    const existing = search.caughtUp === false;
+    const noted = this.store.discover(search.listings, { fresh: search.caughtUp === true, existing });
+    if (existing && noted.length) await this.raise(`👀 Watching your search. ${noted.length} listings are already online; I skip those and message you only about new ones.`);
     const batch = { stop: false, is24Failed: false, llmFailed: false, tried: new Set() }; // tried: delivered once this poll
     const queue = this.store.list('discovered');
     const worker = async () => { while (!batch.stop && queue.length) await this.analyze(queue.shift(), batch); };

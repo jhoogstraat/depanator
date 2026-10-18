@@ -10,7 +10,10 @@ import { createHash } from 'node:crypto';
 //       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
 //                                                          approved ←release─ submitting  (only before the request)
 //
-// Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them; a send
+//   existing: online before the agent watched this search (first check, or after a search change);
+//   never analyzed or messaged.
+//
+// Terminal: existing, sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them; a send
 // outcome only records that the user was told about it (reported).
 // Not a status: whether the draft reached Telegram (notifiedAt) and the outcome report (reportedAt).
 // Both are durable outboxes, retried every tick until delivered.

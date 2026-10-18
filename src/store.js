@@ -44,10 +44,11 @@ export class Store {
   }
   // Stable listing IDs: an already-known listing is ignored, even if its price changed. Returns the new reviews.
   // fresh: found by a search that had caught up with known listings, i.e. newly published (auto-send eligible).
-  discover(snapshots, { fresh = false } = {}) {
+  // existing: only note the listings (status `existing`), so they are known but never analyzed.
+  discover(snapshots, { fresh = false, existing = false } = {}) {
     const insert = this.db.prepare('INSERT OR IGNORE INTO reviews(id,expose_id,status,body) VALUES(?,?,?,?)');
     return this.transaction(() => snapshots.flatMap(snapshot => {
-      const review = { ...newReview({ id: randomUUID(), snapshot, now: this.now() }), fresh };
+      const review = { ...newReview({ id: randomUUID(), snapshot, now: this.now() }), fresh, ...(existing && { status: 'existing' }) };
       return insert.run(review.id, review.exposeId, review.status, JSON.stringify(review)).changes ? [review] : [];
     }));
   }

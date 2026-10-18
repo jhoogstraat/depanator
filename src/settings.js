@@ -42,7 +42,7 @@ export const FIELDS = [
   { key: 'pollIntervalMs', label: 'Check every', ask: 'How often should I check for new listings? Being early matters most; every 2 minutes is a good balance.', default: 2 * MINUTE,
     choices: [1, 2, 3, 5, 10, 30].map(minutes => [minutes * MINUTE, `${minutes} min`]) },
   { key: 'autoSend', label: 'Auto-send', ask: 'Should I send applications myself when a listing clearly fits? You get the listing and the sent message afterwards. Unclear matches always ask you first.', default: false,
-    choices: [[false, 'Ask me each time'], [true, 'Auto-send clear matches']] },
+    choices: [[false, 'Ask me each time'], [true, 'Auto-send clear matches']], setup: false },
   { key: 'model', label: 'ChatGPT model', ask: 'Which ChatGPT model should review listings? It must be available to your plan.', default: 'gpt-6-luna', setup: false, parse: pattern(/^[a-zA-Z0-9._-]{1,60}$/, 'Please send a model name like gpt-6-luna.') },
   { key: 'maxPages', label: 'Pages per check', ask: 'How many result pages may one check read? Checks stop at the first page with listings I know, so this mostly limits the very first check.', default: 5, setup: false,
     choices: [1, 3, 5, 10].map(pages => [pages, String(pages)]) },

@@ -320,14 +320,14 @@ test('auto-send sends confident matches in the same tick and still asks about th
   } });
   f.adapter.details = async listing => ({ ...f.snapshot, expose_id: listing.expose_id });
   f.config.autoSend = true;
-  // The first check finds listings that were online before the agent: never auto-sent, even when confident.
+  // The first check finds listings that were online before the agent: only noted, never analyzed.
   f.adapter.search = async () => ({ listings: [{ ...f.snapshot, expose_id: '100' }], complete: true, caughtUp: false });
   await f.workflow.tick();
   f.adapter.search = async () => ({ listings: [f.snapshot, { ...f.snapshot, expose_id: '456' }, { ...f.snapshot, expose_id: '100' }], complete: true, caughtUp: true });
   await f.workflow.tick();
   const [baseline, confident, unsure] = f.store.list();
-  assert.deepEqual([baseline.status, confident.status, confident.approvedBy, unsure.status], ['awaiting_approval', 'sent', 'auto', 'awaiting_approval']);
-  assert.equal(f.calls.notify, 2, 'the baseline and the unsure match ask for approval');
+  assert.deepEqual([baseline.status, confident.status, confident.approvedBy, unsure.status], ['existing', 'sent', 'auto', 'awaiting_approval']);
+  assert.equal(f.calls.notify, 1, 'only the unsure new match asks for approval');
   assert.deepEqual(reported, ['auto']);
   await f.workflow.close();
 });

@@ -8,7 +8,7 @@ The operator chooses the container runtime, service manager, host paths, volume 
 
 1. Create a Telegram bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and keep its token.
 2. Run the image with `TELEGRAM_BOT_TOKEN`, a persistent volume at `/data`, and port 8080 published behind HTTPS (reverse proxy or tunnel). Set `DEPANATOR_PUBLIC_URL` to that HTTPS address; Telegram opens the "Connect ImmoScout24" page there.
-3. Read the container log. It prints `Open your bot in Telegram and send:  /start <code>`. Send that to your bot; the bot then guides you through ChatGPT login, connecting ImmoScout24 (inside Telegram), your search, contact details, check interval, and auto-send. All answers are stored in `/data`.
+3. Read the container log. It prints `Open your bot in Telegram and send:  /start <code>`. Send that to your bot; the bot then guides you through ChatGPT login, connecting ImmoScout24 (inside Telegram), your search, contact details, and check interval. Auto-send starts off; turn it on later with `/autosend`. All answers are stored in `/data`.
 
 There is no configuration file. `deploy/secrets.env.example` lists every input.
 

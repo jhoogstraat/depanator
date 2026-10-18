@@ -30,7 +30,7 @@ export class Assistant {
     if (!field) {
       if (this.ready) return;
       this.ready = true;
-      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here.\n\n${HELP}`);
+      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, /autosend lets me send clear matches myself.\n\n${HELP}`);
       return this.onReady();
     }
     if (field.key === 'is24') return this.track(() => this.connectIS24());
