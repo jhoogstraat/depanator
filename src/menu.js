@@ -111,8 +111,8 @@ export function promptView({ style, preferences, about }) {
     '', '<b>👤 About you</b>', block(facts || 'Nothing yet.'),
     '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
   ].join('\n'), [
-    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '🎯 Criteria', callback_data: 'x:criteria' }, { text: '👤 About you', callback_data: 'x:about' }],
-    ...(style ? [[{ text: '🗑 Remove writing style', callback_data: 'c:style:-' }]] : []),
+    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Criteria', callback_data: 'x:criteria' }, { text: '👤 About you', callback_data: 'x:about' }],
+    ...(style ? [[{ text: '🗑 Remove style', callback_data: 'c:style:-' }]] : []),
   ]);
 }
 // fields: [[key, label, display]]; each button changes that detail.
