@@ -36,6 +36,8 @@ export const FIELDS = [
   { key: 'persona.plz', label: 'Postcode', ask: 'Your postcode?', parse: pattern(/^\d{5}$/, 'Please send a 5-digit postcode.'), optional: true },
   { key: 'persona.ort', label: 'City', ask: 'Your current city?', parse: line(60), optional: true },
   { key: 'persona.about', label: 'About you', ask: 'What should landlords know about you? For example household, job, income, move-in date, pets, documents (SCHUFA, proof of income). Applications state only what you write here.', parse: text(1000), optional: true },
+  { key: 'persona.sendProfile', label: 'Attach IS24 profile', ask: 'Should applications include your ImmoScout24 tenant profile (as set up on IS24), or only the message?',
+    choices: [[true, 'Attach my IS24 profile'], [false, 'Message only']] },
   { key: 'pollIntervalMs', label: 'Check every', ask: 'How often should I check for new listings? Being early matters most; every 2 minutes is a good balance.', default: 2 * MINUTE,
     choices: [1, 2, 3, 5, 10, 30].map(minutes => [minutes * MINUTE, `${minutes} min`]) },
   { key: 'autoSend', label: 'Auto-send', ask: 'Should I send applications myself when a listing clearly fits? You get the listing and the sent message afterwards. Unclear matches always ask you first.', default: false,

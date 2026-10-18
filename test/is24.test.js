@@ -67,6 +67,7 @@ test('listing details come from the app API and keep warm and cold rent apart', 
 test('contact requests carry only approved data and refuse fields they cannot fill', () => {
   const { body } = contactRequest(expose(), persona, 'Hallo!', 'sso-1');
   assert.deepEqual(body['expose.contactForm'], { salutation: 'FEMALE', firstname: 'Me', lastname: 'Example', emailAddress: 'me@example.com', message: 'Hallo!', privacyPolicyAccepted: true, profileType: 'BASIC', sendProfile: false });
+  assert.equal(contactRequest(expose(), { ...persona, sendProfile: true }, 'Hallo!').body['expose.contactForm'].sendProfile, true, 'the IS24 profile is attached only when chosen');
   assert.equal(body.ssoId, 'sso-1');
   assert.match(contactRequest(expose({ formFieldConfig: { incomeField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires income, which I cannot fill in/);
   assert.match(contactRequest(expose({ formFieldConfig: { phoneNumberField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires a phone number\. Add it in \/settings/);

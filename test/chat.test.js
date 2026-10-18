@@ -61,7 +61,7 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   }
   await until(() => c.events.ready === 1);
   assert.equal(c.events.logins, 1);
-  assert.deepEqual(c.settings.config.persona, { anrede: 'FEMALE', vorname: 'Alex', nachname: 'Doe', email: 'me@example.com' });
+  assert.deepEqual(c.settings.config.persona, { anrede: 'FEMALE', vorname: 'Alex', nachname: 'Doe', sendProfile: true, email: 'me@example.com' });
   assert.deepEqual([c.settings.config.accountEmail, c.settings.config.pollIntervalMs, c.settings.config.autoSend], ['me@example.com', 120_000, false]);
 
   await c.message('/interval');

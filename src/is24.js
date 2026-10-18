@@ -89,7 +89,7 @@ export function contactRequest(expose, persona, message, ssoId) {
   const form = {
     salutation: persona.anrede || 'NO_SALUTATION', firstname: persona.vorname, lastname: persona.nachname, emailAddress: persona.email,
     ...(persona.telefon && { phoneNumber: persona.telefon }), ...(Object.values(address).some(Boolean) && { address }),
-    message, privacyPolicyAccepted: true, profileType: 'BASIC', sendProfile: false,
+    message, privacyPolicyAccepted: true, profileType: 'BASIC', sendProfile: persona.sendProfile === true,
   };
   return { body: { 'expose.contactForm': form, supportedScreens: ['registration', 'valuation'], requestCount: 1, doNotSend: false, entitlements: [], ...(ssoId && { ssoId }) } };
 }

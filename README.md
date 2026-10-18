@@ -22,7 +22,7 @@ Everything is configured by chatting with your Telegram bot. Outside the chat yo
    - **ChatGPT:** it sends a link and a code; open the link on your phone, sign in, enter the code. Depanator uses your ChatGPT subscription (Codex allowance), never paid API credit.
    - **ImmoScout24:** tap **🔗 Connect ImmoScout24** and enter your IS24 email and password (and a security code, if IS24 asks). They go straight to IS24's login service, the same one the IS24 app uses, and are never stored; the agent keeps only IS24's renewable login key (`is24-session.json` in the data directory). Only your Telegram account can open the page.
    - **Search:** set your filters on immobilienscout24.de and paste the results page address. Only apartment rentals are supported; a filter that cannot be applied exactly is rejected rather than silently widening the search.
-   - **What you look for**, your **salutation**, **name**, optional contact details (phone, address), and optionally what landlords should know about you (household, job, income, move-in date, pets, documents). Applications state only what you write.
+   - **What you look for**, your **salutation**, **name**, optional contact details (phone, address), and optionally what landlords should know about you (household, job, income, move-in date, pets, documents). Applications state only what you write, plus your ImmoScout24 tenant profile if you choose to attach it.
    - **How often to check** and whether to **auto-send** clear matches.
 
 The answers are stored in the data directory and survive restarts; an interrupted setup continues where it stopped. Afterwards:
