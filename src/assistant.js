@@ -36,6 +36,14 @@ export class Assistant {
     if (field.key === 'is24') return this.track(() => this.connectIS24());
     return this.ask(field.key);
   }
+  // After a restart: resume a long step, but do not repeat a question that is still open in the chat
+  // (its buttons and a typed answer keep working). /setup asks it again on request.
+  async resume() {
+    if (!this.chatgpt) this.chatgpt = await this.codex.loggedIn().catch(() => false);
+    const field = this.settings.next();
+    if (this.chatgpt && field && field.key !== 'is24') return;
+    return this.continue();
+  }
   // Long steps run one at a time beside the chat; Telegram keeps answering meanwhile. False if one is running.
   track(step, retry = '/setup') {
     if (this.busy) return false;
@@ -49,7 +57,8 @@ export class Assistant {
     const field = this.settings.field(key);
     const choices = this.settings.choices(key);
     this.asking = choices.length ? null : key;
-    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : [])];
+    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : []),
+      ...(field.shortcut ? [{ text: field.shortcut[0], callback_data: `c:${key}:s` }] : [])];
     const current = this.settings.values[key] !== undefined ? `\n\nCurrently: ${this.settings.display(key)}` : '';
     await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: rows(buttons, choices.length > 4 || choices.some(([, label]) => label.length > 14) ? 1 : 3) } } : {});
   }
@@ -76,6 +85,13 @@ export class Assistant {
       if (!this.settings.field(key)) return { text: 'Unknown setting.' };
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
+    }
+    const shortcut = index === 's' && this.settings.field(key)?.shortcut;
+    if (shortcut) {
+      for (const [setting, value] of Object.entries(shortcut[1])) this.settings.set(setting, value);
+      if (this.asking === key) this.asking = null;
+      await this.saved(key);
+      return { text: 'Saved.', used: true };
     }
     const choices = this.settings.choices(key);
     const choice = choices[Number(index)];

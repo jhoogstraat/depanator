@@ -56,12 +56,14 @@ test('pairing, then a guided setup that resumes from stored answers and validate
     const field = c.settings.next();
     if (!field || field.key === 'is24') { await until(() => c.settings.next()?.key !== 'is24'); continue; }
     if (typed[field.key]) await c.message(typed[field.key]);
+    else if (field.key === 'persona.about') await c.tap(c.button('Use IS24 Selbstauskunft'));
     else if (c.settings.choices(field.key).length) await c.tap(c.button(field.key === 'pollIntervalMs' ? 1 : 0));
     else await c.tap(c.button('Skip'));
   }
   await until(() => c.events.ready === 1);
   assert.equal(c.events.logins, 1);
   assert.deepEqual(c.settings.config.persona, { anrede: 'FEMALE', vorname: 'Alex', nachname: 'Doe', sendProfile: true, email: 'me@example.com' });
+  assert.ok(!c.texts().some(text => text.includes('also include your IS24 Selbstauskunft')), 'the shortcut answers the attach question too');
   assert.deepEqual([c.settings.config.accountEmail, c.settings.config.pollIntervalMs, c.settings.config.autoSend], ['me@example.com', 120_000, false]);
 
   await c.message('/interval');
@@ -89,4 +91,15 @@ test('settings reject a search that would widen and keep the previous value', t 
   assert.throws(() => c.settings.set('searchUrl', `${searchUrl}&pets-allowed=true`), /Unsupported IS24 search filters/);
   assert.throws(() => c.settings.set('pollIntervalMs', 1000), /pick one of the buttons/);
   assert.equal(c.settings.config.searchUrl, searchUrl);
+});
+
+test('a restart does not repeat a setup question that is still open in the chat', async t => {
+  const c = chat(t);
+  c.settings.set('chatId', '42');
+  c.settings.set('accountEmail', 'me@example.com');
+  const assistant = new Assistant({ settings: c.settings, store: c.store, send: (text, extra) => c.telegram.send(text, extra), codex: { loggedIn: async () => true } });
+  await assistant.resume();
+  assert.equal(c.texts().length, 0);
+  await assistant.command('/setup');
+  assert.match(c.texts().at(-1), /Open immobilienscout24\.de/, '/setup asks it again');
 });

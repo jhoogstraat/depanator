@@ -126,7 +126,7 @@ export async function main(args = process.argv.slice(2)) {
     heartbeat();
     telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
     if (pairingCode) console.log(`Open your bot in Telegram and send:  /start ${pairingCode}`);
-    else if (!settings.complete()) telegram.assistant.continue().catch(error => console.error(error.message));
+    else if (!settings.complete()) telegram.assistant.resume().catch(error => console.error(error.message));
     console.log('Agent running. Configure and approve everything in your private Telegram chat.');
     schedule();
     tick();
