@@ -8,7 +8,6 @@ export const COMMANDS = [
   ['prompt', 'What ChatGPT is told; your writing style'],
   ['model', 'ChatGPT model and thinking level'],
   ['autosend', 'Send clear matches without asking'],
-  ['settings', 'All settings'],
   ['connect', 'Reconnect ImmoScout24'],
   ['login', 'Reconnect ChatGPT'],
 ];
@@ -25,7 +24,7 @@ const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking }
+// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, plan }
 export function statusView(s) {
   const n = key => s.counts[key] ?? 0;
   const health = (failures, ok) => s.blocked && ok.startsWith('connected') ? '⛔ blocking me, backing off' : failures ? `⚠️ ${plural(failures, 'failure')} in a row` : `✅ ${ok}`;
@@ -33,7 +32,7 @@ export function statusView(s) {
     s.paused ? '<b>⏸ Paused</b>: I do not search. Waiting drafts and sending still work.' : `<b>🟢 Searching</b> every ${esc(s.interval)}`,
     `🕑 Last check: ${when(s.lastPollAt)}`,
     `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`) : '❌ not connected, /connect'}`,
-    `🤖 ChatGPT: ${health(s.failures.LLM, `${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`)}`,
+    `🤖 ChatGPT${s.plan ? ` ${esc(s.plan[0].toUpperCase() + s.plan.slice(1))}` : ''}: ${health(s.failures.LLM, `${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`)}`,
     `📤 Auto-send: ${s.autoSend ? 'on' : 'off'}`,
     '',
     '<b>📊 Listings</b>',
@@ -48,6 +47,7 @@ export function statusView(s) {
   return html(lines.join('\n'), [
     [{ text: '🔎 Search now', callback_data: 'x:check' }, s.paused ? { text: '▶️ Resume', callback_data: 'x:pause' } : { text: '⏸ Pause', callback_data: 'x:pause' }],
     [{ text: `📬 Waiting (${n('awaiting_approval')})`, callback_data: 'x:waiting' }, { text: `📨 Sent (${n('sent') + n('unknown_outcome') + n('failed')})`, callback_data: 'x:sent' }],
+    [{ text: '🔍 Change search', callback_data: 'k:searchUrl' }, { text: `⏱ Every ${s.interval}`, callback_data: 'k:pollIntervalMs' }],
     [{ text: '🔄 Refresh', callback_data: 'x:status' }],
   ]);
 }

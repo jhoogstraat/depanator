@@ -70,7 +70,7 @@ test('contact requests carry only approved data and refuse fields they cannot fi
   assert.equal(contactRequest(expose(), { ...persona, sendProfile: true }, 'Hallo!').body['expose.contactForm'].sendProfile, true, 'the IS24 profile is attached only when chosen');
   assert.equal(body.ssoId, 'sso-1');
   assert.match(contactRequest(expose({ formFieldConfig: { incomeField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires income, which I cannot fill in/);
-  assert.match(contactRequest(expose({ formFieldConfig: { phoneNumberField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires a phone number\. Add it in \/settings/);
+  assert.match(contactRequest(expose({ formFieldConfig: { phoneNumberField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires a phone number\. Add it in \/prompt/);
   assert.match(contactRequest({ ...expose(), contact: { premiumProfileRequiredForContacting: 'true' } }, persona, 'Hallo!').reason, /Premium/);
 });
 

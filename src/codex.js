@@ -53,6 +53,15 @@ export function codexArguments(config, directory) {
     ...disabled.flatMap(feature => ['--disable', feature]), '-'];
 }
 
+// The ChatGPT plan of the connected account ('plus', 'pro', ...), from the login Codex stored; '' if unknown.
+export function codexPlan(config) {
+  try {
+    const { tokens } = JSON.parse(readFileSync(join(config.llm.codexHome, 'auth.json'), 'utf8'));
+    const claims = JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64url'));
+    return String(claims['https://api.openai.com/auth']?.chatgpt_plan_type || '');
+  } catch { return ''; }
+}
+
 // The models this ChatGPT plan offers, with the thinking levels each supports (first = its default).
 export async function listCodexModels(config, { spawnImpl = spawn } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-models-'));

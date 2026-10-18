@@ -37,7 +37,6 @@ The bot's menu (☰ next to the message field):
 | `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details); set your writing style |
 | `/model` | Pick a ChatGPT model from your plan, then its thinking level |
 | `/autosend` | Send clear matches without asking you first |
-| `/settings` | See every setting and tap one to change it |
 | `/connect` | Reconnect your ImmoScout24 account (also asked automatically when IS24 ends the login) |
 | `/login` | Reconnect your ChatGPT subscription |
 

@@ -23,7 +23,7 @@ function pattern(regex, hint) {
   };
 }
 // Every setting the chat can change, in guided-setup order. `setup: false` settings have a default and
-// are only changed from /settings. Persona values fill the IS24 contact request; the LLM may use only them.
+// are changed from the menu. Persona values fill the IS24 contact request; the LLM may use only them.
 export const FIELDS = [
   { key: 'searchUrl', label: 'Search', ask: 'Open immobilienscout24.de, search for apartments to rent with all your filters, and paste the address of the results page here.', parse: value => { const url = String(value).trim(); searchFilters(url); return url; } },
   { key: 'preferences', label: 'Criteria', ask: 'Describe what you are looking for and what is a must. Listings that clearly do not fit are dismissed without asking you. Example: "Quiet, balcony, max. 2nd floor without lift, no swap flats."', parse: text(2000) },
@@ -48,8 +48,6 @@ export const FIELDS = [
   { key: 'thinking', label: 'Thinking', ask: 'How hard should ChatGPT think?', default: '', empty: 'default', optional: true, setup: false, parse: pattern(/^[a-z]{1,20}$/, 'Please pick a thinking level from /model.') },
   { key: 'style', label: 'Writing style', empty: 'none', ask: 'How should applications be written? For example: "Formal, short, always mention that I am a non-smoker." Applications still state only facts you gave me.', setup: false, parse: text(1000), optional: true },
   { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
-  { key: 'maxPages', label: 'Pages per check', ask: 'How many result pages may one check read? Checks stop at the first page with listings I know, so this mostly limits the very first check.', default: 5, setup: false,
-    choices: [1, 3, 5, 10].map(pages => [pages, String(pages)]) },
 ];
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
 
@@ -98,8 +96,9 @@ export class Settings {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
       chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
-      pollIntervalMs: value('pollIntervalMs'), maxPages: value('maxPages'), autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
+      pollIntervalMs: value('pollIntervalMs'), maxPages: 5, autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
     });
+    // maxPages: checks stop at the first page with known listings, so it only limits a first check.
     this.config.llm.model = value('model');
     this.config.llm.thinking = value('thinking');
     const persona = this.config.persona;

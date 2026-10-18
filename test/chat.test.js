@@ -73,9 +73,9 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   await c.tap(oneMinute);
   assert.equal(c.settings.config.pollIntervalMs, 60_000);
   await c.tap(oneMinute.replace(/:\w{4}$/, ':xxxx'));
-  assert.deepEqual([c.sent.at(-1).method, c.sent.at(-1).body.text], ['answerCallbackQuery', 'These buttons are outdated; use /settings.']);
+  assert.deepEqual([c.sent.at(-1).method, c.sent.at(-1).body.text], ['answerCallbackQuery', 'These buttons are outdated; open the menu again.']);
   await c.message('https://www.immobilienscout24.de/Suche/de/berlin/berlin/haus-kaufen');
-  assert.match(c.texts().at(-1), /\/settings/, 'free text after setup changes nothing');
+  assert.match(c.texts().at(-1), /menu/, 'free text after setup changes nothing');
   assert.equal(c.settings.config.searchUrl, searchUrl);
   assert.equal(new Settings(c.store, { llm: {} }).complete(), true, 'stored answers survive a restart');
 
@@ -113,11 +113,12 @@ test('menu: status with search now and pause, criteria, model then thinking, wri
     ready: true, workflow: { lastPollAt: null, failures: { IS24: 0, LLM: 2 }, backoff: { blocked: false } },
     check: async () => { checks.push(c.settings.config.paused); return { tracked: 0 }; },
   });
+  c.telegram.assistant.codex.plan = () => 'plus';
   c.telegram.assistant.codex.models = async () => [{ id: 'gpt-a', name: 'GPT-A', thinking: ['low', 'medium', 'high'], defaultThinking: 'medium' }, { id: 'gpt-b', name: 'GPT-B', thinking: ['low'], defaultThinking: 'low' }];
   const last = method => c.sent.findLast(call => call.method === method).body;
 
   await c.message('/status');
-  assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT: ⚠️ 2 failures in a row[\s\S]*Waiting for you: <b>0<\/b>/);
+  assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT Plus: ⚠️ 2 failures in a row[\s\S]*Waiting for you: <b>0<\/b>/);
   assert.equal(last('sendMessage').parse_mode, 'HTML');
   await c.tap('x:pause');
   assert.equal(c.settings.config.paused, true);

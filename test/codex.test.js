@@ -4,10 +4,10 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { evaluateWithCodex, codexArguments, codexEnvironment, codexExecutable, loginWithCodex } from '../src/codex.js';
+import { evaluateWithCodex, codexArguments, codexEnvironment, codexExecutable, loginWithCodex, codexPlan } from '../src/codex.js';
 import { validateEvaluation } from '../src/llm.js';
 
 function fixture(t) {
@@ -106,4 +106,13 @@ test('pinned native Codex CLI sends no tools to an offline fixture endpoint', { 
   assert.equal(request.text.format.type, 'json_schema');
   assert.deepEqual(request.text.format.schema.required, ['decision', 'reasons', 'draft', 'confident']);
   assert.notEqual(code, 0);
+});
+
+test('the ChatGPT plan is read from the stored login, or left out', t => {
+  const config = fixture(t);
+  assert.equal(codexPlan(config), '');
+  const idToken = `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro' } })).toString('base64url')}.y`;
+  mkdirSync(config.llm.codexHome, { recursive: true });
+  writeFileSync(join(config.llm.codexHome, 'auth.json'), JSON.stringify({ tokens: { id_token: idToken } }));
+  assert.equal(codexPlan(config), 'pro');
 });

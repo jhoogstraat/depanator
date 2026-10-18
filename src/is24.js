@@ -83,7 +83,7 @@ export function contactRequest(expose, persona, message, ssoId) {
     if (state !== 'MANDATORY') continue;
     const [asks = field.replace(/Field$/, ''), value] = FIELDS[field] || [];
     if (!value) return { reason: `This listing requires ${asks}, which I cannot fill in. Apply on IS24 yourself.` };
-    if (!value(persona, message)) return { reason: `This listing requires ${asks}. Add it in /settings.` };
+    if (!value(persona, message)) return { reason: `This listing requires ${asks}. Add it in /prompt → 👤 About you.` };
   }
   const address = { street: persona.strasse, houseNumber: persona.hausnummer, postcode: persona.plz, city: persona.ort };
   const form = {

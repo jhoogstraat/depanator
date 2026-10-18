@@ -70,7 +70,7 @@ export class Assistant {
     }
     const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
     if (!key || !this.settings.field(key) || this.settings.choices(key).length) {
-      return this.ready ? this.send(`To change something, use /settings. ${MENU_HINT}`) : this.continue();
+      return this.ready ? this.send(`To change something, use the menu. ${MENU_HINT}`) : this.continue();
     }
     try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
     this.asking = null;
@@ -98,7 +98,7 @@ export class Assistant {
     const choices = this.settings.choices(key);
     const choice = choices[Number(index)];
     const value = index === '-' && this.settings.field(key)?.optional ? '' : choice && mark === fingerprint(choice[1]) ? choice[0] : undefined;
-    if (!this.settings.field(key) || value === undefined) return { text: 'These buttons are outdated; use /settings.' };
+    if (!this.settings.field(key) || value === undefined) return { text: 'These buttons are outdated; open the menu again.' };
     this.settings.set(key, value);
     if (this.asking === key) this.asking = null;
     await this.saved(key);
@@ -110,7 +110,7 @@ export class Assistant {
       if (this.settings.complete()) return this.send(`Setup is complete. ${MENU_HINT}`);
       return this.continue();
     }
-    if (!this.settings.complete() && !['/settings', '/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
+    if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
     if (name === '/status') return this.show(this.statusView());
     if (name === '/pause') {
       const paused = this.settings.set('paused', !this.settings.config.paused);
@@ -122,11 +122,6 @@ export class Assistant {
       return this.show(promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] }));
     }
     if (name === '/model') return this.modelMenu();
-    if (name === '/settings') {
-      const lines = FIELDS.map(field => `${field.label}: ${this.settings.display(field.key)}`);
-      const buttons = FIELDS.map(field => ({ text: field.label, callback_data: `k:${field.key}` }));
-      return this.send(`ImmoScout24 account: ${this.settings.config.accountEmail || 'not connected'}\n${lines.join('\n')}\n\nTap what you want to change:`, { reply_markup: { inline_keyboard: rows(buttons, 2) } });
-    }
     if (name === '/interval') return this.ask('pollIntervalMs');
     if (name === '/autosend') return this.ask('autoSend');
     if (name === '/connect') {
@@ -146,7 +141,7 @@ export class Assistant {
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
     const { config } = this.settings;
     return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking });
+      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking, plan: this.codex.plan?.() ?? '' });
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
   async models() {
