@@ -100,14 +100,23 @@ export function criteriaView(preferences) {
 }
 
 // What ChatGPT gets with each listing that you control (the fixed safety rules are not shown).
-export function promptView({ style, preferences, persona }) {
+// about: [[label, value]] of your details as ChatGPT gets them (unset ones left out).
+export function promptView({ style, preferences, about }) {
   const block = body => `<blockquote expandable>${esc(body)}</blockquote>`;
-  const facts = Object.entries(persona).map(([key, value]) => `${key}: ${value}`).join('\n');
+  const facts = about.map(([label, value]) => `${label}: ${value}`).join('\n');
   return html([
     '<b>📝 What ChatGPT gets for each new listing</b>',
     '', '<b>✍️ Your writing style</b>', block(style || 'None yet. Tap below to add one, e.g. "Formal, short, mention that I am a non-smoker."'),
-    '', '<b>🎯 Criteria</b> (/criteria)', block(criteriaLines(preferences).join('\n')),
-    '', '<b>👤 About you</b> (/settings)', block(facts || 'Nothing yet.'),
+    '', '<b>🎯 Criteria</b>', block(criteriaLines(preferences).join('\n')),
+    '', '<b>👤 About you</b>', block(facts || 'Nothing yet.'),
     '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
-  ].join('\n'), [[{ text: '✍️ Change writing style', callback_data: 'k:style' }, ...(style ? [{ text: '🗑 Remove style', callback_data: 'c:style:-' }] : [])]]);
+  ].join('\n'), [
+    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '🎯 Criteria', callback_data: 'x:criteria' }, { text: '👤 About you', callback_data: 'x:about' }],
+    ...(style ? [[{ text: '🗑 Remove writing style', callback_data: 'c:style:-' }]] : []),
+  ]);
+}
+// fields: [[key, label, display]]; each button changes that detail.
+export function aboutView(fields) {
+  return html(`<b>👤 About you</b>\nApplications state only these facts. Tap one to change it.\n\n${fields.map(([, label, value]) => `${esc(label)}: ${esc(value)}`).join('\n')}`,
+    rows(fields.map(([key, label]) => ({ text: label, callback_data: `k:${key}` })), 2));
 }

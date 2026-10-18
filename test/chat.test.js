@@ -151,7 +151,15 @@ test('menu: status with search now and pause, criteria, model then thinking, wri
   assert.equal(c.settings.config.style, 'Formal and short.');
   await c.message('/prompt');
   assert.match(last('sendMessage').text, /Your writing style[\s\S]*Formal and short\.[\s\S]*No ground floor/);
-  assert.doesNotMatch(last('sendMessage').text, /Built-in rules/);
+  assert.doesNotMatch(last('sendMessage').text, /Built-in rules|\(\/criteria\)/);
+  assert.match(last('sendMessage').text, /First name: Alex/, 'details by their labels');
+  await c.tap(c.button('👤 About you'));
+  await c.tap(c.button('Phone'));
+  await c.message('+49 170 1234567');
+  assert.equal(c.settings.config.persona.telefon, '+49 170 1234567');
+  await c.message('/prompt');
+  await c.tap(c.button('🎯 Criteria'));
+  assert.match(last('sendMessage').text, /🎯 Criteria/);
   const dismissed = [];
   c.telegram.assistant.workflow.dismiss = id => { dismissed.push(id); c.store.dispatch(id, { type: 'dismiss', version: 1 }); };
   const [one, two] = c.store.discover([{ expose_id: '1', title: 'A' }, { expose_id: '2', title: 'B' }]);

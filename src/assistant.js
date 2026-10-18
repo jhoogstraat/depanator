@@ -1,5 +1,5 @@
 import { FIELDS } from './settings.js';
-import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView } from './menu.js';
+import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView, aboutView } from './menu.js';
 
 const stale = { text: 'These buttons are outdated; open the menu again.' };
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -117,7 +117,10 @@ export class Assistant {
       return this.send(paused ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again, every ' + this.settings.display('pollIntervalMs') + '. /status → 🔎 Search now checks right away.');
     }
     if (name === '/criteria') return this.show(criteriaView(this.settings.config.preferences));
-    if (name === '/prompt') return this.show(promptView(this.settings.config));
+    if (name === '/prompt') {
+      const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
+      return this.show(promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] }));
+    }
     if (name === '/model') return this.modelMenu();
     if (name === '/settings') {
       const lines = FIELDS.map(field => `${field.label}: ${this.settings.display(field.key)}`);
@@ -136,6 +139,8 @@ export class Assistant {
     }
     return this.send(`I do not know ${name}. ${MENU_HINT}`);
   }
+  // [[key, label, display]] of every personal detail.
+  persona() { return FIELDS.filter(field => field.key.startsWith('persona.')).map(field => [field.key, field.label, this.settings.display(field.key)]); }
   statusView() {
     const counts = {};
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
@@ -174,6 +179,8 @@ export class Assistant {
       this.searchNow().catch(error => this.onError(error.message));
       return { text: '🔎 Searching…' };
     }
+    if (name === 'criteria') { await this.show(criteriaView(config.preferences)); return { text: '' }; }
+    if (name === 'about') { await this.show(aboutView(this.persona())); return { text: '' }; }
     if (name === 'waiting') {
       const view = waitingView(this.store.list('awaiting_approval'));
       if (a === 'edit') return { text: '', edit: view };
