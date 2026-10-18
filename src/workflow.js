@@ -113,7 +113,7 @@ export class Workflow {
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
     this.store.discover(search.listings, { fresh: search.caughtUp === true });
-    const batch = { stop: false, is24Failed: false, llmFailed: false };
+    const batch = { stop: false, is24Failed: false, llmFailed: false, tried: new Set() }; // tried: delivered once this poll
     const queue = this.store.list('discovered');
     const worker = async () => { while (!batch.stop && queue.length) await this.analyze(queue.shift(), batch); };
     // allSettled: no worker may still touch the store after this poll ends or the workflow closes.
@@ -121,7 +121,7 @@ export class Workflow {
     if (failed) throw failed.reason;
     if (!batch.is24Failed) { this.backoff.blocked = false; await this.recovered('IS24'); }
     for (const review of this.store.list('awaiting_approval')) {
-      if (review.notifiedAt != null) continue;
+      if (review.notifiedAt != null || batch.tried.has(review.id)) continue;
       this.assertRunning();
       await this.deliver(review);
     }
@@ -148,7 +148,7 @@ export class Workflow {
       // published listings: the first check, or one after a search change, would otherwise mass-apply.
       if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true) {
         this.store.dispatch(review.id, { type: 'approve', version: saved.version, draftHash: saved.draftHash, bindings, by: 'auto' });
-      }
+      } else if (saved.status === 'awaiting_approval') { batch.tried.add(saved.id); await this.deliver(saved); } // Each draft as soon as it is ready.
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.
       const systemic = this.closed || error.code === 'BLOCKED' || error.code === 'LLM_UNAVAILABLE';
