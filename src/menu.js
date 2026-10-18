@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { INSTRUCTIONS } from './llm.js';
 
 // The Telegram menu (☰ next to the message field). Hidden but still working: /start, /setup, /interval.
 export const COMMANDS = [
@@ -100,7 +99,7 @@ export function criteriaView(preferences) {
   ]);
 }
 
-// Everything ChatGPT receives with each listing, in order.
+// What ChatGPT gets with each listing that you control (the fixed safety rules are not shown).
 export function promptView({ style, preferences, persona }) {
   const block = body => `<blockquote expandable>${esc(body)}</blockquote>`;
   const facts = Object.entries(persona).map(([key, value]) => `${key}: ${value}`).join('\n');
@@ -109,7 +108,6 @@ export function promptView({ style, preferences, persona }) {
     '', '<b>✍️ Your writing style</b>', block(style || 'None yet. Tap below to add one, e.g. "Formal, short, mention that I am a non-smoker."'),
     '', '<b>🎯 Criteria</b> (/criteria)', block(criteriaLines(preferences).join('\n')),
     '', '<b>👤 About you</b> (/settings)', block(facts || 'Nothing yet.'),
-    '', '<b>📜 Built-in rules</b> (fixed)', block(INSTRUCTIONS),
     '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
   ].join('\n'), [[{ text: '✍️ Change writing style', callback_data: 'k:style' }, ...(style ? [{ text: '🗑 Remove style', callback_data: 'c:style:-' }] : [])]]);
 }

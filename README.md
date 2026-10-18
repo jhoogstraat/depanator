@@ -34,7 +34,7 @@ The bot's menu (☰ next to the message field):
 | `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: 🔎 Search now, ⏸ Pause / ▶️ Resume, 📬 Waiting (show a listing again), 📨 Sent |
 | `/pause` | Pause or resume searching. While paused, waiting drafts and approved sends still work |
 | `/criteria` | What a listing must have. ChatGPT skips clear mismatches; add, remove or rewrite criteria |
-| `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details, built-in rules); set your writing style |
+| `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details); set your writing style |
 | `/model` | Pick a ChatGPT model from your plan, then its thinking level |
 | `/autosend` | Send clear matches without asking you first |
 | `/settings` | See every setting and tap one to change it |
