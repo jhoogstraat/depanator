@@ -24,6 +24,7 @@ export class Workflow {
     this.reporting = Promise.resolve(); // Outcome reports, serialized but independent of IS24 work.
     this.failures = { IS24: 0, LLM: 0 }; // Consecutive outage streaks.
     this.backoff = { skip: 0, blocked: false }; // Polls to skip; sends pause while IS24 blocks us.
+    this.lastPollAt = null; // The last search that completed.
   }
   get closed() { return this.controller.signal.aborted; }
   bindings() { return { accountBinding: bindingFor(this.config), configHash: configHashFor(this.config) }; }
@@ -55,15 +56,18 @@ export class Workflow {
   }
   poll() { return this.run(() => this.pollInternal()); }
   sendApproved() { return this.run(() => this.sendInternal()); }
-  tick() {
+  // manual: the owner asked to search now, also while searching is paused.
+  tick({ manual = false } = {}) {
     // Every interval, even while a previous tick is stuck (e.g. waiting for an IS24 login).
     this.reportOutcomes();
     if (this.runningTick) return this.runningTick;
     this.runningTick = this.run(async () => {
       let result;
       let pollError;
-      if (this.backoff.skip > 0) { this.backoff.skip--; result = { skipped: true }; }
-      else try { result = await this.pollInternal(); } catch (error) { pollError = error; }
+      // Paused: no search, but approved applications are still sent.
+      if (this.config.paused === true && !manual) result = { paused: true };
+      else if (this.backoff.skip > 0) { this.backoff.skip--; result = { skipped: true }; }
+      else try { result = await this.pollInternal(); this.lastPollAt = Date.now(); } catch (error) { pollError = error; }
       await this.sendInternal();
       if (pollError) throw pollError;
       return result;

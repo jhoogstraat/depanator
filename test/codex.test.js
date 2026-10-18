@@ -80,6 +80,7 @@ test('shutdown cancels the Codex subprocess and an already aborted review cannot
 
 test('pinned native Codex CLI sends no tools to an offline fixture endpoint', { timeout: 20000 }, async t => {
   const config = fixture(t);
+  config.llm.thinking = 'high';
   let request;
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -101,6 +102,7 @@ test('pinned native Codex CLI sends no tools to an offline fixture endpoint', { 
   assert.ok(request, `CLI did not reach fixture: ${stderr}`);
   assert.deepEqual(request.tools, []);
   assert.equal(request.model, config.llm.model);
+  assert.equal(request.reasoning?.effort, 'high', 'the chosen thinking level reaches the model');
   assert.equal(request.text.format.type, 'json_schema');
   assert.deepEqual(request.text.format.schema.required, ['decision', 'reasons', 'draft', 'confident']);
   assert.notEqual(code, 0);

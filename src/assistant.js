@@ -1,23 +1,17 @@
-import { createHash } from 'node:crypto';
 import { FIELDS } from './settings.js';
+import { MENU_HINT, fingerprint, rows, statusView, waitingView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView } from './menu.js';
 
-const HELP = `/settings – see and change everything
-/interval – how often I check for new listings
-/autosend – send clear matches without asking
-/status – what I have done so far
-/login – reconnect your ChatGPT subscription
-/connect – reconnect your ImmoScout24 account
-/setup – continue the guided setup`;
-// Buttons name an option by index plus a short fingerprint, so a stale button never picks a different option.
-const fingerprint = label => createHash('sha256').update(String(label)).digest('base64url').slice(0, 4);
-const rows = (buttons, perRow) => Array.from({ length: Math.ceil(buttons.length / perRow) }, (_, index) => buttons.slice(index * perRow, index * perRow + perRow));
+const stale = { text: 'These buttons are outdated; open the menu again.' };
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 // The chat side of configuration: guides the owner through setup and changes settings later.
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
-  constructor({ settings, store, send, codex, is24, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, onReady, onError });
-    this.asking = null; // Setting key awaiting a typed answer.
+  // workflow: health for /status. check() runs a search now. redeliver(review) shows a waiting listing again.
+  constructor({ settings, store, send, codex, is24, workflow = null, check = async () => {}, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
+    Object.assign(this, { settings, store, send, codex, is24, workflow, check, redeliver, onReady, onError });
+    this.asking = null; // Setting key (or 'criteria+') awaiting a typed answer.
+    this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
@@ -30,7 +24,7 @@ export class Assistant {
     if (!field) {
       if (this.ready) return;
       this.ready = true;
-      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, /autosend lets me send clear matches myself.\n\n${HELP}`);
+      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, /autosend lets me send clear matches myself.\n\n${MENU_HINT}`);
       return this.onReady();
     }
     if (field.key === 'is24') return this.track(() => this.connectIS24());
@@ -69,20 +63,28 @@ export class Assistant {
   // A typed message that is not a command or a draft edit.
   async text(message) {
     if (this.busy) return this.send('One moment, I am still on the previous step.');
+    if (this.asking === 'criteria+') {
+      this.asking = null;
+      try { this.settings.set('preferences', [...criteriaLines(this.settings.config.preferences), message.trim()].join('\n')); } catch (error) { return this.send(error.message); }
+      return this.show(criteriaView(this.settings.config.preferences));
+    }
     const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
     if (!key || !this.settings.field(key) || this.settings.choices(key).length) {
-      return this.ready ? this.send(`To change something, use /settings.\n\n${HELP}`) : this.continue();
+      return this.ready ? this.send(`To change something, use /settings. ${MENU_HINT}`) : this.continue();
     }
     try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
     this.asking = null;
     return this.saved(key);
   }
-  // Button taps: c:<key>:<index|-> answers a question, k:<key> asks to change a setting.
-  // Returns the toast and whether the tap was used up (then its buttons are removed).
+  // Button taps: c:<key>:<index|-> answers a question, k:<key> asks to change a setting, x:<action> is a
+  // menu action. Returns the toast, whether the tap was used up (then its buttons are removed), and
+  // optionally `edit`: a view that replaces the tapped message.
   async choice(data) {
     const [kind, key, index, mark] = data.split(':');
+    if (kind === 'x') return this.action(...data.split(':').slice(1));
     if (kind === 'k') {
       if (!this.settings.field(key)) return { text: 'Unknown setting.' };
+      if (key === 'model' || key === 'thinking') { await this.modelMenu(); return { text: '' }; }
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
     }
@@ -102,11 +104,21 @@ export class Assistant {
     await this.saved(key);
     return { text: 'Saved.', used: true };
   }
+  show(view) { return this.send(view.text, view.extra); }
   async command(name) {
     if (name === '/start' || name === '/setup') {
-      if (this.settings.complete()) return this.send(`Setup is complete.\n\n${HELP}`);
+      if (this.settings.complete()) return this.send(`Setup is complete. ${MENU_HINT}`);
       return this.continue();
     }
+    if (!this.settings.complete() && !['/settings', '/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
+    if (name === '/status') return this.show(this.statusView());
+    if (name === '/pause') {
+      const paused = this.settings.set('paused', !this.settings.config.paused);
+      return this.send(paused ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again, every ' + this.settings.display('pollIntervalMs') + '. /status → 🔎 Search now checks right away.');
+    }
+    if (name === '/criteria') return this.show(criteriaView(this.settings.config.preferences));
+    if (name === '/prompt') return this.show(promptView(this.settings.config));
+    if (name === '/model') return this.modelMenu();
     if (name === '/settings') {
       const lines = FIELDS.map(field => `${field.label}: ${this.settings.display(field.key)}`);
       const buttons = FIELDS.map(field => ({ text: field.label, callback_data: `k:${field.key}` }));
@@ -122,13 +134,76 @@ export class Assistant {
       if (this.track(() => this.chatgptLogin(), '/login')) return;
       return this.send('One moment, I am still on the previous step.');
     }
-    if (name === '/status') {
-      const counts = {};
-      for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
-      const summary = Object.entries(counts).map(([status, count]) => `${status.replaceAll('_', ' ')}: ${count}`).join('\n') || 'No listings yet.';
-      return this.send(`${summary}\n\nChecking every ${this.settings.display('pollIntervalMs')}. Auto-send: ${this.settings.display('autoSend')}.`);
+    return this.send(`I do not know ${name}. ${MENU_HINT}`);
+  }
+  statusView() {
+    const counts = {};
+    for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
+    const { config } = this.settings;
+    return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
+      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking });
+  }
+  // ponytail: 10-minute cache; plans rarely change their models more often.
+  async models() {
+    if (!this.modelCache || Date.now() - this.modelCache.at > 600_000) this.modelCache = { at: Date.now(), list: await this.codex.models() };
+    return this.modelCache.list;
+  }
+  async modelMenu() {
+    let list;
+    try { list = await this.models(); } catch (error) { await this.send(`⚠️ I could not read your plan's models (${error.message}).`); return this.ask('model'); }
+    return this.show(modelView(list, this.settings.config.llm.model, this.settings.config.llm.thinking));
+  }
+  async searchNow() {
+    const before = this.store.count();
+    const result = await this.check();
+    if (result?.error) return this.send(`⚠️ The search failed: ${result.error}`);
+    if (result?.skipped) return this.send('⏳ IS24 is blocking me right now. I back off and try again on my own.');
+    const found = this.store.count() - before;
+    return this.send(found ? `🔎 Done: ${plural(found, 'new listing')}. Matches arrive as separate messages.` : '🔎 Done: no new listings.');
+  }
+  // Menu buttons (x:<name>:<args>), see menu.js.
+  async action(name, a, b, c) {
+    const { config } = this.settings;
+    if (!this.settings.complete()) return { text: 'Finish the setup first.' };
+    if (name === 'status') return { text: 'Updated.', edit: this.statusView() };
+    if (name === 'pause') {
+      const paused = this.settings.set('paused', !config.paused);
+      return { text: paused ? '⏸ Paused' : '▶️ Searching again', edit: this.statusView() };
     }
-    return this.send(HELP);
+    if (name === 'check') {
+      this.searchNow().catch(error => this.onError(error.message));
+      return { text: '🔎 Searching…' };
+    }
+    if (name === 'waiting') { await this.show(waitingView(this.store.list('awaiting_approval'))); return { text: '' }; }
+    if (name === 'sent') { await this.show(sentView(this.store.list())); return { text: '' }; }
+    if (name === 'show') {
+      const review = /^[a-f0-9]{32}$/.test(a || '') && this.store.get(a.replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'));
+      if (review?.status !== 'awaiting_approval') return { text: 'This listing is no longer waiting.' };
+      await this.redeliver(review);
+      return { text: '' };
+    }
+    if (name === 'm' || name === 't') {
+      const model = this.modelCache?.list[Number(a)];
+      if (!model || fingerprint(model.id) !== (name === 'm' ? b : c)) return stale;
+      if (name === 'm') return { text: '', edit: thinkingView(model, Number(a), config.llm.model, config.llm.thinking) };
+      if (!model.thinking.includes(b)) return stale;
+      this.settings.set('model', model.id);
+      this.settings.set('thinking', b === model.defaultThinking ? '' : b);
+      return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${b}. Applies to the next listing.`, extra: {} } };
+    }
+    if (name === 'ca') {
+      this.asking = 'criteria+';
+      await this.send('➕ Send one more criterion, for example "No ground floor" or "At most 3rd floor without a lift".');
+      return { text: '' };
+    }
+    if (name === 'cd') {
+      const lines = criteriaLines(config.preferences);
+      if (lines.length < 2 || !lines[Number(a)] || fingerprint(lines[Number(a)]) !== b) return stale;
+      lines.splice(Number(a), 1);
+      this.settings.set('preferences', lines.join('\n'));
+      return { text: 'Removed.', edit: criteriaView(config.preferences) };
+    }
+    return stale;
   }
   async chatgptLogin() {
     await this.send('First, connect your ChatGPT subscription. It reviews listings and writes your applications.');

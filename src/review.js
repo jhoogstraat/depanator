@@ -36,9 +36,10 @@ export function bindingFor(config) {
   return hash({ accountEmail: config.accountEmail.toLowerCase().trim() });
 }
 export function configHashFor(config) {
-  const { searchUrl, accountEmail, persona, preferences, llm } = config;
-  // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, persona, preferences, llm: llm && { model: llm.model, codexHome: llm.codexHome } });
+  const { searchUrl, accountEmail, persona } = config;
+  // What the request sends and to whom. Secrets, notification destinations, the criteria and the model
+  // (they only decide and write drafts, which are approved verbatim) do not authorize or change a message.
+  return hash({ searchUrl, accountEmail, persona });
 }
 
 export function conflict(message) {

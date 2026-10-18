@@ -27,14 +27,19 @@ Everything is configured by chatting with your Telegram bot. Outside the chat yo
 
 The answers are stored in the data directory and survive restarts; an interrupted setup continues where it stopped. Afterwards:
 
+The bot's menu (☰ next to the message field):
+
 | Command | |
 | --- | --- |
-| `/settings` | See every setting and tap one to change it |
-| `/interval` | How often to check for new listings (1–30 minutes; default 2) |
+| `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: 🔎 Search now, ⏸ Pause / ▶️ Resume, 📬 Waiting (show a listing again), 📨 Sent |
+| `/pause` | Pause or resume searching. While paused, waiting drafts and approved sends still work |
+| `/criteria` | What a listing must have. ChatGPT skips clear mismatches; add, remove or rewrite criteria |
+| `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details, built-in rules); set your writing style |
+| `/model` | Pick a ChatGPT model from your plan, then its thinking level |
 | `/autosend` | Send clear matches without asking you first |
-| `/status` | Counts of reviewed, sent and dismissed listings |
-| `/login` | Reconnect your ChatGPT subscription |
+| `/settings` | See every setting and tap one to change it |
 | `/connect` | Reconnect your ImmoScout24 account (also asked automatically when IS24 ends the login) |
+| `/login` | Reconnect your ChatGPT subscription |
 
 ### Being early
 
@@ -42,7 +47,7 @@ Results are read newest first, and each check stops once a page ends with a list
 
 ### Reviews
 
-Each new match arrives as one message: title, rent/size/rooms, photo, expandable details, the complete draft, and **Send / Edit / Dismiss**. Tap **✏️ Edit** and reply with what to change (for example "shorter" or "mention I can move in on 1 March"); the revised draft arrives as a new version and the old buttons stop working. Facts you state in an edit are treated as verified. Each approval authorizes one exact draft for one listing and account; every send outcome (sent, not sent, or uncertain) is reported, also after a restart. Changing your search, preferences, or contact details invalidates waiting drafts; tap ✏️ Edit on one to renew it, or Dismiss it.
+Each new match arrives as one message: title, rent/size/rooms, photo, expandable details, the complete draft, and **Send / Edit / Dismiss**. Tap **✏️ Edit** and reply with what to change (for example "shorter" or "mention I can move in on 1 March"); the revised draft arrives as a new version and the old buttons stop working. Facts you state in an edit are treated as verified. Each approval authorizes one exact draft for one listing and account; every send outcome (sent, not sent, or uncertain) is reported, also after a restart. Changing your search or contact details invalidates waiting drafts (criteria, writing style and model only affect new drafts); tap ✏️ Edit on one to renew it, or Dismiss it.
 
 The agent heals itself before asking for help. Search outages and IS24 blocks trigger exponential backoff (up to an hour); sends pause while IS24 blocks access. ChatGPT outages pause analysis without using up a listing's retries. Telegram alerts you only when a component fails three times in a row, when it recovers, or when a listing is given up after five failed analyses.
 

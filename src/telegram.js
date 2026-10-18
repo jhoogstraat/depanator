@@ -178,9 +178,10 @@ export class Telegram {
     if (!query) return;
     let answer = 'This approval is invalid.';
     let accepted = false;
+    let view = null; // Replaces the tapped message (menu views).
     const owner = this.chatId && query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId;
-    if (owner && /^[ck]:/.test(query.data || '')) {
-      try { ({ text: answer, used: accepted = false } = await this.assistant.choice(query.data)); }
+    if (owner && /^[ckx]:/.test(query.data || '')) {
+      try { ({ text: answer, used: accepted = false, edit: view = null } = await this.assistant.choice(query.data)); }
       catch (error) { answer = error.message; }
     } else if (owner) {
       const match = /^([ade]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
@@ -214,7 +215,8 @@ export class Telegram {
     }
     await this.api('answerCallbackQuery', { callback_query_id: query.id, text: answer });
     // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones.
-    if (accepted) await this.api('editMessageReplyMarkup', { chat_id: this.chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    if (view) await this.api('editMessageText', { chat_id: this.chatId, message_id: query.message.message_id, text: view.text, ...view.extra }).catch(() => {});
+    else if (accepted) await this.api('editMessageReplyMarkup', { chat_id: this.chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
   }
   saveOffset(offset) {
     const temp = `${this.offsetFile}.tmp`;

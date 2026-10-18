@@ -9,9 +9,10 @@ import { Settings } from './settings.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
 import { createEvaluator } from './llm.js';
-import { codexLoggedIn, loginWithCodex } from './codex.js';
+import { codexLoggedIn, loginWithCodex, listCodexModels } from './codex.js';
 import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
+import { COMMANDS } from './menu.js';
 import { ConnectApp } from './connect.js';
 import { IS24Session } from './is24-auth.js';
 import { acquireLock } from './lock.js';
@@ -102,20 +103,24 @@ export async function main(args = process.argv.slice(2)) {
     telegram = new Telegram({ config, store, workflow, pairingCode, onPair: chatId => settings.set('chatId', chatId), onError: message => console.error(message) });
     telegram.assistant = new Assistant({
       settings, store, send: (text, extra) => telegram.send(text, extra),
-      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options) },
+      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config) },
       is24: { connect: () => connect() },
+      workflow, check: () => tick({ manual: true }), redeliver: review => telegram.notify(review),
       onReady: () => tick(), onError: message => console.error(message),
     });
     await telegram.verify();
+    await telegram.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
     // Liveness: "healthy until" (epoch seconds), renewed by every finished tick. A stalled tick lets it lapse.
     const heartbeat = () => writeFileSync(join(runtime.dataDir, 'heartbeat'), String(Math.ceil((Date.now() + 2 * config.pollIntervalMs + 600_000) / 1000)));
-    const tick = () => {
+    // Resolves with the tick's result, or { error } (logged here).
+    const tick = options => {
       if (!settings.complete()) return heartbeat(); // Nothing to poll until the chat setup is done.
-      return workflow.tick().then(result => {
-        if (closing) return;
-        console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : `Poll complete. ${result.tracked} listings tracked.`);
+      return workflow.tick(options).then(result => {
+        if (closing) return result;
+        console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : result?.paused ? 'Paused; poll skipped.' : `Poll complete. ${result.tracked} listings tracked.`);
         if (result?.warning) console.error(result.warning);
-      }).catch(error => { console.error(`Agent: ${error.message}`); }).finally(() => { if (!closing) heartbeat(); });
+        return result;
+      }).catch(error => { console.error(`Agent: ${error.message}`); return { error: error.message }; }).finally(() => { if (!closing) heartbeat(); });
     };
     // ±10% jitter keeps polls from forming an exact pattern. A changed interval applies immediately.
     const schedule = () => {

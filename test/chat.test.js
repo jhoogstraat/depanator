@@ -103,3 +103,54 @@ test('a restart does not repeat a setup question that is still open in the chat'
   await assistant.command('/setup');
   assert.match(c.texts().at(-1), /Open immobilienscout24\.de/, '/setup asks it again');
 });
+
+test('menu: status with search now and pause, criteria, model then thinking, writing style', async t => {
+  const c = chat(t);
+  for (const [key, value] of Object.entries({ chatId: '42', accountEmail: 'me@example.com', ...typed, 'persona.anrede': 'MALE', 'persona.telefon': '', 'persona.strasse': '', 'persona.hausnummer': '', 'persona.plz': '', 'persona.ort': '', 'persona.about': '', 'persona.sendProfile': false, pollIntervalMs: 120_000 })) c.settings.set(key, value);
+  assert.equal(c.settings.complete(), true);
+  const checks = [];
+  Object.assign(c.telegram.assistant, {
+    ready: true, workflow: { lastPollAt: null, failures: { IS24: 0, LLM: 2 }, backoff: { blocked: false } },
+    check: async () => { checks.push(c.settings.config.paused); return { tracked: 0 }; },
+  });
+  c.telegram.assistant.codex.models = async () => [{ id: 'gpt-a', name: 'GPT-A', thinking: ['low', 'medium', 'high'], defaultThinking: 'medium' }, { id: 'gpt-b', name: 'GPT-B', thinking: ['low'], defaultThinking: 'low' }];
+  const last = method => c.sent.findLast(call => call.method === method).body;
+
+  await c.message('/status');
+  assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT: ⚠️ 2 failures in a row[\s\S]*Waiting for you: <b>0<\/b>/);
+  assert.equal(last('sendMessage').parse_mode, 'HTML');
+  await c.tap('x:pause');
+  assert.equal(c.settings.config.paused, true);
+  assert.match(last('editMessageText').text, /⏸ Paused/, 'the status message updates in place');
+  await c.tap('x:check');
+  await until(() => c.texts().at(-1) === '🔎 Done: no new listings.');
+  assert.deepEqual(checks, [true], 'search now works while paused');
+  await c.message('/pause');
+  assert.equal(c.settings.config.paused, false, '/pause toggles');
+
+  await c.message('/criteria');
+  assert.match(last('sendMessage').text, /1\. Balcony, no swap flats/);
+  await c.tap('x:ca');
+  await c.message('No ground floor');
+  assert.equal(c.settings.config.preferences, 'Balcony, no swap flats\nNo ground floor');
+  await c.tap(c.button('🗑 1'));
+  assert.equal(c.settings.config.preferences, 'No ground floor');
+  assert.match(last('editMessageText').text, /1\. No ground floor/);
+
+  await c.message('/model');
+  await c.tap(c.button('GPT-A'));
+  const thinking = last('editMessageText').reply_markup.inline_keyboard.flat();
+  assert.deepEqual(thinking.map(button => button.text), ['low', 'medium (default)', 'high'], 'step 2 offers that model\'s levels');
+  await c.tap(thinking[2].callback_data);
+  assert.deepEqual([c.settings.config.llm.model, c.settings.config.llm.thinking], ['gpt-a', 'high']);
+  await c.tap(thinking[1].callback_data);
+  assert.equal(c.settings.config.llm.thinking, '', 'the default level is stored as the model default');
+
+  await c.tap('k:style');
+  await c.message('Formal and short.');
+  assert.equal(c.settings.config.style, 'Formal and short.');
+  await c.message('/prompt');
+  assert.match(last('sendMessage').text, /Your writing style[\s\S]*Formal and short\.[\s\S]*No ground floor[\s\S]*Built-in rules/);
+  await c.message('/help');
+  assert.match(c.texts().at(-1), /menu/);
+});

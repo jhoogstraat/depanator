@@ -26,7 +26,7 @@ function pattern(regex, hint) {
 // are only changed from /settings. Persona values fill the IS24 contact request; the LLM may use only them.
 export const FIELDS = [
   { key: 'searchUrl', label: 'Search', ask: 'Open immobilienscout24.de, search for apartments to rent with all your filters, and paste the address of the results page here.', parse: value => { const url = String(value).trim(); searchFilters(url); return url; } },
-  { key: 'preferences', label: 'What you look for', ask: 'Describe what you are looking for and what is a must. Listings that clearly do not fit are dismissed without asking you. Example: "Quiet, balcony, max. 2nd floor without lift, no swap flats."', parse: text(2000) },
+  { key: 'preferences', label: 'Criteria', ask: 'Describe what you are looking for and what is a must. Listings that clearly do not fit are dismissed without asking you. Example: "Quiet, balcony, max. 2nd floor without lift, no swap flats."', parse: text(2000) },
   { key: 'persona.anrede', label: 'Salutation', ask: 'How should landlords address you?', choices: [['FEMALE', 'Frau'], ['MALE', 'Herr'], ['NO_SALUTATION', 'No salutation']] },
   { key: 'persona.vorname', label: 'First name', ask: 'Your first name, as it should appear in applications?', parse: line(60) },
   { key: 'persona.nachname', label: 'Last name', ask: 'Your last name?', parse: line(60) },
@@ -44,6 +44,10 @@ export const FIELDS = [
   { key: 'autoSend', label: 'Auto-send', ask: 'Should I send applications myself when a listing clearly fits? You get the listing and the sent message afterwards. Unclear matches always ask you first.', default: false,
     choices: [[false, 'Ask me each time'], [true, 'Auto-send clear matches']], setup: false },
   { key: 'model', label: 'ChatGPT model', ask: 'Which ChatGPT model should review listings? It must be available to your plan.', default: 'gpt-6-luna', setup: false, parse: pattern(/^[a-zA-Z0-9._-]{1,60}$/, 'Please send a model name like gpt-6-luna.') },
+  // '' = the model's own default. Chosen together with the model (/model), from the levels it supports.
+  { key: 'thinking', label: 'Thinking', ask: 'How hard should ChatGPT think?', default: '', empty: 'default', optional: true, setup: false, parse: pattern(/^[a-z]{1,20}$/, 'Please pick a thinking level from /model.') },
+  { key: 'style', label: 'Writing style', empty: 'none', ask: 'How should applications be written? For example: "Formal, short, always mention that I am a non-smoker." Applications still state only facts you gave me.', setup: false, parse: text(1000), optional: true },
+  { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
   { key: 'maxPages', label: 'Pages per check', ask: 'How many result pages may one check read? Checks stop at the first page with listings I know, so this mostly limits the very first check.', default: 5, setup: false,
     choices: [1, 3, 5, 10].map(pages => [pages, String(pages)]) },
 ];
@@ -71,7 +75,7 @@ export class Settings {
   display(key) {
     const value = this.values[key] ?? FIELD[key]?.default;
     if (value === undefined) return 'not set';
-    if (value === '') return 'skipped';
+    if (value === '') return FIELD[key]?.empty ?? 'skipped';
     return this.choices(key).find(([choice]) => choice === value)?.[1] ?? String(value);
   }
   // Validates, persists and applies. Errors are user-facing. '' skips an optional field.
@@ -94,9 +98,10 @@ export class Settings {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
       chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
-      pollIntervalMs: value('pollIntervalMs'), maxPages: value('maxPages'), autoSend: value('autoSend'),
+      pollIntervalMs: value('pollIntervalMs'), maxPages: value('maxPages'), autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
     });
     this.config.llm.model = value('model');
+    this.config.llm.thinking = value('thinking');
     const persona = this.config.persona;
     for (const key of Object.keys(persona)) delete persona[key];
     for (const field of FIELDS) {

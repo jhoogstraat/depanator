@@ -22,10 +22,11 @@ export function codexEnvironment(config, home) {
 // The pinned CLI's static catalog prevents model metadata from enabling patch,
 // shell, image, or experimental tools. Feature flags also disable integrations.
 export function codexArguments(config, directory) {
-  const model = config.llm.model;
+  const { model, thinking } = config.llm;
   writeFileSync(join(directory, 'catalog.json'), JSON.stringify({ models: [{
     slug: model, display_name: model, description: null, priority: 0, base_instructions: INSTRUCTIONS,
-    supported_reasoning_levels: [], shell_type: 'disabled', visibility: 'list',
+    supported_reasoning_levels: thinking ? [{ effort: thinking, description: thinking }] : [], ...(thinking && { default_reasoning_level: thinking }),
+    shell_type: 'disabled', visibility: 'list',
     supported_in_api: true, availability_nux: null, upgrade: null,
     support_verbosity: false, default_verbosity: null, apply_patch_tool_type: null,
     truncation_policy: { mode: 'tokens', limit: 10000 }, experimental_supported_tools: [],
@@ -45,11 +46,30 @@ export function codexArguments(config, directory) {
     'skill_mcp_dependency_install', 'tool_suggest', 'sleep_tool', 'token_budget', 'goals'];
   return ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
     '--skip-git-repo-check', '--sandbox', 'read-only', '--cd', directory,
-    '--model', model, '--output-schema', join(directory, 'schema.json'),
+    '--model', model, ...(thinking ? ['-c', `model_reasoning_effort=${JSON.stringify(thinking)}`] : []), '--output-schema', join(directory, 'schema.json'),
     '--output-last-message', join(directory, 'result.json'), '--json',
     ...Object.entries(settings).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]),
     '-c', 'features.skip_host_skill_discovery=true',
     ...disabled.flatMap(feature => ['--disable', feature]), '-'];
+}
+
+// The models this ChatGPT plan offers, with the thinking levels each supports (first = its default).
+export async function listCodexModels(config, { spawnImpl = spawn } = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-models-'));
+  try {
+    const child = spawnImpl(codexExecutable(), ['debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Codex model list timed out')); }, 30000);
+      child.once('error', () => { clearTimeout(timeout); reject(new Error('Cannot start the bundled Codex CLI')); });
+      child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error('Cannot read the ChatGPT model list')); });
+    });
+    return JSON.parse(output).models.filter(model => model.visibility === 'list').map(model => {
+      const levels = (model.supported_reasoning_levels || []).map(level => level.effort);
+      return { id: model.slug, name: model.display_name || model.slug, thinking: levels, defaultThinking: model.default_reasoning_level || '' };
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
 export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal, revision } = {}) {

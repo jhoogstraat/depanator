@@ -331,3 +331,17 @@ test('auto-send sends confident matches in the same tick and still asks about th
   assert.deepEqual(reported, ['auto']);
   await f.workflow.close();
 });
+
+test('paused: scheduled ticks do not search, a manual one does, approved sends still go out', async () => {
+  const f = fixture();
+  let searches = 0;
+  const search = f.adapter.search;
+  f.adapter.search = async options => { searches++; return search(options); };
+  f.config.paused = true;
+  assert.deepEqual(await f.workflow.tick(), { paused: true });
+  assert.equal(searches, 0);
+  await f.workflow.tick({ manual: true });
+  assert.equal(searches, 1);
+  assert.ok(f.workflow.lastPollAt);
+  await f.workflow.close();
+});
