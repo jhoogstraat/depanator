@@ -96,9 +96,9 @@ export class Settings {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
       chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
-      pollIntervalMs: value('pollIntervalMs'), maxPages: 5, autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
+      pollIntervalMs: value('pollIntervalMs'), maxPages: 1, autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
     });
-    // maxPages: checks stop at the first page with known listings, so it only limits a first check.
+    // maxPages: one page (the 20 newest) per check; more new listings between two checks do not happen.
     this.config.llm.model = value('model');
     this.config.llm.thinking = value('thinking');
     const persona = this.config.persona;
