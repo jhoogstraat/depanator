@@ -133,7 +133,7 @@ export class Telegram {
     } });
   }
   async notifyOutcome(review) {
-    const text = review.status === 'sent' ? 'Message sent and confirmed.'
+    const text = review.status === 'sent' ? 'IS24 accepted your request.'
       : review.status === 'unknown_outcome' ? 'Submission outcome is uncertain. Check your IS24 messages before taking any further action. The agent will not retry.'
       : 'The message was not sent. No automatic retry will occur.';
     const heading = review.status === 'sent' ? '✅ Message sent' : review.status === 'unknown_outcome' ? '⚠️ Check your IS24 account' : '❌ Message not sent';

@@ -5,7 +5,7 @@ import { Workflow } from '../src/workflow.js';
 
 function fixture(overrides = {}) {
   const snapshot = { expose_id: '123', title: 'Apartment', price: 1000, rooms: 2, area: 60, description: 'A balcony.', amenities: ['Balcony'], url: 'https://www.immobilienscout24.de/expose/123' };
-  const config = { searchUrl: 'search', browserProfile: '/tmp/profile', accountEmail: 'person@example.com', persona: {}, preferences: 'balcony', llm: { model: 'fixture', baseUrl: 'fixture' } };
+  const config = { searchUrl: 'search', accountEmail: 'person@example.com', persona: {}, preferences: 'balcony', llm: { model: 'fixture', baseUrl: 'fixture' } };
   const store = new Store(':memory:', { now: () => 100 });
   const calls = { search: 0, evaluate: 0, notify: 0, send: 0 };
   const adapter = {

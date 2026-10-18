@@ -23,7 +23,7 @@ export function assertReconciled(config) {
 // Deployment inputs only. Everything else is configured in the Telegram chat (settings.js).
 export function loadRuntime(env = process.env) {
   const dataDir = resolve(env.DEPANATOR_DATA_DIR || '.depanator');
-  // Public HTTPS address of this agent's port (reverse proxy or tunnel): enables the IS24 login inside Telegram.
+  // Public HTTPS address of this agent's port (reverse proxy or tunnel): Telegram opens the IS24 connect page there.
   const publicUrl = (env.DEPANATOR_PUBLIC_URL || '').replace(/\/+$/, '');
   if (publicUrl) {
     const url = new URL(publicUrl);
@@ -35,8 +35,6 @@ export function loadRuntime(env = process.env) {
   chmodSync(dataDir, 0o700);
   return {
     dataDir,
-    browserProfile: resolve(env.DEPANATOR_BROWSER_PROFILE || join(dataDir, 'browser')),
-    browser: { executablePath: env.DEPANATOR_BROWSER_EXECUTABLE || null, disableSandbox: env.DEPANATOR_BROWSER_NO_SANDBOX === '1' },
     publicUrl,
     port,
     llm: { codexHome: resolve(env.DEPANATOR_CODEX_HOME || join(dataDir, 'codex')) },

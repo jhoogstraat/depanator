@@ -13,7 +13,7 @@ function callback(data, user = '42', versionChange = false) {
   return { update_id: 1, callback_query: { id: 'callback', data: versionChange ? data.replace(':1:', ':2:') : data, from: { id: user }, message: { chat: { id: '42', type: 'private' } } } };
 }
 function setup(directory, options = {}) {
-  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', browserProfile: join(directory, 'browser'), accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline' }, telegramBotToken: 'offline-token', chatId: '42', dataDir: directory };
+  const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline' }, telegramBotToken: 'offline-token', chatId: '42', dataDir: directory };
   const summaries = [{ expose_id: '111', title: 'Sunny' }, { expose_id: '222', title: 'Basement' }];
   const snapshots = summaries.map(summary => ({ ...summary, price: 1200, area: 60, rooms: 2, address: 'Berlin', url: `https://www.immobilienscout24.de/expose/${summary.expose_id}`, image_url: '', description: summary.expose_id === '111' ? 'Sunny apartment with balcony.' : 'Dark basement, no balcony.', amenities: summary.expose_id === '111' ? ['Balcony'] : [] }));
   const calls = { llm: [], telegram: [], sends: [] };

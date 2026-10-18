@@ -6,6 +6,7 @@ const HELP = `/settings – see and change everything
 /autosend – send clear matches without asking
 /status – what I have done so far
 /login – reconnect your ChatGPT subscription
+/connect – reconnect your ImmoScout24 account
 /setup – continue the guided setup`;
 // Buttons name an option by index plus a short fingerprint, so a stale button never picks a different option.
 const fingerprint = label => createHash('sha256').update(String(label)).digest('base64url').slice(0, 4);
@@ -17,7 +18,7 @@ export class Assistant {
   constructor({ settings, store, send, codex, is24, onReady = () => {}, onError = () => {} }) {
     Object.assign(this, { settings, store, send, codex, is24, onReady, onError });
     this.asking = null; // Setting key awaiting a typed answer.
-    this.busy = null; // A long step (ChatGPT login, reading the contact form) in progress.
+    this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
   }
@@ -32,8 +33,7 @@ export class Assistant {
       await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here.\n\n${HELP}`);
       return this.onReady();
     }
-    if (field.key === 'formOptions') return this.track(() => this.readForm());
-    if (field.form && field.optional && !this.settings.choices(field.key).length) { this.settings.set(field.key, ''); return this.continue(); }
+    if (field.key === 'is24') return this.track(() => this.connectIS24());
     return this.ask(field.key);
   }
   // Long steps run one at a time beside the chat; Telegram keeps answering meanwhile. False if one is running.
@@ -73,7 +73,6 @@ export class Assistant {
   async choice(data) {
     const [kind, key, index, mark] = data.split(':');
     if (kind === 'k') {
-      if (key === 'formOptions') return { text: this.track(() => this.readForm(), 'the Re-read button in /settings') ? 'Reading the contact form…' : 'One moment, I am still on the previous step.' };
       if (!this.settings.field(key)) return { text: 'Unknown setting.' };
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
@@ -95,11 +94,14 @@ export class Assistant {
     if (name === '/settings') {
       const lines = FIELDS.map(field => `${field.label}: ${this.settings.display(field.key)}`);
       const buttons = FIELDS.map(field => ({ text: field.label, callback_data: `k:${field.key}` }));
-      buttons.push({ text: '🔄 Re-read contact form', callback_data: 'k:formOptions' });
-      return this.send(`${lines.join('\n')}\n\nTap what you want to change:`, { reply_markup: { inline_keyboard: rows(buttons, 2) } });
+      return this.send(`ImmoScout24 account: ${this.settings.config.accountEmail || 'not connected'}\n${lines.join('\n')}\n\nTap what you want to change:`, { reply_markup: { inline_keyboard: rows(buttons, 2) } });
     }
     if (name === '/interval') return this.ask('pollIntervalMs');
     if (name === '/autosend') return this.ask('autoSend');
+    if (name === '/connect') {
+      if (this.track(() => this.connectIS24(), '/connect')) return;
+      return this.send('One moment, I am still on the previous step.');
+    }
     if (name === '/login') {
       if (this.track(() => this.chatgptLogin(), '/login')) return;
       return this.send('One moment, I am still on the previous step.');
@@ -118,14 +120,9 @@ export class Assistant {
     this.chatgpt = true;
     await this.send('✅ ChatGPT connected.');
   }
-  // Logs in to IS24 if needed, then reads the dropdown options of a real contact form.
-  async readForm() {
-    await this.send('Next I read the IS24 contact form, so your answers match its options exactly. This needs your IS24 login; if you are not logged in yet, I send you a login button.');
-    await this.is24.authenticate();
-    let options;
-    try { options = await this.is24.formOptions(); }
-    catch (error) { throw new Error(`I could not read the contact form: ${error.message}.`); }
-    if (!options.anrede?.length) throw new Error('The contact form showed no salutation options.');
-    this.settings.set('formOptions', options);
+  // Sends the "Connect ImmoScout24" button and waits until the owner connected the account there.
+  async connectIS24() {
+    const email = await this.is24.connect();
+    await this.send(`✅ Connected to ImmoScout24 as ${email}.`);
   }
 }

@@ -9,14 +9,14 @@ import { Telegram } from '../src/telegram.js';
 import { Assistant } from '../src/assistant.js';
 
 const searchUrl = 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500';
-const typed = { accountEmail: 'Me@Example.com', searchUrl, preferences: 'Balcony, no swap flats', 'persona.vorname': 'Alex', 'persona.nachname': 'Doe' };
+const typed = { searchUrl, preferences: 'Balcony, no swap flats', 'persona.vorname': 'Alex', 'persona.nachname': 'Doe' };
 const until = async condition => { for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 1)); assert.ok(condition(), 'timed out'); };
 
 function chat(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-chat-'));
   t.after(() => rmSync(dataDir, { recursive: true, force: true }));
   const store = new Store(':memory:');
-  const settings = new Settings(store, { dataDir, telegramBotToken: 'secret', browserProfile: join(dataDir, 'browser'), browser: {}, publicUrl: '', llm: { codexHome: join(dataDir, 'codex') } });
+  const settings = new Settings(store, { dataDir, telegramBotToken: 'secret', publicUrl: 'https://agent.example', llm: { codexHome: join(dataDir, 'codex') } });
   const sent = [];
   const events = { ready: 0, logins: 0 };
   const telegram = new Telegram({ config: settings.config, store, workflow: {}, pairingCode: '123456', onPair: chatId => settings.set('chatId', chatId),
@@ -26,7 +26,7 @@ function chat(t) {
     } });
   telegram.assistant = new Assistant({ settings, store, send: (text, extra) => telegram.send(text, extra), onReady: () => { events.ready++; },
     codex: { loggedIn: async () => false, login: async ({ onCode }) => { await onCode({ url: 'https://auth.openai.com/codex/device', code: 'AB12-CD34' }); } },
-    is24: { authenticate: async () => { events.logins++; }, formOptions: async () => ({ anrede: ['Frau', 'Herr'], einkommen: ['1.000 - 2.000 €', 'über 2.000 €'] }) } });
+    is24: { connect: async () => { events.logins++; settings.set('accountEmail', 'me@example.com'); return 'me@example.com'; } } });
   const message = (text, from = 42) => telegram.handleUpdate({ message: { text, chat: { id: from, type: 'private' }, from: { id: from } } });
   const tap = (data, from = 42) => telegram.handleUpdate({ callback_query: { id: 'q', data, from: { id: from }, message: { message_id: 1, chat: { id: from, type: 'private' } } } });
   const texts = () => sent.filter(call => call.method === 'sendMessage').map(call => call.body.text);
@@ -44,23 +44,24 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   assert.equal(c.settings.config.chatId, '', 'a wrong code pairs nobody');
   await c.message('/start 123456');
   assert.equal(c.settings.config.chatId, '42');
-  await until(() => c.texts().some(text => text.includes('Which email')));
+  await until(() => c.texts().some(text => text.includes('Open immobilienscout24.de')));
   assert.ok(c.texts().some(text => text.includes('AB12-CD34')), 'ChatGPT device code relayed');
+  assert.ok(c.texts().some(text => text.includes('Connected to ImmoScout24 as me@example.com')), 'IS24 connected before the questions');
   await c.message('/start 123456', 777);
   assert.equal(c.settings.config.chatId, '42', 'pairing happens once');
 
-  await c.message('not an email');
-  assert.match(c.texts().at(-1), /does not look like an email/);
+  await c.message('https://www.immobilienscout24.de/Suche/de/berlin/berlin/haus-kaufen');
+  assert.match(c.texts().at(-1), /Open immobilienscout24\.de/, 'an unsupported search is asked again');
   for (let step = 0; step < 40 && !c.settings.complete(); step++) {
     const field = c.settings.next();
-    if (!field || field.key === 'formOptions') { await until(() => c.settings.next()?.key !== 'formOptions'); continue; }
+    if (!field || field.key === 'is24') { await until(() => c.settings.next()?.key !== 'is24'); continue; }
     if (typed[field.key]) await c.message(typed[field.key]);
     else if (c.settings.choices(field.key).length) await c.tap(c.button(field.key === 'pollIntervalMs' ? 1 : 0));
     else await c.tap(c.button('Skip'));
   }
   await until(() => c.events.ready === 1);
   assert.equal(c.events.logins, 1);
-  assert.deepEqual(c.settings.config.persona, { vorname: 'Alex', nachname: 'Doe', anrede: 'Frau', einkommen: '1.000 - 2.000 €', email: 'me@example.com' });
+  assert.deepEqual(c.settings.config.persona, { anrede: 'FEMALE', vorname: 'Alex', nachname: 'Doe', email: 'me@example.com' });
   assert.deepEqual([c.settings.config.accountEmail, c.settings.config.pollIntervalMs, c.settings.config.autoSend], ['me@example.com', 120_000, false]);
 
   await c.message('/interval');
@@ -76,10 +77,10 @@ test('pairing, then a guided setup that resumes from stored answers and validate
   assert.equal(c.settings.config.searchUrl, searchUrl);
   assert.equal(new Settings(c.store, { llm: {} }).complete(), true, 'stored answers survive a restart');
 
-  // Re-reading a form that no longer offers the chosen salutation asks for it again; checks pause until then.
-  c.settings.set('formOptions', { anrede: ['Herr'] });
+  // Without a connected IS24 account, checks pause and setup asks to connect again.
+  c.settings.set('accountEmail', '');
   assert.equal(c.settings.complete(), false);
-  assert.equal(c.settings.next().key, 'persona.anrede');
+  assert.equal(c.settings.next().key, 'is24');
 });
 
 test('settings reject a search that would widen and keep the previous value', t => {

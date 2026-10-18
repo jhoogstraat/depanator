@@ -34,10 +34,11 @@ test('restore marker blocks startup before any work', async t => {
   const previous = { ...process.env };
   process.env.DEPANATOR_DATA_DIR = directory;
   process.env.TELEGRAM_BOT_TOKEN = 'fake';
+  process.env.DEPANATOR_PUBLIC_URL = 'https://agent.example';
   delete process.env.TELEGRAM_BOT_TOKEN_FILE;
   try { await assert.rejects(main(['start']), /Restore reconciliation required/); }
   finally {
-    for (const key of ['DEPANATOR_DATA_DIR', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_FILE']) {
+    for (const key of ['DEPANATOR_DATA_DIR', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_FILE', 'DEPANATOR_PUBLIC_URL']) {
       if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
     }
   }

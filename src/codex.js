@@ -15,7 +15,7 @@ export function codexExecutable() {
 export function codexEnvironment(config, home) {
   mkdirSync(config.llm.codexHome, { recursive: true, mode: 0o700 });
   chmodSync(config.llm.codexHome, 0o700);
-  // No Telegram credentials, browser settings, or inherited MCP env.
+  // No Telegram credentials or inherited MCP env.
   return { PATH: process.env.PATH, HOME: home, CODEX_HOME: config.llm.codexHome, TERM: 'dumb' };
 }
 

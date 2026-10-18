@@ -12,7 +12,8 @@ import { createEvaluator } from './llm.js';
 import { codexLoggedIn, loginWithCodex } from './codex.js';
 import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
-import { RemoteLogin } from './remote-login.js';
+import { ConnectApp } from './connect.js';
+import { IS24Session } from './is24-auth.js';
 import { acquireLock } from './lock.js';
 
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
@@ -43,19 +44,19 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (!runtime.telegramBotToken) throw new Error('Set TELEGRAM_BOT_TOKEN to the token of a new bot from @BotFather in Telegram');
+  if (!runtime.publicUrl) throw new Error('Set DEPANATOR_PUBLIC_URL to the public HTTPS address of this agent; Telegram opens the ImmoScout24 login there');
   assertReconciled(runtime);
   const unlock = acquireLock(runtime.dataDir);
-  let adapter, workflow, telegram, remote, timer;
+  let workflow, telegram, connectApp, timer;
   let closing = false, closePromise;
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
     clearTimeout(timer);
     workflow?.stop();
-    adapter?.cancelLogin();
     closePromise = boundedShutdown(async () => {
       try {
-        const results = await Promise.allSettled([telegram?.close(), remote?.close(), workflow ? workflow.close() : adapter?.close()]);
+        const results = await Promise.allSettled([telegram?.close(), connectApp?.close(), workflow?.close()]);
         const failure = results.find(result => result.status === 'rejected');
         if (failure) throw failure.reason;
       } finally { unlock(); }
@@ -69,26 +70,29 @@ export async function main(args = process.argv.slice(2)) {
     const store = new Store(database);
     const settings = new Settings(store, runtime);
     const config = settings.config;
-    adapter = new IS24Adapter(config);
-    // With a public URL, the login tab opens inside Telegram (Mini App); otherwise it is a window on this computer.
-    if (config.publicUrl) { remote = new RemoteLogin({ config, port: config.port }); await remote.listen(); }
-    const loginRequired = async page => {
-      const intro = `🔐 IS24 login needed for ${config.accountEmail}.`;
-      console.log(`${intro} Waiting for the owner to log in.`);
-      // A failed stream must not count as "logged in": then only the tab check or closing it ends the wait.
-      const done = remote?.attach(page).catch(error => { console.error(`Login stream: ${error.message}`); return new Promise(() => {}); });
-      const message = remote
-        ? telegram.send(`${intro}\n\nTap the button, log in (including any 2FA code), then tap “I'm logged in”. I continue automatically.`, { reply_markup: { inline_keyboard: [[{ text: '🔐 Log in to IS24', web_app: { url: `${config.publicUrl}/login` } }]] } })
-        : telegram.send(`${intro}\n\nA browser window opened on the computer running the agent. Log in there (including any 2FA code), then close that tab. I continue automatically.`);
-      await message.catch(error => console.error(error.message));
-      return { done };
+    const session = new IS24Session(join(runtime.dataDir, 'is24-session.json'));
+    // The account email comes from the connected IS24 session; without one, setup asks to connect.
+    if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
+    const adapter = new IS24Adapter(config, { session });
+    connectApp = new ConnectApp({ config, session, port: config.port });
+    await connectApp.listen();
+    // Sends the "Connect ImmoScout24" button (once per request) and resolves with the connected email.
+    const connect = async (intro = '🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') => {
+      const { fresh, done } = connectApp.request();
+      if (fresh) {
+        console.log('Waiting for the owner to connect ImmoScout24.');
+        await telegram.send(intro, { reply_markup: { inline_keyboard: [[{ text: '🔗 Connect ImmoScout24', web_app: { url: `${config.publicUrl}/connect` } }]] } }).catch(error => console.error(error.message));
+      }
+      const email = await done;
+      if (email !== config.accountEmail) settings.set('accountEmail', email);
+      return email;
     };
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
       notify: review => telegram.notify(review),
       report: review => telegram.notifyOutcome(review),
       alert: text => { console.error(text); return telegram.send(text); },
-      beforeWork: () => adapter.authenticate(loginRequired),
+      beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
       onEvent(event) {
         if (event.type === 'submission') console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
         if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
@@ -99,7 +103,7 @@ export async function main(args = process.argv.slice(2)) {
     telegram.assistant = new Assistant({
       settings, store, send: (text, extra) => telegram.send(text, extra),
       codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options) },
-      is24: { authenticate: () => adapter.authenticate(loginRequired), formOptions: () => adapter.formOptions() },
+      is24: { connect: () => connect() },
       onReady: () => tick(), onError: message => console.error(message),
     });
     await telegram.verify();

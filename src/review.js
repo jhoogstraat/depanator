@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
 
 // The review lifecycle. MACHINE below is the complete state machine: a review's status changes only
 // through these handlers, and any (status, event) pair not listed is a CONFLICT.
@@ -9,7 +8,7 @@ import { resolve } from 'node:path';
 //       │                       │     deliveryFailed        │                 │                   unknown_outcome  ↺ reported
 //       ├─analyzed(dismiss)→ dismissed ←─dismiss───────────┤                 │
 //       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
-//                                                          approved ←release─ submitting  (only before the click)
+//                                                          approved ←release─ submitting  (only before the request)
 //
 // Terminal: sent, failed, unknown_outcome, dismissed, analysis_failed. Nothing leaves them; a send
 // outcome only records that the user was told about it (reported).
@@ -31,12 +30,12 @@ export function hash(value) {
   return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(canonical(value))).digest('hex');
 }
 export function bindingFor(config) {
-  return hash({ browserProfile: resolve(config.browserProfile), accountEmail: config.accountEmail.toLowerCase().trim() });
+  return hash({ accountEmail: config.accountEmail.toLowerCase().trim() });
 }
 export function configHashFor(config) {
-  const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, browser } = config;
+  const { searchUrl, accountEmail, persona, preferences, llm } = config;
   // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, codexHome: llm.codexHome }, browser });
+  return hash({ searchUrl, accountEmail, persona, preferences, llm: llm && { model: llm.model, codexHome: llm.codexHome } });
 }
 
 export function conflict(message) {
@@ -56,7 +55,7 @@ function intact(review, bindings) {
   return review.draftHash === hash(review.draft) && review.snapshotHash === hash(review.snapshot) && String(review.snapshot.expose_id) === review.exposeId
     && review.accountBinding === bindings.accountBinding && review.configHash === bindings.configHash;
 }
-// The last check before the browser's submit click: the claimed review is still active and unchanged.
+// The last check before the contact request goes out: the claimed review is still active and unchanged.
 export function authorizes(current, claimed, bindings) {
   return Boolean(current && current.status === 'submitting' && current.version === claimed.version && current.draftHash === claimed.draftHash
     && current.snapshotHash === claimed.snapshotHash && intact(current, bindings));
@@ -120,7 +119,7 @@ const MACHINE = {
     dismiss,
   },
   submitting: {
-    // A temporary failure (outage, block) before anything was clicked: the approval stays valid.
+    // A temporary failure (outage, block) before anything was sent: the approval stays valid.
     release: review => ({ ...review, status: 'approved', claimedAt: undefined }),
     finish: (review, { outcome, detail = '' }, now) => {
       if (!OUTCOMES.includes(outcome)) throw new Error('Invalid submission outcome');

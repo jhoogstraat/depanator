@@ -1,13 +1,13 @@
 import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.js';
 import { assertReconciled } from './config.js';
 
-// Self-healing (backoff, browser restart, retry) runs first; the user hears only about streaks it cannot fix.
+// Self-healing (backoff, retry) runs first; the user hears only about streaks it cannot fix.
 const ALERT_AFTER = 3;
 const MAX_BACKOFF_MS = 3_600_000;
-// The browser fetches details one at a time; this many LLM calls overlap with it.
+// At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
 const ADVICE = {
-  IS24: 'Self-healing restarted the browser and keeps retrying with longer pauses. If it continues, IS24 may be blocking this connection or showing a captcha.',
+  IS24: 'I keep retrying with longer pauses. If it continues, IS24 may be blocking this connection.',
   LLM: 'Analysis is paused and retries every check. Check your ChatGPT plan, or send /login to reconnect it.',
 };
 
@@ -98,12 +98,11 @@ export class Workflow {
     this.failures[component] = 0;
     if (failures >= ALERT_AFTER) await this.raise(`✅ ${component} recovered; normal operation resumed.`);
   }
-  async is24Failure(error, { restartBrowser = false } = {}) {
+  async is24Failure(error) {
     await this.failure('IS24', error);
     // Skip 0, 1, 3, 7... polls, capped near one hour.
     const interval = this.config.pollIntervalMs ?? 600_000;
     this.backoff = { skip: Math.min(2 ** (this.failures.IS24 - 1), Math.max(1, Math.floor(MAX_BACKOFF_MS / interval))) - 1, blocked: error.code === 'BLOCKED' };
-    if (restartBrowser) try { await this.adapter.close?.(); } catch { /* The next task relaunches it. */ }
   }
 
   async pollInternal() {
@@ -159,7 +158,7 @@ export class Workflow {
       if (failed.status === 'analysis_failed') await this.raise(`🛑 Gave up on "${review.snapshot.title}" (${review.exposeId}).\n${failed.detail}`);
       if (stage === 'IS24' && error.code !== 'LISTING_GONE') {
         batch.stop = true;
-        if (!batch.is24Failed) { batch.is24Failed = true; await this.is24Failure(error, { restartBrowser: true }); }
+        if (!batch.is24Failed) { batch.is24Failed = true; await this.is24Failure(error); }
       } else if (error.code === 'LLM_UNAVAILABLE') {
         batch.stop = true;
         if (!batch.llmFailed) { batch.llmFailed = true; await this.failure('LLM', error); }
@@ -203,7 +202,7 @@ export class Workflow {
         const result = await this.submit(review);
         if (result.retry) {
           this.store.dispatch(review.id, { type: 'release' });
-          if (!this.closed) await this.is24Failure(result.retry, { restartBrowser: true });
+          if (!this.closed) await this.is24Failure(result.retry);
           break;
         }
         review = this.store.dispatch(review.id, { type: 'finish', ...result });
@@ -228,8 +227,8 @@ export class Workflow {
       catch (error) { this.emit({ type: 'report_error', id: review.id, detail: error.message }); }
     }
   }
-  // Returns an outcome, or { retry } when a temporary failure hit before anything was clicked.
-  // Never throws: any failure after the browser may have submitted is an unknown outcome.
+  // Returns an outcome, or { retry } when a temporary failure hit before anything was sent.
+  // Never throws: any failure after the request may have reached IS24 is an unknown outcome.
   async submit(review) {
     let sending = false;
     try {
@@ -251,7 +250,6 @@ export class Workflow {
   async close() {
     this.stop();
     await Promise.allSettled([this.queue, this.reporting, ...this.revisions]);
-    try { await this.adapter.close?.(); }
-    finally { this.store.close(); }
+    this.store.close();
   }
 }
