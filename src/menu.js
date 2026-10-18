@@ -59,8 +59,15 @@ export function waitingView(reviews) {
   const shown = reviews.slice(-20).reverse();
   const lines = shown.map((review, index) => `${index + 1}. ${link(review)}\n      ${esc(review.snapshot.price ?? '?')} € · ${esc(review.snapshot.rooms ?? '?')} Zi. · ${esc(review.snapshot.area ?? '?')} m²`);
   const more = reviews.length > shown.length ? `\n\n…and ${reviews.length - shown.length} older.` : '';
-  return html(`<b>📬 Waiting for you</b>\n\n${lines.join('\n')}${more}\n\nTap a number to show that listing again with its buttons.`,
-    rows(shown.map((review, index) => ({ text: String(index + 1), callback_data: `x:show:${review.id.replaceAll('-', '')}` })), 5));
+  return html(`<b>📬 Waiting for you</b>\n\n${lines.join('\n')}${more}\n\nTap a number to show that listing again with its buttons.`, [
+    ...rows(shown.map((review, index) => ({ text: String(index + 1), callback_data: `x:show:${review.id.replaceAll('-', '')}` })), 5),
+    [{ text: `🧹 Clear all ${reviews.length}`, callback_data: 'x:clear' }],
+  ]);
+}
+// Clearing dismisses every waiting listing, so it asks once more.
+export function clearView(count) {
+  return html(`<b>🧹 Clear all ${count} waiting listings?</b>\nThey are dismissed and no message is sent. New listings still come in.`,
+    [[{ text: `🧹 Yes, clear all ${count}`, callback_data: `x:clear:${count}` }], [{ text: 'Cancel', callback_data: 'x:waiting:edit' }]]);
 }
 
 const OUTCOME = { sent: '✅', unknown_outcome: '⚠️', failed: '❌' };

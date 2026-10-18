@@ -1,5 +1,5 @@
 import { FIELDS } from './settings.js';
-import { MENU_HINT, fingerprint, rows, statusView, waitingView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView } from './menu.js';
+import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView } from './menu.js';
 
 const stale = { text: 'These buttons are outdated; open the menu again.' };
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -174,7 +174,22 @@ export class Assistant {
       this.searchNow().catch(error => this.onError(error.message));
       return { text: '🔎 Searching…' };
     }
-    if (name === 'waiting') { await this.show(waitingView(this.store.list('awaiting_approval'))); return { text: '' }; }
+    if (name === 'waiting') {
+      const view = waitingView(this.store.list('awaiting_approval'));
+      if (a === 'edit') return { text: '', edit: view };
+      await this.show(view);
+      return { text: '' };
+    }
+    if (name === 'clear') {
+      const waiting = this.store.list('awaiting_approval');
+      if (!waiting.length) return { text: 'Nothing is waiting.', edit: waitingView(waiting) };
+      if (!a) return { text: '', edit: clearView(waiting.length) };
+      // Only the listings that were waiting when you confirmed; a listing that arrived since stays.
+      if (Number(a) !== waiting.length) return { text: 'The list changed; check it again.', edit: waitingView(waiting) };
+      let cleared = 0;
+      for (const review of waiting) { try { this.workflow.dismiss(review.id, review.version); cleared++; } catch (error) { if (error.code !== 'CONFLICT') throw error; } }
+      return { text: `Cleared ${cleared}.`, edit: { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, extra: {} } };
+    }
     if (name === 'sent') { await this.show(sentView(this.store.list())); return { text: '' }; }
     if (name === 'show') {
       const review = /^[a-f0-9]{32}$/.test(a || '') && this.store.get(a.replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'));
