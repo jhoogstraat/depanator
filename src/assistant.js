@@ -141,7 +141,7 @@ export class Assistant {
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
     const { config } = this.settings;
     return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking, plan: this.codex.plan?.() ?? '' });
+      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking, chatgpt: this.codex.account?.() ?? {} });
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
   async models() {

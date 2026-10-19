@@ -9,7 +9,7 @@ import { Settings } from './settings.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
 import { createEvaluator } from './llm.js';
-import { codexLoggedIn, loginWithCodex, listCodexModels, codexPlan } from './codex.js';
+import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './codex.js';
 import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
 import { COMMANDS } from './menu.js';
@@ -103,7 +103,7 @@ export async function main(args = process.argv.slice(2)) {
     telegram = new Telegram({ config, store, workflow, pairingCode, onPair: chatId => settings.set('chatId', chatId), onError: message => console.error(message) });
     telegram.assistant = new Assistant({
       settings, store, send: (text, extra) => telegram.send(text, extra),
-      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), plan: () => codexPlan(config) },
+      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
       is24: { connect: () => connect() },
       workflow, check: () => tick({ manual: true }), redeliver: review => telegram.notify(review),
       onReady: () => tick(), onError: message => console.error(message),

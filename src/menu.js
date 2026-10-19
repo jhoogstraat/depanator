@@ -24,15 +24,16 @@ const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, plan }
+// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, chatgpt: { email, plan } }
 export function statusView(s) {
   const n = key => s.counts[key] ?? 0;
-  const health = (failures, ok) => s.blocked && ok.startsWith('connected') ? '⛔ blocking me, backing off' : failures ? `⚠️ ${plural(failures, 'failure')} in a row` : `✅ ${ok}`;
+  const health = (failures, ok, blocked = false) => blocked ? '⛔ blocking me, backing off' : failures ? `⚠️ ${plural(failures, 'failure')} in a row` : `✅ ${ok}`;
   const lines = [
     s.paused ? '<b>⏸ Paused</b>: I do not search. Waiting drafts and sending still work.' : `<b>🟢 Searching</b> every ${esc(s.interval)}`,
     `🕑 Last check: ${when(s.lastPollAt)}`,
-    `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`) : '❌ not connected, /connect'}`,
-    `🤖 ChatGPT${s.plan ? ` ${esc(s.plan[0].toUpperCase() + s.plan.slice(1))}` : ''}: ${health(s.failures.LLM, `${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`)}`,
+    `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`, s.blocked) : '❌ not connected, /connect'}`,
+    `🤖 ChatGPT${s.chatgpt.plan ? ` ${esc(s.chatgpt.plan[0].toUpperCase() + s.chatgpt.plan.slice(1))}` : ''}: ${health(s.failures.LLM, s.chatgpt.email ? `connected as ${esc(s.chatgpt.email)}` : 'connected')}`,
+    `🧠 Model: ${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`,
     `📤 Auto-send: ${s.autoSend ? 'on' : 'off'}`,
     '',
     '<b>📊 Listings</b>',

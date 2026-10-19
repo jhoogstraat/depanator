@@ -113,12 +113,12 @@ test('menu: status with search now and pause, criteria, model then thinking, wri
     ready: true, workflow: { lastPollAt: null, failures: { IS24: 0, LLM: 2 }, backoff: { blocked: false } },
     check: async () => { checks.push(c.settings.config.paused); return { tracked: 0 }; },
   });
-  c.telegram.assistant.codex.plan = () => 'plus';
+  c.telegram.assistant.codex.account = () => ({ email: 'gpt@example.com', plan: 'plus' });
   c.telegram.assistant.codex.models = async () => [{ id: 'gpt-a', name: 'GPT-A', thinking: ['low', 'medium', 'high'], defaultThinking: 'medium' }, { id: 'gpt-b', name: 'GPT-B', thinking: ['low'], defaultThinking: 'low' }];
   const last = method => c.sent.findLast(call => call.method === method).body;
 
   await c.message('/status');
-  assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT Plus: ⚠️ 2 failures in a row[\s\S]*Waiting for you: <b>0<\/b>/);
+  assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT Plus: ⚠️ 2 failures in a row[\s\S]*Model: gpt-6-luna[\s\S]*Waiting for you: <b>0<\/b>/);
   assert.equal(last('sendMessage').parse_mode, 'HTML');
   await c.tap('x:pause');
   assert.equal(c.settings.config.paused, true);
