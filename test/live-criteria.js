@@ -5,7 +5,7 @@ import { createEvaluator } from '../src/llm.js';
 
 const codexHome = process.env.DEPANATOR_LIVE_CODEX_HOME;
 if (!codexHome) throw new Error('Set DEPANATOR_LIVE_CODEX_HOME to an existing ChatGPT login directory');
-const evaluate = createEvaluator({ preferences: 'No swap, with balcony', persona: { vorname: 'Alex' },
+const evaluate = createEvaluator({ preferences: 'Mit Balkon. Kein Wohnungstausch und keine Tauschwohnungen.', persona: { vorname: 'Alex' },
   llm: { model: 'gpt-6-luna', codexHome } });
 const listing = { expose_id: '123', title: 'Zwei Zimmer zur Miete mit Balkon', price: 1100, area: 58, rooms: 2,
   description: 'Diese frisch renovierte Wohnung hat einen Westbalkon. Ab sofort zu vermieten.', amenities: ['Balkon'] };
