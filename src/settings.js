@@ -98,6 +98,8 @@ export class Settings {
       else if (choices.length) { if (!choices.some(([choice]) => choice === raw)) throw new Error('Please pick one of the buttons.'); }
       else value = field.parse(raw);
     } else if (!['chatId', 'accountEmail'].includes(key)) throw new Error(`Unknown setting ${key}`); // Set by pairing / connecting IS24.
+    // A pause/resume or changed search starts a new observation window, even between polls.
+    if (['paused', 'searchUrl'].includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
     this.store.saveSetting(key, value);
     this.values[key] = value;
     this.apply();

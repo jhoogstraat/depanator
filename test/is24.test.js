@@ -29,8 +29,11 @@ test('pagination never stops on duplicates and exposes capped coverage',async()=
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
   // Newest first: a routine poll stops once a page ends with an already known listing...
   const routine=network([full,full,[item(99)]]);
-  const known=await new IS24Adapter(config,routine).search({known:id=>id==='20'});
-  assert.equal(routine.count(),1); assert.deepEqual([known.complete,known.caughtUp,known.listings.length],[true,true,20]);
+  const adapter=new IS24Adapter(config,routine);
+  const baseline=await adapter.search({known:id=>id==='20'});
+  assert.equal(baseline.caughtUp,false,'known history does not bypass first-search warm-up');
+  const known=await adapter.search({known:id=>id==='20'});
+  assert.equal(routine.count(),2); assert.deepEqual([known.complete,known.caughtUp,known.listings.length],[true,true,20]);
   // ...but a known listing promoted to the top of page 1 does not hide the new ones below.
   const promoted=network([full,full,[item(99)]]);
   assert.equal((await new IS24Adapter(config,promoted).search({known:id=>id==='1'})).listings.length,21);

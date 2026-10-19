@@ -350,3 +350,46 @@ test('scheduled ticks respect pause and night hours, and search after resuming',
   assert.equal(searches, 1);
   await f.workflow.close();
 });
+
+test('real searches warm up on startup and every resume, even when older listings are known', async () => {
+  const { Settings } = await import('../src/settings.js');
+  const { IS24Adapter } = await import('../src/is24.js');
+  const f = fixture();
+  const settings = new Settings(f.store, { llm: {} });
+  settings.set('accountEmail', 'person@example.com');
+  settings.set('searchUrl', 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
+  settings.set('quietHours', '');
+  f.workflow.config = settings.config;
+  let ids = ['1', '2'];
+  const real = new IS24Adapter(settings.config);
+  real.searchPage = async () => ({ numberOfPages: 1, resultListItems: ids.map(id => ({ id, title: 'Apartment' })) });
+  f.adapter.search = options => real.search(options);
+  f.adapter.details = async summary => ({ ...f.snapshot, ...summary });
+  f.store.discover([{ ...f.snapshot, expose_id: '1' }], { existing: true });
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 0, 'startup uses the current page only as a baseline');
+  ids = ['3', '1'];
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 1, 'a listing published after warm-up is presented');
+  settings.set('paused', true);
+  ids = ['4', '3', '1'];
+  settings.set('paused', false); // Resume between polls, through the real settings path.
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 1, 'resume only records listings published while paused');
+  assert.equal(f.store.list().find(r => r.exposeId === '4').status, 'existing');
+  ids = ['5', '4', '3', '1'];
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 2, 'only the next new candidate is presented');
+  settings.set('searchUrl', settings.config.searchUrl + '?price=-1200');
+  ids = ['6', '1'];
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 2, 'a changed search warms up despite overlapping known history');
+  settings.set('paused', true);
+  settings.set('paused', false);
+  ids = [];
+  await f.workflow.tick();
+  ids = ['7'];
+  await f.workflow.tick();
+  assert.equal(f.calls.notify, 3, 'the first arrival after an empty baseline is a new candidate');
+  await f.workflow.close();
+});

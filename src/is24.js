@@ -122,15 +122,17 @@ export class IS24Adapter {
   // Results are newest first, so paging stops once a page ends with an already known listing: everything
   // older is known too. A routine poll is one request, which keeps short intervals cheap. A known item
   // elsewhere on the page (e.g. promoted to the top) does not stop paging. known(exposeId) -> boolean.
-  // caughtUp: the search reached listings seen before, so the new ones are genuinely new (see auto-send).
+  // The first successful page after startup, resume or a search change only establishes a baseline.
+  // After that, every previously unseen listing is new, including arrivals after an empty baseline.
   async search({ signal, known = () => false } = {}) {
+    const searchKey = JSON.stringify([this.config.searchUrl, this.config.searchGeneration ?? 0]);
+    const baseline = this.lastSearchKey !== searchKey;
     const results = [];
-    let complete = false, caughtUp = false;
+    let complete = false;
     for (let page = 1; page <= this.config.maxPages; page++) {
       const data = await this.searchPage(page, signal);
       results.push(data);
       const ids = data.resultListItems.map(item => String((item.item || item).id || (item.item || item).exposeId || ''));
-      caughtUp ||= ids.some(id => known(id));
       if (page >= data.numberOfPages || (ids.length && known(ids.at(-1)))) { complete = true; break; }
     }
     const pages = results.length;
@@ -145,7 +147,8 @@ export class IS24Adapter {
       const attribute = unit => Number(String((expose.attributes || []).find(a => String(a.value).includes(unit))?.value || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
       if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title,price:attribute('€'),area:attribute('m²'),rooms:attribute('Zi'),address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
     }
-    return {listings:[...listings.values()],complete,caughtUp,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+    this.lastSearchKey = searchKey; // Failed/invalid searches never consume the warm-up.
+    return {listings:[...listings.values()],complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
   }
   expose(id) { return this.api(`/expose/${new URL(listingUrl(id)).pathname.split('/').pop()}`); }
   async details(listing) {

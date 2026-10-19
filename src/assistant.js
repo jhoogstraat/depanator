@@ -10,12 +10,14 @@ export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
   constructor({ settings, store, send, codex, is24, workflow = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
     Object.assign(this, { settings, store, send, codex, is24, workflow, redeliver, onReady, onError });
-    this.asking = null; // Setting key (or 'criteria+') awaiting a typed answer.
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
   }
+  // Keep typed prompts through a deployment/restart, including an unfinished criterion addition.
+  get asking() { return this.store.settings().pendingQuestion ?? null; }
+  set asking(value) { this.store.saveSetting('pendingQuestion', value); }
   // Ask the next setup question, start a long step, or announce that setup is done.
   async continue() {
     if (this.busy) return;

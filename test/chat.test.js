@@ -130,6 +130,7 @@ test('menu: status with scheduled searches and pause, criteria, model then think
   await c.message('/criteria');
   assert.match(last('sendMessage').text, /1\. Balcony, no swap flats/);
   await c.tap('x:ca');
+  c.telegram.assistant = new Assistant({ ...c.telegram.assistant }); // A deployment may restart while awaiting the reply.
   await c.message('No ground floor');
   assert.equal(c.settings.config.preferences, 'Balcony, no swap flats\nNo ground floor');
   await c.tap(c.button('🗑 1'));
