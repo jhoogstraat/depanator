@@ -332,7 +332,7 @@ test('auto-send sends confident matches in the same tick and still asks about th
   await f.workflow.close();
 });
 
-test('paused: scheduled ticks do not search, a manual one does, approved sends still go out', async () => {
+test('scheduled ticks respect pause and night hours, and search after resuming', async () => {
   const f = fixture();
   let searches = 0;
   const search = f.adapter.search;
@@ -340,8 +340,13 @@ test('paused: scheduled ticks do not search, a manual one does, approved sends s
   f.config.paused = true;
   assert.deepEqual(await f.workflow.tick(), { paused: true });
   assert.equal(searches, 0);
-  await f.workflow.tick({ manual: true });
+  f.config.paused = false;
+  await f.workflow.tick();
   assert.equal(searches, 1);
   assert.ok(f.workflow.lastPollAt);
+  f.config.paused = false;
+  f.config.quietHours = '0-24';
+  assert.deepEqual(await f.workflow.tick(), { quiet: true }, 'night pause');
+  assert.equal(searches, 1);
   await f.workflow.close();
 });

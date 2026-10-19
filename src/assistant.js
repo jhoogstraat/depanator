@@ -1,4 +1,4 @@
-import { FIELDS } from './settings.js';
+import { FIELDS, isQuiet } from './settings.js';
 import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView, aboutView } from './menu.js';
 
 const stale = { text: 'These buttons are outdated; open the menu again.' };
@@ -7,9 +7,9 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 // The chat side of configuration: guides the owner through setup and changes settings later.
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
-  // workflow: health for /status. check() runs a search now. redeliver(review) shows a waiting listing again.
-  constructor({ settings, store, send, codex, is24, workflow = null, check = async () => {}, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, workflow, check, redeliver, onReady, onError });
+  // workflow: health for /status. redeliver(review) shows a waiting listing again.
+  constructor({ settings, store, send, codex, is24, workflow = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
+    Object.assign(this, { settings, store, send, codex, is24, workflow, redeliver, onReady, onError });
     this.asking = null; // Setting key (or 'criteria+') awaiting a typed answer.
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
@@ -111,10 +111,10 @@ export class Assistant {
       return this.continue();
     }
     if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
-    if (name === '/status') return this.show(this.statusView());
+    if (name === '/status') return this.show(await this.statusView());
     if (name === '/pause') {
       const paused = this.settings.set('paused', !this.settings.config.paused);
-      return this.send(paused ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again, every ' + this.settings.display('pollIntervalMs') + '. /status → 🔎 Search now checks right away.');
+      return this.send(paused ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again, every ' + this.settings.display('pollIntervalMs') + '.');
     }
     if (name === '/criteria') return this.show(criteriaView(this.settings.config.preferences));
     if (name === '/prompt') {
@@ -136,12 +136,15 @@ export class Assistant {
   }
   // [[key, label, display]] of every personal detail.
   persona() { return FIELDS.filter(field => field.key.startsWith('persona.')).map(field => [field.key, field.label, this.settings.display(field.key)]); }
-  statusView() {
+  async statusView() {
     const counts = {};
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
     const { config } = this.settings;
+    // The level the model uses when none is chosen; unknown if the model list cannot be read.
+    const modelDefault = config.llm.thinking ? null : await this.models().then(list => list.find(model => model.id === config.llm.model)?.defaultThinking, () => null);
     return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking, chatgpt: this.codex.account?.() ?? {} });
+      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
+      quietHours: config.quietHours, quiet: isQuiet(config.quietHours), chatgpt: this.codex.account?.() ?? {} });
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
   async models() {
@@ -153,26 +156,14 @@ export class Assistant {
     try { list = await this.models(); } catch (error) { await this.send(`⚠️ I could not read your plan's models (${error.message}).`); return this.ask('model'); }
     return this.show(modelView(list, this.settings.config.llm.model, this.settings.config.llm.thinking));
   }
-  async searchNow() {
-    const before = this.store.count();
-    const result = await this.check();
-    if (result?.error) return this.send(`⚠️ The search failed: ${result.error}`);
-    if (result?.skipped) return this.send('⏳ IS24 is blocking me right now. I back off and try again on my own.');
-    const found = this.store.count() - before;
-    return this.send(found ? `🔎 Done: ${plural(found, 'new listing')}. Matches arrive as separate messages.` : '🔎 Done: no new listings.');
-  }
   // Menu buttons (x:<name>:<args>), see menu.js.
   async action(name, a, b, c) {
     const { config } = this.settings;
     if (!this.settings.complete()) return { text: 'Finish the setup first.' };
-    if (name === 'status') return { text: 'Updated.', edit: this.statusView() };
+    if (name === 'status') return { text: 'Updated.', edit: await this.statusView() };
     if (name === 'pause') {
       const paused = this.settings.set('paused', !config.paused);
-      return { text: paused ? '⏸ Paused' : '▶️ Searching again', edit: this.statusView() };
-    }
-    if (name === 'check') {
-      this.searchNow().catch(error => this.onError(error.message));
-      return { text: '🔎 Searching…' };
+      return { text: paused ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() };
     }
     if (name === 'criteria') { await this.show(criteriaView(config.preferences)); return { text: '' }; }
     if (name === 'about') { await this.show(aboutView(this.persona())); return { text: '' }; }

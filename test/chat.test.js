@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { Settings } from '../src/settings.js';
+import { Settings, isQuiet } from '../src/settings.js';
 import { Telegram } from '../src/telegram.js';
 import { Assistant } from '../src/assistant.js';
 
@@ -104,14 +104,12 @@ test('a restart does not repeat a setup question that is still open in the chat'
   assert.match(c.texts().at(-1), /Open immobilienscout24\.de/, '/setup asks it again');
 });
 
-test('menu: status with search now and pause, criteria, model then thinking, writing style', async t => {
+test('menu: status with scheduled searches and pause, criteria, model then thinking, writing style', async t => {
   const c = chat(t);
-  for (const [key, value] of Object.entries({ chatId: '42', accountEmail: 'me@example.com', ...typed, 'persona.anrede': 'MALE', 'persona.telefon': '', 'persona.strasse': '', 'persona.hausnummer': '', 'persona.plz': '', 'persona.ort': '', 'persona.about': '', 'persona.sendProfile': false, pollIntervalMs: 120_000 })) c.settings.set(key, value);
+  for (const [key, value] of Object.entries({ chatId: '42', accountEmail: 'me@example.com', ...typed, 'persona.anrede': 'MALE', 'persona.telefon': '', 'persona.strasse': '', 'persona.hausnummer': '', 'persona.plz': '', 'persona.ort': '', 'persona.about': '', 'persona.sendProfile': false, pollIntervalMs: 120_000, quietHours: '' })) c.settings.set(key, value);
   assert.equal(c.settings.complete(), true);
-  const checks = [];
   Object.assign(c.telegram.assistant, {
     ready: true, workflow: { lastPollAt: null, failures: { IS24: 0, LLM: 2 }, backoff: { blocked: false } },
-    check: async () => { checks.push(c.settings.config.paused); return { tracked: 0 }; },
   });
   c.telegram.assistant.codex.account = () => ({ email: 'gpt@example.com', plan: 'plus' });
   c.telegram.assistant.codex.models = async () => [{ id: 'gpt-a', name: 'GPT-A', thinking: ['low', 'medium', 'high'], defaultThinking: 'medium' }, { id: 'gpt-b', name: 'GPT-B', thinking: ['low'], defaultThinking: 'low' }];
@@ -120,12 +118,12 @@ test('menu: status with search now and pause, criteria, model then thinking, wri
   await c.message('/status');
   assert.match(last('sendMessage').text, /🟢 Searching<\/b> every 2 min[\s\S]*ChatGPT Plus: ⚠️ 2 failures in a row[\s\S]*Model: gpt-6-luna[\s\S]*Waiting for you: <b>0<\/b>/);
   assert.equal(last('sendMessage').parse_mode, 'HTML');
+  assert.ok(!JSON.stringify(last('sendMessage').reply_markup).includes('x:check'), 'no manual search button');
   await c.tap('x:pause');
   assert.equal(c.settings.config.paused, true);
   assert.match(last('editMessageText').text, /⏸ Paused/, 'the status message updates in place');
   await c.tap('x:check');
-  await until(() => c.texts().at(-1) === '🔎 Done: no new listings.');
-  assert.deepEqual(checks, [true], 'search now works while paused');
+  assert.match(last('answerCallbackQuery').text, /outdated/, 'old search buttons are rejected');
   await c.message('/pause');
   assert.equal(c.settings.config.paused, false, '/pause toggles');
 
@@ -173,4 +171,11 @@ test('menu: status with search now and pause, criteria, model then thinking, wri
   assert.match(last('editMessageText').text, /Cleared 2 waiting listings/);
   await c.message('/help');
   assert.match(c.texts().at(-1), /menu/);
+});
+
+test('night pause: from > to wraps past midnight, German time', () => {
+  const at = hour => new Date(Date.UTC(2026, 0, 15, hour - 1)); // January: Berlin is UTC+1.
+  assert.deepEqual([at(23), at(3), at(7), at(12)].map(time => isQuiet('22-7', time)), [true, true, false, false]);
+  assert.deepEqual([at(19), at(20), at(8)].map(time => isQuiet('20-8', time)), [false, true, false]);
+  assert.equal(isQuiet('', at(3)), false, 'off');
 });

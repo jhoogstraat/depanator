@@ -1,0 +1,43 @@
+[Unit]
+Description=Depanator apartment agent
+Requires=homelab-prepare.service
+After=homelab-prepare.service
+PartOf=homelab.target
+StartLimitIntervalSec=0
+
+[Container]
+ContainerName=depanator
+Image=localhost/depanator:pi1-20261019-2
+Pull=never
+StopTimeout=40
+UserNS=auto
+Network=homelab.network
+Volume=/var/lib/homelab/apps/depanator/data:/data:Z,idmap=uids=@0-1000-1;gids=@0-1000-1
+Volume=/var/lib/homelab/apps/depanator/config/bot-token:/run/secrets/bot-token:ro,Z,idmap=uids=@0-1000-1;gids=@0-1000-1
+Environment=TELEGRAM_BOT_TOKEN_FILE=/run/secrets/bot-token
+Environment=DEPANATOR_PUBLIC_URL=https://trek.hoogstraat.net/depanator
+Label=traefik.enable=true
+Label=traefik.http.routers.depanator.rule=Host(`depanator.hoogstraat.de`)
+Label=traefik.http.routers.depanator.entrypoints=https
+Label=traefik.http.routers.depanator.service=depanator
+Label="traefik.http.routers.depanator-public.rule=Host(`trek.hoogstraat.net`) && PathPrefix(`/depanator/`)"
+Label=traefik.http.routers.depanator-public.entrypoints=tunnel
+Label=traefik.http.routers.depanator-public.priority=100
+Label=traefik.http.routers.depanator-public.service=depanator
+Label=traefik.http.services.depanator.loadbalancer.server.port=8080
+HealthCmd=/usr/local/bin/depanator-entrypoint health
+HealthInterval=5m
+HealthTimeout=10s
+HealthStartPeriod=15m
+HealthOnFailure=kill
+Timezone=Europe/Berlin
+
+[Service]
+Restart=always
+RestartSec=30
+TimeoutStartSec=300
+TimeoutStopSec=45
+MemoryMax=2G
+
+[Install]
+WantedBy=homelab.target

@@ -66,7 +66,7 @@ export function codexAccount(config) {
 export async function listCodexModels(config, { spawnImpl = spawn } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-models-'));
   try {
-    const child = spawnImpl(codexExecutable(), ['debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawnImpl(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', 'debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
     await new Promise((resolve, reject) => {

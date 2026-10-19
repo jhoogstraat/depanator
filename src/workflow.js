@@ -1,5 +1,6 @@
 import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.js';
 import { assertReconciled } from './config.js';
+import { isQuiet } from './settings.js';
 
 // Self-healing (backoff, retry) runs first; the user hears only about streaks it cannot fix.
 const ALERT_AFTER = 3;
@@ -56,16 +57,16 @@ export class Workflow {
   }
   poll() { return this.run(() => this.pollInternal()); }
   sendApproved() { return this.run(() => this.sendInternal()); }
-  // manual: the owner asked to search now, also while searching is paused.
-  tick({ manual = false } = {}) {
+  tick() {
     // Every interval, even while a previous tick is stuck (e.g. waiting for an IS24 login).
     this.reportOutcomes();
     if (this.runningTick) return this.runningTick;
     this.runningTick = this.run(async () => {
       let result;
       let pollError;
-      // Paused: no search, but approved applications are still sent.
-      if (this.config.paused === true && !manual) result = { paused: true };
+      // Paused or night: no search, but approved applications are still sent.
+      if (this.config.paused === true) result = { paused: true };
+      else if (isQuiet(this.config.quietHours)) result = { quiet: true };
       else if (this.backoff.skip > 0) { this.backoff.skip--; result = { skipped: true }; }
       else try { result = await this.pollInternal(); this.lastPollAt = Date.now(); } catch (error) { pollError = error; }
       await this.sendInternal();

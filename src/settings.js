@@ -22,6 +22,16 @@ function pattern(regex, hint) {
     return result;
   };
 }
+// Night pause "from-to" in German time (from > to wraps past midnight); '' = around the clock.
+// ponytail: German time zone fixed; IS24 is a German site.
+export function isQuiet(quietHours, now = Date.now()) {
+  const match = /^(\d{1,2})-(\d{1,2})$/.exec(quietHours || '');
+  if (!match) return false;
+  const [from, to] = [Number(match[1]), Number(match[2])];
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/Berlin' }).formatToParts(now).find(part => part.type === 'hour').value);
+  return from > to ? hour >= from || hour < to : hour >= from && hour < to;
+}
+
 // Every setting the chat can change, in guided-setup order. `setup: false` settings have a default and
 // are changed from the menu. Persona values fill the IS24 contact request; the LLM may use only them.
 export const FIELDS = [
@@ -47,6 +57,8 @@ export const FIELDS = [
   // '' = the model's own default. Chosen together with the model (/model), from the levels it supports.
   { key: 'thinking', label: 'Thinking', ask: 'How hard should ChatGPT think?', default: '', empty: 'default', optional: true, setup: false, parse: pattern(/^[a-z]{1,20}$/, 'Please pick a thinking level from /model.') },
   { key: 'style', label: 'Writing style', empty: 'none', ask: 'How should applications be written? For example: "Formal, short, always mention that I am a non-smoker." Applications still state only facts you gave me.', setup: false, parse: text(1000), optional: true },
+  { key: 'quietHours', label: 'Night pause', ask: 'When should I not search? Hardly anyone publishes listings at night.', default: '22-7', setup: false,
+    choices: [['22-7', '22:00 – 07:00'], ['20-8', '20:00 – 08:00'], ['', 'Search around the clock']] },
   { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
 ];
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
@@ -96,7 +108,7 @@ export class Settings {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
       chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
-      pollIntervalMs: value('pollIntervalMs'), maxPages: 1, autoSend: value('autoSend'), paused: value('paused'), style: value('style') ?? '',
+      pollIntervalMs: value('pollIntervalMs'), maxPages: 1, autoSend: value('autoSend'), paused: value('paused'), quietHours: value('quietHours'), style: value('style') ?? '',
     });
     // maxPages: one page (the 20 newest) per check; more new listings between two checks do not happen.
     this.config.llm.model = value('model');

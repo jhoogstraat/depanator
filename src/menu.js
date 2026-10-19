@@ -24,12 +24,15 @@ const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, chatgpt: { email, plan } }
+// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, chatgpt: { email, plan }, quietHours, quiet }
+const hours = quietHours => quietHours.split('-').map(hour => `${hour.padStart(2, '0')}:00`);
 export function statusView(s) {
   const n = key => s.counts[key] ?? 0;
   const health = (failures, ok, blocked = false) => blocked ? '⛔ blocking me, backing off' : failures ? `⚠️ ${plural(failures, 'failure')} in a row` : `✅ ${ok}`;
   const lines = [
-    s.paused ? '<b>⏸ Paused</b>: I do not search. Waiting drafts and sending still work.' : `<b>🟢 Searching</b> every ${esc(s.interval)}`,
+    s.paused ? '<b>⏸ Paused</b>: I do not search. Waiting drafts and sending still work.'
+      : s.quiet ? `<b>🌙 Night pause</b> until ${hours(s.quietHours)[1]}.` : `<b>🟢 Searching</b> every ${esc(s.interval)}`,
+    `🌙 Night pause: ${s.quietHours ? `${hours(s.quietHours).join(' – ')}` : 'off'}`,
     `🕑 Last check: ${when(s.lastPollAt)}`,
     `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`, s.blocked) : '❌ not connected, /connect'}`,
     `🤖 ChatGPT${s.chatgpt.plan ? ` ${esc(s.chatgpt.plan[0].toUpperCase() + s.chatgpt.plan.slice(1))}` : ''}: ${health(s.failures.LLM, s.chatgpt.email ? `connected as ${esc(s.chatgpt.email)}` : 'connected')}`,
@@ -46,9 +49,9 @@ export function statusView(s) {
     `👀 Online before I started: ${n('existing')}`,
   ];
   return html(lines.join('\n'), [
-    [{ text: '🔎 Search now', callback_data: 'x:check' }, s.paused ? { text: '▶️ Resume', callback_data: 'x:pause' } : { text: '⏸ Pause', callback_data: 'x:pause' }],
+    [s.paused ? { text: '▶️ Resume', callback_data: 'x:pause' } : { text: '⏸ Pause', callback_data: 'x:pause' }],
     [{ text: `📬 Waiting (${n('awaiting_approval')})`, callback_data: 'x:waiting' }, { text: `📨 Sent (${n('sent') + n('unknown_outcome') + n('failed')})`, callback_data: 'x:sent' }],
-    [{ text: '🔍 Change search', callback_data: 'k:searchUrl' }, { text: `⏱ Every ${s.interval}`, callback_data: 'k:pollIntervalMs' }],
+    [{ text: '🔍 Search', callback_data: 'k:searchUrl' }, { text: `⏱ ${s.interval}`, callback_data: 'k:pollIntervalMs' }, { text: '🌙 Night', callback_data: 'k:quietHours' }],
     [{ text: '🔄 Refresh', callback_data: 'x:status' }],
   ]);
 }

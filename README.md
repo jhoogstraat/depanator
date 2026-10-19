@@ -31,7 +31,7 @@ The bot's menu (☰ next to the message field):
 
 | Command | |
 | --- | --- |
-| `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: 🔎 Search now, ⏸ Pause / ▶️ Resume, 📬 Waiting (show a listing again), 📨 Sent |
+| `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: ⏸ Pause / ▶️ Resume, 📬 Waiting (show a listing again), 📨 Sent, and 🔍 Search, ⏱ interval and 🌙 Night pause to change those |
 | `/pause` | Pause or resume searching. While paused, waiting drafts and approved sends still work |
 | `/criteria` | What a listing must have. ChatGPT skips clear mismatches; add, remove or rewrite criteria |
 | `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details); set your writing style |
@@ -42,7 +42,7 @@ The bot's menu (☰ next to the message field):
 
 ### Being early
 
-Each check reads the first page of results, sorted newest first (the 20 newest listings), so it is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. The first check (and the first after you change the search) only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
+Each check reads the first page of results, sorted newest first (the 20 newest listings), so it is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. At night (22:00–07:00 German time by default; change it with 🌙 Night on `/status`) the agent does not search, since hardly anyone publishes listings then. The first check (and the first after you change the search) only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
 
 ### Reviews
 
