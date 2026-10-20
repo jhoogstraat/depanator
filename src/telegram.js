@@ -108,7 +108,7 @@ export class Telegram {
     append(`\n\n📍 ${address || 'Address unavailable'}`);
     append('\n\n💶 '); append(`${listing.price ?? '?'} €`, 'bold');
     append(`  ·  📐 ${listing.area ?? '?'} m²  ·  🚪 ${listing.rooms ?? '?'} Zi.\n\n`);
-    const badges = [listing.published && `🕒 ${listing.published}`, listing.earlyAccess && '🔒 Suchen+'].filter(Boolean).join('  ·  ');
+    const badges = [listing.published && `🕒 ${new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(new Date()).replace(',', '')}`, listing.earlyAccess && '🔒 Suchen+'].filter(Boolean).join('  ·  ');
     if (badges) append(`${badges}\n\n`);
     // URLs are built here, never taken from listing data.
     const query = encodeURIComponent(address);

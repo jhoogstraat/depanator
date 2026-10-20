@@ -213,7 +213,7 @@ test('Telegram sends a typical review as one message with details, draft, and bu
   assert.ok(!body.text.includes(item.id), 'no internal IDs shown');
   await agent.notify({ ...item, snapshot: { ...item.snapshot, address: 'Alandstr. 67, 13599 Berlin', published: 'vor 2 Stunden', earlyAccess: true } });
   const extra = calls.pop().body;
-  assert.match(extra.text, /\n\n🕒 vor 2 Stunden  ·  🔒 Suchen\+\n\n/);
+  assert.match(extra.text, /\n\n🕒 \d\d\.\d\d\. \d\d:\d\d  ·  🔒 Suchen\+\n\n/);
   const links = extra.entities.filter(entity => entity.type === 'text_link').map(entity => [extra.text.slice(entity.offset, entity.offset + entity.length), entity.url]);
   assert.deepEqual(links, [['Listing', 'https://www.immobilienscout24.de/expose/123'], ['Google Maps', 'https://www.google.com/maps/search/?api=1&query=Alandstr.%2067%2C%2013599%20Berlin'], ['Apple Maps', 'https://maps.apple.com/?q=Alandstr.%2067%2C%2013599%20Berlin']]);
 });
