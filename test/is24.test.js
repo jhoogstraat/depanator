@@ -1,49 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { EventEmitter } from 'node:events';
-import { IS24Adapter, listingUrl, readAccount, extractDetails, verifyForm } from '../src/is24.js';
-import { validateSearchUrl } from '../src/url-translator.js';
-import { IS24Contactor } from '../src/is24-contactor.js';
+import { IS24Adapter, listingUrl, readExpose, contactRequest } from '../src/is24.js';
+import { loginRequired } from '../src/is24-auth.js';
+import { validateSearchUrl, buildMobileApiUrl } from '../src/url-translator.js';
 const searchUrl='https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten';
-const config={searchUrl,maxPages:3,browserProfile:'/tmp/test-is24-profile',accountEmail:'me@example.com',persona:{vorname:'Me',nachname:'Example',email:'me@example.com'}};
+const config={searchUrl,maxPages:3,accountEmail:'me@example.com',persona:{vorname:'Me',nachname:'Example',email:'me@example.com'}};
 const snapshot={expose_id:'123',title:'Home',price:900,area:60,rooms:2,address:'Berlin',image_url:'',url:listingUrl('123'),description:'Full listing description',amenities:['Balcony: yes']};
 function network(pages) {
   let calls=0;
-  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1]})};},count:()=>calls};
+  return {fetch:async url=>{ const page=Number(new URL(url).searchParams.get('pagenumber')); calls++; return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=> ({resultListItems:pages[page-1],numberOfPages:pages.length})};},count:()=>calls};
 }
-const item=id=>({id,title:'Home',attributes:[],address:{line:'Berlin'}});
-test('container browser path and sandbox flags apply to automated and manual launch',async()=>{
-  const serverConfig={...config,browser:{executablePath:'/usr/bin/chromium',disableSandbox:true}};
-  let automated, manual;
-  const adapter=new IS24Adapter(serverConfig,{
-    launch:async options=>{automated=options;return {newPage:async()=>({}),close:async()=>{}};},
-    spawn:(path,args)=>{manual={path,args};const child=new EventEmitter();queueMicrotask(()=>child.emit('exit',0));return child;},
-  });
-  await adapter.ensureBrowser();
-  await adapter.login();
-  assert.equal(automated.executablePath,'/usr/bin/chromium');
-  assert.equal(manual.path,'/usr/bin/chromium');
-  for(const flag of ['--no-sandbox','--disable-setuid-sandbox']) {
-    assert.ok(automated.args.includes(flag));assert.ok(manual.args.includes(flag));
-  }
-  assert.deepEqual(new IS24Adapter(config).browserArgs(),[],'local browser keeps its sandbox by default');
-});
+const item=id=>({id,title:'Home',published:'vor 2 Stunden',paywallListing:{active:true},attributes:[{label:'',value:'1.234 €'},{label:'',value:'54 m²'},{label:'',value:'2,5 Zi.'}],address:{line:'Berlin'}});
 test('strict translation rejects every known widening route',()=>{
-  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`,{strict:true}).ok,false,query);
-  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url,{strict:true}).ok,false,url);
-  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony&utm_source=test`,{strict:true});
+  for (const query of ['furniture=true','equipment=fridge','heatingtypes=floorheating','unknown=true','price=-900&price=-1200','onlywithbalcony=false','built-in-kitchen=true','equipment=','newbuilding=false','pets-allowed=true','energy-efficiency=A','apartmenttypes=bogus']) assert.equal(validateSearchUrl(`${searchUrl}?${query}`).ok,false,query);
+  for (const url of [searchUrl.replace('www.','evil'),searchUrl.replace('wohnung-mieten','nonsense'),searchUrl.replace('wohnung-mieten','haus-kaufen'),searchUrl.replace('wohnung-mieten','wohnung-mieten-tausch'),searchUrl.replace(/wohnung-mieten.*$/,'wohnung-bis-1000-euro-warm?price=-1500'),searchUrl.replace(/wohnung-mieten.*$/,'penthouse-mieten?apartmenttypes=loft'),searchUrl.replace('https:','http:')]) assert.equal(validateSearchUrl(url).ok,false,url);
+  const valid=validateSearchUrl(`${searchUrl}?price=-1000&equipment=balcony,elevator&onlywithkitchen=true&utm_source=test`);
   assert.equal(valid.ok,true);
-  assert.equal(new URL(valid.mobileUrl).searchParams.get('price'),'-1000');
-  assert.equal(new URL(valid.mobileUrl).searchParams.has('exclusioncriteria'),false);
+  assert.equal(buildMobileApiUrl(valid.canonical,{page:2}),'https://api.mobile.immobilienscout24.de/search/list?geocodes=%2Fde%2Fberlin%2Fberlin&searchType=region&realestatetype=apartmentrent&pricetype=calculatedtotalrent&price=-1000&equipment=balcony%2Clift%2CbuiltinKitchen&sorting=-firstactivation&pagenumber=2&pagesize=20');
 });
 test('pagination never stops on duplicates and exposes capped coverage',async()=>{
   const full=Array.from({length:20},(_,i)=>item(i+1));
   const fixture=network([full,full,[item(99)]]);
   const result=await new IS24Adapter(config,fixture).search();
   assert.equal(fixture.count(),3); assert.equal(result.complete,true); assert.equal(result.listings.length,21);
-  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full])).search();
+  assert.deepEqual([result.listings[0].price,result.listings[0].area,result.listings[0].rooms],[1234,54,2.5],'live unlabeled attribute format');
+  assert.deepEqual([result.listings[0].published,result.listings[0].earlyAccess],['vor 2 Stunden',true]);
+  const capped=await new IS24Adapter({...config,maxPages:2},network([full,full,full])).search();
   assert.equal(capped.complete,false); assert.equal(capped.pages,2);
+  // Newest first: a routine poll stops once a page ends with an already known listing...
+  const routine=network([full,full,[item(99)]]);
+  const adapter=new IS24Adapter(config,routine);
+  const baseline=await adapter.search({known:id=>id==='20'});
+  assert.equal(baseline.caughtUp,false,'known history does not bypass first-search warm-up');
+  const known=await adapter.search({known:id=>id==='20'});
+  assert.equal(routine.count(),2); assert.deepEqual([known.complete,known.caughtUp,known.listings.length],[true,true,20]);
+  // ...but a known listing promoted to the top of page 1 does not hide the new ones below.
+  const promoted=network([full,full,[item(99)]]);
+  assert.equal((await new IS24Adapter(config,promoted).search({known:id=>id==='1'})).listings.length,21);
+  assert.equal(result.caughtUp,false,'a first check has not caught up');
 });
 test('malformed/block search fails rather than reporting empty coverage',async()=>{
   const adapter=new IS24Adapter(config,{fetch:async()=>({ok:true,status:200,headers:{get:()=> 'text/html'}})});
@@ -51,91 +45,71 @@ test('malformed/block search fails rather than reporting empty coverage',async()
   assert.throws(()=>listingUrl('123/../account'),/Invalid/);
   await assert.rejects(new IS24Adapter(config,network([[item('bad')]])).search(),/Invalid/);
 });
-function fixture({account=config.accountEmail,detail={},success=true,throwAfterClick=false,revoke=false}={}) {
-  let clicks=0;
-  const page={goto:async()=>({ok:()=>true}),url:()=>snapshot.url,evaluate:async(fn)=>fn===readAccount ? account : fn===extractDetails ? {...snapshot,...detail} : true};
-  const contactor={apply:async(id,draft,key,tabs,options)=>{await options.beforeSubmit(page); options.onSubmitAttempt(); clicks++; if(throwAfterClick) throw new Error('transport lost'); return {success,detail:'confirmation'};}};
-  const adapter=new IS24Adapter(config,{launch:async()=>({newPage:async()=>page,close:async()=>{}}),contactor});
-  return {adapter,clicks:()=>clicks,beforeSubmit:async()=>!revoke};
-}
-test('account mismatch, unverified identity, changed snapshot, revocation fail before click',async()=>{
-  for(const options of [{account:null},{account:'other@example.com'},{detail:{price:901}},{revoke:true}]) {
-    const f=fixture(options); const result=await f.adapter.send({snapshot,draft:'Exact approved text'},{beforeSubmit:f.beforeSubmit});
-    assert.equal(result.outcome,'failed'); assert.equal(f.clicks(),0);
-  }
+// The shape of the app's expose JSON (trimmed from a live listing).
+const expose = (contactData = {}) => ({
+  sections: [
+    { type: 'TOP_ATTRIBUTES', attributes: [{ label: 'Kaltmiete 20,53 €/m²', text: '680 €' }, { label: 'Zimmer', text: '1' }, { label: 'Wohnfläche', text: '33,13 m²' }, { label: 'Warmmiete', text: '890 €' }] },
+    { type: 'TITLE', title: 'Erstbezug: Studio mit Terrasse' },
+    { type: 'MAP', addressLine1: 'Pasewalker Straße 96', addressLine2: '13127 Französisch Buchholz, Berlin' },
+    { type: 'ATTRIBUTE_LIST', title: 'Hauptkriterien', attributes: [{ type: 'TEXT', label: 'Etage:', text: '0 von 4' }, { type: 'CHECK', label: 'Balkon/Terrasse:' }] },
+    { type: 'TEXT_AREA', title: 'Objektbeschreibung', text: 'Ruhig zur Gartenseite.' },
+  ],
+  contact: { premiumProfileRequiredForContacting: 'false', contactData: { formFieldConfig: { firstnameField: 'MANDATORY', lastnameField: 'MANDATORY', emailAddressField: 'MANDATORY', phoneNumberField: 'OPTIONAL', moveInDateField: 'OPTIONAL' }, ...contactData } },
 });
-test('single submit maps confirmation to sent and all uncertainty to unknown',async()=>{
-  for(const options of [{},{success:false},{throwAfterClick:true}]) {
-    const f=fixture(options); const result=await f.adapter.send({snapshot,draft:'Exact approved text'},{beforeSubmit:f.beforeSubmit});
-    assert.equal(result.outcome,options.success===false||options.throwAfterClick?'unknown_outcome':'sent'); assert.equal(f.clicks(),1);
-  }
-});
-test('shutdown and restore guards can still prevent click after final async validation',async()=>{
-  for (const mode of ['shutdown', 'restore']) {
-    const f=fixture();
-    const beforeSubmit=async()=>{ if(mode==='shutdown') f.adapter.cancelLogin(); return true; };
-    const result=await f.adapter.send({snapshot,draft:'Exact approved text'},{beforeSubmit,assertCanSubmit:()=>{if(mode==='restore') throw new Error('Restore reconciliation required');}});
-    assert.equal(result.outcome,'failed'); assert.equal(f.clicks(),0);
-    await f.adapter.close();
-  }
-});
-test('browser tasks serialize to preserve page and account context',async()=>{
-  const adapter=new IS24Adapter(config); const order=[];
-  await Promise.all([adapter.serial(async()=>{order.push('a');await new Promise(r=>setTimeout(r,10));order.push('b');}),adapter.serial(async()=>order.push('c'))]);
-  assert.deepEqual(order,['a','b','c']);
-});
-test('contactor has one submit call and captcha cannot trigger resubmit',async()=>{
-  const source=await readFile(new URL('../src/is24-contactor.js',import.meta.url),'utf8');
-  assert.equal((source.match(/await this\._clickAbschicken\(/g)||[]).length,1);
-  const contactor=new IS24Contactor(null,{});
-  let commands=0; let marks=0;
-  contactor.page={evaluate:async()=>{commands++;return true;}};
-  await contactor._clickAbschicken(()=>marks++);
-  assert.equal(commands,1);assert.equal(marks,1);
-  assert.equal(await contactor._solveCaptcha(),false);
-});
-test('account proof excludes listing/contact email and ambiguous account indicators',()=>{
-  const oldDocument=globalThis.document;
-  const visible=text=>({textContent:text,innerText:text,getClientRects:()=>[{}]});
-  try {
-    globalThis.document={body:{innerText:'angemeldet als me@example.com'},querySelectorAll:()=>[]};
-    assert.equal(readAccount(),null);
-    globalThis.document.querySelectorAll=selector=>selector.startsWith('header')?[visible('Angemeldet als me@example.com')]:[];
-    assert.equal(readAccount(),'me@example.com');
-    globalThis.document.querySelectorAll=selector=>selector.startsWith('header')?[]:[visible('me@example.com'),visible('other@example.com')];
-    assert.equal(readAccount(),null);
-  } finally { globalThis.document=oldDocument; }
-});
-test('details snapshot extracts complete section text and rejects incomplete/block pages',()=>{
-  const oldDocument=globalThis.document;
-  const element=(text,full=text)=>({innerText:text,textContent:full,getClientRects:()=>[{}]});
-  const dd={...element('yes'),tagName:'DD'};
-  const dt={...element('Balcony'),nextElementSibling:dd};
-  const mappings={h1:[element('Home')],'.is24qa-gesamtmiete':[element('900 €')],'.is24qa-wohnflaeche':[element('60 m²')],'.is24qa-zimmer':[element('2')],'.is24-expose-address, [data-testid="expose-address"]':[element('Berlin')],dl:[{querySelectorAll:()=>[dt]}]};
-  try {
-    globalThis.document={body:{innerText:'Active home'},querySelector:()=>null,querySelectorAll:selector=>selector.startsWith('#is24-expose-description')?[element('Collapsed excerpt','Entire full description')]:mappings[selector]||[]};
-    const detail=extractDetails();
-    assert.equal(detail.description,'Entire full description');assert.deepEqual(detail.amenities,['Balcony: yes']);assert.equal(detail.price,900);
-    globalThis.document.body.innerText='Ich bin kein Roboter';assert.throws(extractDetails,/blocked/);
-    globalThis.document.body.innerText='Home';mappings.dl=[];assert.throws(extractDetails,/Incomplete/);
-  } finally {globalThis.document=oldDocument;}
+const persona = { anrede: 'FEMALE', vorname: 'Me', nachname: 'Example', email: 'me@example.com' };
+
+test('listing details come from the app API and keep warm and cold rent apart', () => {
+  assert.deepEqual(readExpose(expose(), 'calculatedtotalrent'), { title: 'Erstbezug: Studio mit Terrasse', price: 890, area: 33.13, rooms: 1,
+    address: 'Pasewalker Straße 96, 13127 Französisch Buchholz, Berlin', description: 'Objektbeschreibung\nRuhig zur Gartenseite.', amenities: ['Balkon/Terrasse: ja', 'Etage: 0 von 4'] });
+  assert.equal(readExpose(expose(), 'rentpermonth').price, 680);
+  const changed = expose();
+  changed.sections[0].attributes.pop();
+  assert.throws(() => readExpose(changed, 'calculatedtotalrent'), /no price/, 'never falls back to cold rent');
 });
 
-test('final form verification binds exact message and identity, rejects site defaults',async()=>{
-  const oldDocument=globalThis.document;
-  const values={'textarea[name="message"]':{value:'Approved draft'},'input[name="firstName"]':{value:'Me'},'input[name="lastName"]':{value:'Example'},'input[name="emailAddress"]':{value:'me@example.com'}};
-  const form={querySelector:selector=>values[selector]||null,querySelectorAll:()=>[]};
-  const page={evaluate:async(fn,arg)=>fn(arg)};
-  try {
-    globalThis.document={querySelector:()=>form};
-    await verifyForm(page,'Approved draft',config.persona);
-    values['textarea[name="message"]'].value='Changed draft';
-    await assert.rejects(verifyForm(page,'Approved draft',config.persona),/Exact approved/);
-    values['textarea[name="message"]'].value='Approved draft';
-    values['input[name="emailAddress"]'].value='other@example.com';
-    await assert.rejects(verifyForm(page,'Approved draft',config.persona),/Exact approved/);
-    values['input[name="emailAddress"]'].value='me@example.com';
-    values['select[name="income"]']={value:'High income'};
-    await assert.rejects(verifyForm(page,'Approved draft',config.persona),/Exact approved/);
-  } finally {globalThis.document=oldDocument;}
+test('contact requests carry only approved data and refuse fields they cannot fill', () => {
+  const { body } = contactRequest(expose(), persona, 'Hallo!', 'sso-1');
+  assert.deepEqual(body['expose.contactForm'], { salutation: 'FEMALE', firstname: 'Me', lastname: 'Example', emailAddress: 'me@example.com', message: 'Hallo!', privacyPolicyAccepted: true, profileType: 'BASIC', sendProfile: false });
+  assert.equal(contactRequest(expose(), { ...persona, sendProfile: true }, 'Hallo!').body['expose.contactForm'].sendProfile, true, 'the IS24 profile is attached only when chosen');
+  assert.equal(body.ssoId, 'sso-1');
+  assert.match(contactRequest(expose({ formFieldConfig: { incomeField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires income, which I cannot fill in/);
+  assert.match(contactRequest(expose({ formFieldConfig: { phoneNumberField: 'MANDATORY' } }), persona, 'Hallo!').reason, /requires a phone number\. Add it in \/prompt/);
+  assert.match(contactRequest({ ...expose(), contact: { premiumProfileRequiredForContacting: 'true' } }, persona, 'Hallo!').reason, /Premium/);
+});
+
+function sending({ status = 200, email = config.accountEmail, error } = {}) {
+  const posts = [];
+  const fetch = async (url, request = {}) => {
+    if (request.method === 'POST') { posts.push({ url, body: JSON.parse(request.body), auth: request.headers.Authorization }); if (error) throw error; return { ok: status < 300, status, text: async () => '{"message":"nope"}' }; }
+    return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => expose() };
+  };
+  const session = { email, ssoId: 'sso-1', accessToken: async () => 'token' };
+  return { adapter: new IS24Adapter({ ...config, persona }, { session, fetch }), posts };
+}
+const review = { snapshot: { expose_id: '123' }, draft: 'Hallo!' };
+
+test('send: one request after the last approval check; answers map to sent, failed or unknown', async () => {
+  const ok = sending();
+  assert.deepEqual(await ok.adapter.send(review, { beforeSubmit: async () => true }), { outcome: 'sent', detail: 'IS24 accepted the request' });
+  assert.deepEqual([ok.posts.length, ok.posts[0].url, ok.posts[0].auth, ok.posts[0].body['expose.contactForm'].message], [1, 'https://api.mobile.immobilienscout24.de/expose/123/contact?referrer=resultlist', 'Bearer token', 'Hallo!']);
+  assert.equal((await sending({ status: 400 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'failed');
+  assert.equal((await sending({ status: 500 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'unknown_outcome', 'a server error may come after delivery');
+  assert.equal((await sending({ error: new Error('socket hang up') }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'unknown_outcome');
+  const revoked = sending();
+  assert.equal((await revoked.adapter.send(review, { beforeSubmit: async () => false })).outcome, 'failed');
+  const other = sending({ email: 'other@example.com' });
+  assert.match((await other.adapter.send(review, { beforeSubmit: async () => true })).detail, /differs/);
+  assert.equal(revoked.posts.length + other.posts.length, 0, 'nothing is sent without a valid approval and account');
+});
+
+test('authentication asks the owner to connect until IS24 access works, and propagates outages', async () => {
+  let connected = false, prompts = 0;
+  const session = { accessToken: async () => { if (!connected) throw loginRequired(); return 'token'; } };
+  const adapter = new IS24Adapter(config, { session });
+  await adapter.authenticate(async () => { prompts++; connected = true; });
+  await adapter.authenticate(async () => { throw new Error('Unexpected prompt'); });
+  assert.equal(prompts, 1);
+  session.accessToken = async () => { throw new Error('offline'); };
+  await assert.rejects(adapter.authenticate(async () => { prompts++; }), /offline/);
+  assert.equal(prompts, 1);
 });

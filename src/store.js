@@ -1,145 +1,86 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { conflict, newReview, transition } from './review.js';
 
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, canonical(value[key])]));
-  return value;
-}
-export function hash(value) {
-  return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(canonical(value))).digest('hex');
-}
-export function bindingFor(config) {
-  return hash({ browserProfile: resolve(config.browserProfile), accountEmail: config.accountEmail.toLowerCase().trim() });
-}
-export function configHashFor(config) {
-  const { searchUrl, accountEmail, browserProfile, persona, preferences, llm, approvalTtlMs, browser } = config;
-  // Secrets and notification destinations do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, browserProfile: resolve(browserProfile), persona, preferences, llm: llm && { model: llm.model, baseUrl: llm.baseUrl, ...(llm.backend === 'codex' ? { backend: llm.backend, codexHome: llm.codexHome } : {}) }, approvalTtlMs, browser });
-}
-function conflict(message) {
-  const error = new Error(message);
-  error.code = 'CONFLICT';
-  throw error;
-}
+// Append-only. Index i upgrades schema version i to i+1; never edit a shipped entry.
+const MIGRATIONS = [
+  // IF NOT EXISTS adopts databases created before schema versioning.
+  `CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, expose_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, body TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS attempts (review_id TEXT PRIMARY KEY REFERENCES reviews(id), started_at INTEGER NOT NULL, finished_at INTEGER, outcome TEXT NOT NULL, draft_hash TEXT NOT NULL, detail TEXT);`,
+  // Every poll selects by status.
+  'CREATE INDEX IF NOT EXISTS reviews_status ON reviews(status);',
+  // Retired states: analysis in progress is now a counted attempt on `discovered`, and approvals no
+  // longer expire. The attempts table duplicated each review's own submission status. Earlier
+  // outcomes were reported live, so they count as reported.
+  `UPDATE reviews SET status='discovered', body=json_set(body, '$.status', 'discovered') WHERE status='analyzing';
+   UPDATE reviews SET status='dismissed', body=json_set(body, '$.status', 'dismissed', '$.detail', 'Approval expired') WHERE status='expired';
+   UPDATE reviews SET body=json_set(body, '$.analysisAttempts', 0) WHERE json_extract(body, '$.analysisAttempts') IS NULL;
+   UPDATE reviews SET body=json_set(body, '$.reportedAt', COALESCE(json_extract(body, '$.finishedAt'), 0)) WHERE status IN ('sent', 'failed', 'unknown_outcome');
+   DROP TABLE attempts;`,
+  // Settings made in the Telegram chat.
+  'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);',
+];
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
+// Durable reviews. Every status change goes through dispatch(), which applies the review.js state
+// machine atomically. Telegram delivery metadata does not change review state.
 export class Store {
   constructor(path, { now = Date.now } = {}) {
     this.now = now;
     this.db = new DatabaseSync(path);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, expose_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, body TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS attempts (review_id TEXT PRIMARY KEY REFERENCES reviews(id), started_at INTEGER NOT NULL, finished_at INTEGER, outcome TEXT NOT NULL, draft_hash TEXT NOT NULL, detail TEXT);`);
-    this.recover();
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
+    const { user_version: version } = this.db.prepare('PRAGMA user_version').get();
+    if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than this agent supports (${SCHEMA_VERSION}); upgrade the agent`);
+    for (let next = version; next < SCHEMA_VERSION; next++) {
+      this.transaction(() => { this.db.exec(MIGRATIONS[next]); this.db.exec(`PRAGMA user_version=${next + 1}`); });
+    }
+    // The process stopped mid-submission: IS24 may or may not have received it, so it is never retried.
+    for (const review of this.list('submitting')) this.dispatch(review.id, { type: 'finish', outcome: 'unknown_outcome', detail: 'Process stopped during submission; verify account history before any further action' });
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  write(review, expectedStatus) {
-    const result = this.db.prepare('UPDATE reviews SET status=?, body=? WHERE id=? AND status=?').run(review.status, JSON.stringify(review), review.id, expectedStatus);
-    if (!result.changes) conflict('Review state changed');
-    return review;
+  // Stable listing IDs: an already-known listing is ignored, even if its price changed. Returns the new reviews.
+  // fresh: found by a search that had caught up with known listings, i.e. newly published (auto-send eligible).
+  // existing: only note the listings (status `existing`), so they are known but never analyzed.
+  discover(snapshots, { fresh = false, existing = false } = {}) {
+    const insert = this.db.prepare('INSERT OR IGNORE INTO reviews(id,expose_id,status,body) VALUES(?,?,?,?)');
+    return this.transaction(() => snapshots.flatMap(snapshot => {
+      const review = { ...newReview({ id: randomUUID(), snapshot, now: this.now() }), fresh, ...(existing && { status: 'existing' }) };
+      return insert.run(review.id, review.exposeId, review.status, JSON.stringify(review)).changes ? [review] : [];
+    }));
   }
   get(id) {
     const row = this.db.prepare('SELECT body FROM reviews WHERE id=?').get(id);
     return row ? JSON.parse(row.body) : null;
   }
-  list() {
-    this.expire();
-    return this.db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all().map(row => JSON.parse(row.body));
+  // Oldest first, optionally only one status.
+  list(status) {
+    const rows = status ? this.db.prepare('SELECT body FROM reviews WHERE status=? ORDER BY rowid').all(status) : this.db.prepare('SELECT body FROM reviews ORDER BY rowid').all();
+    return rows.map(row => JSON.parse(row.body));
   }
-  select(status) { return this.db.prepare('SELECT body FROM reviews WHERE status=? ORDER BY rowid').all(status).map(row => JSON.parse(row.body)); }
-  discover(snapshot) {
-    const exposeId = String(snapshot.expose_id ?? '');
-    if (!/^\d+$/.test(exposeId)) throw new Error('Invalid expose ID');
-    const review = { id: randomUUID(), exposeId, status: 'discovered', snapshot: structuredClone(snapshot), version: 1, draft: '', draftHash: null, reasons: [], accountBinding: null, configHash: null, expiresAt: null, createdAt: this.now(), notifiedAt: null };
-    const result = this.db.prepare('INSERT OR IGNORE INTO reviews(id,expose_id,status,body) VALUES(?,?,?,?)').run(review.id, exposeId, review.status, JSON.stringify(review));
-    return result.changes ? review : null;
-  }
-  pendingAnalysis() { return this.select('discovered'); }
-  pendingNotifications() { this.expire(); return this.select('awaiting_approval').filter(review => review.notifiedAt == null); }
-  approved() { this.expire(); return this.select('approved'); }
-  beginAnalysis(id) {
-    const review = this.get(id);
-    if (!review || review.status !== 'discovered') return null;
-    return this.write({ ...review, status: 'analyzing', detail: undefined }, 'discovered');
-  }
-  saveAnalysis(id, snapshot, result, bindings) {
-    const review = this.get(id);
-    if (!review || review.status !== 'analyzing') conflict('Review is not being analyzed');
-    if (String(snapshot.expose_id) !== review.exposeId) conflict('Listing identity changed');
-    if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string' || (result.decision === 'message' && !result.draft.trim())) throw new Error('Invalid analysis result');
-    return this.write({ ...review, snapshot: structuredClone(snapshot), snapshotHash: hash(snapshot), status: result.decision === 'message' ? 'awaiting_approval' : 'dismissed', reasons: result.reasons, draft: result.draft, draftHash: hash(result.draft), ...bindings }, 'analyzing');
-  }
-  failAnalysis(id, detail) {
-    const review = this.get(id);
-    if (review?.status === 'analyzing') this.write({ ...review, status: 'discovered', detail }, 'analyzing');
-  }
-  markNotified(id) {
-    const review = this.get(id);
-    if (review?.status === 'awaiting_approval') this.write({ ...review, notifiedAt: this.now(), notificationError: undefined }, 'awaiting_approval');
-  }
+  has(exposeId) { return Boolean(this.db.prepare('SELECT 1 FROM reviews WHERE expose_id=?').get(String(exposeId))); }
+  settings() { return Object.fromEntries(this.db.prepare('SELECT key, value FROM settings').all().map(row => [row.key, JSON.parse(row.value)])); }
+  saveSetting(key, value) { this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
+  deleteSetting(key) { this.db.prepare('DELETE FROM settings WHERE key=?').run(key); }
+  count() { return this.db.prepare('SELECT COUNT(*) AS count FROM reviews').get().count; }
   recordTelegramMessage(id, chatId, messageId) {
-    const review = this.get(id);
-    this.write({ ...review, telegramMessages: [...(review.telegramMessages || []), { chatId, messageId }] }, review.status);
-  }
-  notificationFailed(id, detail) {
-    const review = this.get(id);
-    if (review?.status === 'awaiting_approval') this.write({ ...review, notificationError: detail }, 'awaiting_approval');
-  }
-  expire() {
-    for (const status of ['awaiting_approval', 'approved']) for (const review of this.select(status)) {
-      if (review.expiresAt <= this.now()) this.write({ ...review, status: 'expired', detail: 'Approval expired' }, status);
-    }
-  }
-  intact(review, bindings) {
-    return review.expiresAt > this.now() && review.draftHash === hash(review.draft) && review.snapshotHash === hash(review.snapshot) && String(review.snapshot.expose_id) === review.exposeId && review.accountBinding === bindings.accountBinding && review.configHash === bindings.configHash;
-  }
-  approve(id, { version, draftHash, accountBinding, configHash }) {
-    return this.transaction(() => {
-      this.expire();
-      const review = this.get(id);
-      if (!review || review.status !== 'awaiting_approval' || review.version !== version || review.draftHash !== draftHash || !this.intact(review, { accountBinding, configHash })) conflict('Review is stale, expired, or has changed');
-      return this.write({ ...review, status: 'approved', approvedAt: this.now() }, 'awaiting_approval');
+    this.transaction(() => {
+      const review = this.get(id) ?? conflict('Unknown review');
+      const next = { ...review, telegramMessages: [...(review.telegramMessages || []), { chatId, messageId }] };
+      this.db.prepare('UPDATE reviews SET body=? WHERE id=?').run(JSON.stringify(next), id);
     });
   }
-  dismiss(id, { version }) {
+  // Throws CONFLICT when the event does not apply to the review's current status.
+  dispatch(id, event) {
     return this.transaction(() => {
-      const review = this.get(id);
-      if (!review || !['awaiting_approval', 'approved'].includes(review.status) || review.version !== version) conflict('Review cannot be dismissed');
-      return this.write({ ...review, status: 'dismissed', detail: 'Dismissed by user' }, review.status);
+      const review = this.get(id) ?? conflict('Unknown review');
+      const next = transition(review, event, this.now());
+      this.db.prepare('UPDATE reviews SET status=?, body=? WHERE id=?').run(next.status, JSON.stringify(next), id);
+      return next;
     });
-  }
-  claimSend(id, bindings) {
-    return this.transaction(() => {
-      const review = this.get(id);
-      if (!review || review.status !== 'approved') return null;
-      if (!this.intact(review, bindings)) return this.write({ ...review, status: review.expiresAt <= this.now() ? 'expired' : 'failed', detail: 'Approval binding changed' }, 'approved') && null;
-      if (this.db.prepare('SELECT review_id FROM attempts WHERE review_id=?').get(id)) return null;
-      this.db.prepare('INSERT INTO attempts(review_id,started_at,outcome,draft_hash) VALUES(?,?,?,?)').run(id, this.now(), 'submitting', review.draftHash);
-      return this.write({ ...review, status: 'submitting' }, 'approved');
-    });
-  }
-  validateSubmission(id, { version, draftHash, snapshotHash, ...bindings }) {
-    const review = this.get(id);
-    return Boolean(review && review.status === 'submitting' && review.version === version && review.draftHash === draftHash && review.snapshotHash === snapshotHash && this.intact(review, bindings));
-  }
-  finishSend(id, { outcome, detail = '' }) {
-    if (!['sent', 'failed', 'unknown_outcome'].includes(outcome)) throw new Error('Invalid submission outcome');
-    return this.transaction(() => {
-      const review = this.get(id);
-      if (!review || review.status !== 'submitting') conflict('Submission is not active');
-      this.db.prepare('UPDATE attempts SET finished_at=?,outcome=?,detail=? WHERE review_id=?').run(this.now(), outcome, detail, id);
-      return this.write({ ...review, status: outcome, detail, finishedAt: this.now() }, 'submitting');
-    });
-  }
-  attempts(id) { return this.db.prepare('SELECT * FROM attempts WHERE review_id=?').all(id); }
-  recover() {
-    for (const review of this.select('analyzing')) this.write({ ...review, status: 'discovered', detail: 'Analysis interrupted; pending retry' }, 'analyzing');
-    for (const review of this.select('submitting')) this.finishSend(review.id, { outcome: 'unknown_outcome', detail: 'Process stopped during submission; verify account history before any further action' });
-    this.expire();
   }
   close() { this.db.close(); }
 }
