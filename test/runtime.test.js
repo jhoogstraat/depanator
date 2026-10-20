@@ -25,7 +25,7 @@ function telegram(t, store, onApproved = () => {}) {
   const agent = new Telegram({ config: { dataDir: temp(t), notification: { chatId: '12345' }, telegramBotToken: 'secret', accountEmail: 'person@example.com' }, store, bindings: () => bindings, onApproved,
     fetchImpl: async (url, options) => {
       calls.push({ method: url.split('/').at(-1), body: JSON.parse(options.body) });
-      return { ok: true, json: async () => ({ ok: true, result: {} }) };
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: calls.length } }) };
     },
   });
   return { agent, calls };
@@ -103,6 +103,54 @@ test('Telegram sends entire draft before controls and binds callback to changed 
   store.write({ ...item, accountBinding: 'other' }, item.status);
   await agent.handleUpdate(update(callback));
   assert.equal(store.get(item.id).status, 'awaiting_approval');
+});
+
+test('Telegram dismiss deletes every listing part after restart and leaves other listings alone', async t => {
+  const path = join(temp(t), 'reviews.db');
+  let store = new Store(path, { now: () => 1 });
+  t.after(() => store.close());
+  const item = review(store, '🙂'.repeat(2200));
+  const { agent, calls } = telegram(t, store);
+  await agent.notify(item);
+  const ids = calls.map((_, index) => index + 1);
+  assert.ok(ids.length > 4, 'the draft spans multiple messages');
+  const other = store.discover({ ...snapshot, expose_id: '456' });
+  const callback = agent.callback(item, 'd');
+  store.close();
+  store = new Store(path, { now: () => 1 });
+  const restarted = telegram(t, store);
+  const dismissal = update(callback);
+  dismissal.callback_query.message.message_id = ids.at(-1);
+  await restarted.agent.handleUpdate(update(callback, 999));
+  assert.equal(restarted.calls.filter(call => call.method === 'deleteMessage').length, 0);
+  await restarted.agent.handleUpdate(dismissal);
+  assert.equal(store.get(item.id).status, 'dismissed');
+  assert.equal(store.get(other.id).status, 'discovered');
+  assert.deepEqual(restarted.calls.filter(call => call.method === 'deleteMessage').map(call => call.body), ids.map(message_id => ({ chat_id: '12345', message_id })));
+  await restarted.agent.handleUpdate(dismissal);
+  assert.equal(restarted.calls.filter(call => call.method === 'deleteMessage').length, ids.length);
+});
+
+test('Telegram deletion failure still dismisses, attempts remaining parts, and answers the callback', async t => {
+  const store = new Store(':memory:', { now: () => 1 }); t.after(() => store.close());
+  const item = review(store);
+  const { agent, calls } = telegram(t, store);
+  await agent.notify(item);
+  const count = calls.length;
+  const api = agent.api.bind(agent);
+  const attempted = [];
+  agent.api = async (method, body) => {
+    if (method === 'deleteMessage') {
+      attempted.push(body.message_id);
+      if (attempted.length === 1) throw new Error('Telegram deletion failed');
+    }
+    return api(method, body);
+  };
+  await agent.handleUpdate(update(agent.callback(item, 'd')));
+  assert.equal(store.get(item.id).status, 'dismissed');
+  assert.equal(attempted.length, count);
+  assert.equal(calls.at(-1).method, 'answerCallbackQuery');
+  assert.match(calls.at(-1).body.text, /Some Telegram messages could not be deleted/);
 });
 
 test('live process lock cannot be acquired twice and old release cannot remove replacement owner', (t) => {

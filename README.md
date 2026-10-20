@@ -4,7 +4,7 @@ A local, Telegram-first apartment agent for ImmobilienScout24. It polls a filter
 
 For container deployment on x86_64 or ARM64, see the [image interface and configuration wizard](deploy/README.md). You choose the runtime, service manager, storage, networking, and remote access controls. The browser viewer is for account login and maintenance; reviews remain entirely in Telegram.
 
-Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered.
+Telegram reviews include a linked title, rent/size/room facts, matching reasons, expandable description and amenities, the complete quoted draft, sender account, expiry, and **Approve & send / Dismiss** buttons. Native Telegram entities preserve literal listing and draft text without interpreting embedded markup. Long messages are split without truncating the draft; controls appear after every part has been delivered. Dismiss removes all Telegram messages for that review when Telegram permits deletion. Reviews sent before message tracking was added can only have their button message removed.
 
 ## Setup
 

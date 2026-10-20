@@ -81,6 +81,10 @@ export class Store {
     const review = this.get(id);
     if (review?.status === 'awaiting_approval') this.write({ ...review, notifiedAt: this.now(), notificationError: undefined }, 'awaiting_approval');
   }
+  recordTelegramMessage(id, chatId, messageId) {
+    const review = this.get(id);
+    this.write({ ...review, telegramMessages: [...(review.telegramMessages || []), { chatId, messageId }] }, review.status);
+  }
   notificationFailed(id, detail) {
     const review = this.get(id);
     if (review?.status === 'awaiting_approval') this.write({ ...review, notificationError: detail }, 'awaiting_approval');

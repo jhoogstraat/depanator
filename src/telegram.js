@@ -46,7 +46,11 @@ export class Telegram {
     if (Buffer.byteLength(value) > 64) throw new Error('Review callback is too long');
     return value;
   }
-  async formatted(text, entities = []) {
+  async sendMessage(body, reviewId) {
+    const message = await this.api('sendMessage', body);
+    if (reviewId) this.store.recordTelegramMessage(reviewId, this.chatId, message.message_id);
+  }
+  async formatted(text, entities = [], reviewId) {
     let offset = 0;
     for (const part of chunks(text)) {
       const end = offset + part.length;
@@ -57,7 +61,7 @@ export class Telegram {
       });
       // Native entities preserve literal listing/draft text. No markup from
       // untrusted content can become formatting, links, or hidden instructions.
-      await this.api('sendMessage', { chat_id: this.chatId, text: part, entities: clipped, link_preview_options: { is_disabled: true } });
+      await this.sendMessage({ chat_id: this.chatId, text: part, entities: clipped, link_preview_options: { is_disabled: true } }, reviewId);
       offset = end;
     }
   }
@@ -78,24 +82,24 @@ export class Telegram {
     append('🧠 Why it matches', 'bold'); append(`\n${review.reasons.map(reason => `• ${reason}`).join('\n')}\n\n`);
     append('👤 Sending account', 'bold'); append(`: ${this.config.accountEmail}\n`);
     append('⏳ Approval expires', 'bold'); append(`: ${new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Berlin' }).format(review.expiresAt)} (Berlin)\n`);
-    await this.formatted(facts, entities);
+    await this.formatted(facts, entities, review.id);
     const detailHeader = '📋 Listing details\n\n';
     const detailText = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n\n');
     if (detailText) await this.formatted(detailHeader + detailText, [
       { type: 'bold', offset: 0, length: detailHeader.trim().length },
       { type: 'expandable_blockquote', offset: detailHeader.length, length: detailText.length },
-    ]);
+    ], review.id);
     const draftHeader = 'Exact draft for your approval:\n\n';
     await this.formatted(draftHeader + review.draft, [
       { type: 'bold', offset: 0, length: draftHeader.trim().length },
       { type: 'blockquote', offset: draftHeader.length, length: review.draft.length },
-    ]);
+    ], review.id);
     // Buttons follow every part of the full exact draft, never a truncated preview.
-    await this.api('sendMessage', {
+    await this.sendMessage({
       chat_id: this.chatId, text: `Send this exact draft?\n${String(listing.title).slice(0, 200)}\n\nReview ${review.id} · version ${review.version}`,
       entities: [{ type: 'bold', offset: 0, length: 'Send this exact draft?'.length }],
       reply_markup: { inline_keyboard: [[{ text: '✅ Approve & send', callback_data: this.callback(review, 'a') }, { text: '✖️ Dismiss', callback_data: this.callback(review, 'd') }]] },
-    });
+    }, review.id);
   }
   async notifyOutcome(review) {
     const text = review.status === 'sent' ? 'Message sent and confirmed.'
@@ -124,6 +128,18 @@ export class Telegram {
             } else {
               this.store.dismiss(id, { version: review.version });
               answer = 'Dismissed. No message will be sent.';
+              const messageIds = new Set((review.telegramMessages || []).filter(message => message.chatId === this.chatId).map(message => message.messageId));
+              // Older reviews have no saved IDs; at least remove their controls.
+              messageIds.add(query.message.message_id);
+              for (const messageId of messageIds) {
+                if (!Number.isInteger(messageId)) continue;
+                try {
+                  await this.api('deleteMessage', { chat_id: this.chatId, message_id: messageId });
+                } catch (error) {
+                  this.onError(error.message);
+                  answer = 'Dismissed. No message will be sent. Some Telegram messages could not be deleted.';
+                }
+              }
             }
           } catch (error) { answer = error.code === 'CONFLICT' ? 'This review was already handled, changed, or expired.' : 'The action failed; check the agent terminal.'; }
         }
