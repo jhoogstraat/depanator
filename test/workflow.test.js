@@ -316,7 +316,8 @@ test('auto-send sends confident matches in the same tick and still asks about th
   const reported = [];
   const f = fixture({ workflow: {
     report: async review => { reported.push(review.approvedBy); },
-    evaluate: async listing => ({ decision: 'message', reasons: ['Fits'], draft: 'Hello, I would like to view this apartment.', confident: listing.expose_id !== '456' }),
+    // Screening writes no draft; auto-send asks for one before approving.
+    evaluate: async (listing, { revision } = {}) => ({ decision: 'message', reasons: ['Fits'], draft: revision ? 'Hello, I would like to view this apartment.' : '', confident: listing.expose_id !== '456' }),
   } });
   f.adapter.details = async listing => ({ ...f.snapshot, expose_id: listing.expose_id });
   f.config.autoSend = true;
@@ -327,6 +328,7 @@ test('auto-send sends confident matches in the same tick and still asks about th
   await f.workflow.tick();
   const [baseline, confident, unsure] = f.store.list();
   assert.deepEqual([baseline.status, confident.status, confident.approvedBy, unsure.status], ['existing', 'sent', 'auto', 'awaiting_approval']);
+  assert.equal(unsure.draft, '', 'the unsure match waits for you to ask for a message');
   assert.equal(f.calls.notify, 1, 'only the unsure new match asks for approval');
   assert.deepEqual(reported, ['auto']);
   await f.workflow.close();

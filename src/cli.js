@@ -105,7 +105,7 @@ export async function main(args = process.argv.slice(2)) {
       settings, store, send: (text, extra) => telegram.send(text, extra),
       codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
       is24: { connect: () => connect() },
-      workflow, redeliver: review => telegram.notify(review),
+      workflow, redeliver: review => telegram.notify(review, { again: true }),
       onReady: () => tick(), onError: message => console.error(message),
     });
     await telegram.verify();

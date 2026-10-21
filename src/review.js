@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // through these handlers, and any (status, event) pair not listed is a CONFLICT.
 //
 //   discovered ─analyzed→ awaiting_approval ─approve→ approved ─claim→ submitting ─finish→ sent             ↺ reported
-//       │  ↺ start, fail        │  ↺ revise, delivered,     │                 │                   failed           ↺ reported
+//       │  ↺ start, fail        │  ↺ revise (also writes the first draft), delivered,     │                 │                   failed           ↺ reported
 //       │                       │     deliveryFailed        │                 │                   unknown_outcome  ↺ reported
 //       ├─analyzed(dismiss)→ dismissed ←─dismiss───────────┤                 │
 //       └─start/fail (5th)→ analysis_failed                └─claim(binding changed)→ failed
@@ -89,7 +89,7 @@ const MACHINE = {
     fail: (review, { detail, systemic }) => giveUpOr({ ...review, analysisAttempts: review.analysisAttempts - (systemic ? 1 : 0) }, detail),
     analyzed: (review, { snapshot, result, bindings }) => {
       if (String(snapshot.expose_id) !== review.exposeId) conflict('Listing identity changed');
-      if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string' || (result.decision === 'message' && !result.draft.trim())) throw new Error('Invalid analysis result');
+      if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string') throw new Error('Invalid analysis result');
       return { ...review, status: result.decision === 'message' ? 'awaiting_approval' : 'dismissed', snapshot: structuredClone(snapshot), snapshotHash: hash(snapshot),
         reasons: result.reasons, draft: result.draft, draftHash: hash(result.draft), accountBinding: bindings.accountBinding, configHash: bindings.configHash };
     },
@@ -111,6 +111,7 @@ const MACHINE = {
     // by: 'user' (a Telegram tap) or 'auto' (auto-send on, and the LLM was confident).
     approve: (review, { version, draftHash, bindings, by = 'user' }, now) => {
       if (review.version !== version || review.draftHash !== draftHash) conflict('A newer draft replaced this one');
+      if (!review.draft.trim()) conflict('Tap ✍️ Write message first.');
       if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Edit to renew it, or Dismiss.');
       return { ...review, status: 'approved', approvedAt: now, approvedBy: by };
     },

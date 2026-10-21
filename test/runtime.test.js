@@ -42,8 +42,11 @@ function update(data, from = 12345, type = 'private') {
 
 test('model decisions are validated before anything is stored or sent', () => {
   const evaluation = { decision: 'message', reasons: ['A suitable listing'], draft: 'Hello.', confident: true };
-  assert.deepEqual(validateEvaluation(evaluation), evaluation);
-  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, reasons: [] }, { ...evaluation, decision: 'dismiss' }, { ...evaluation, draft: 'x'.repeat(5001) }, { ...evaluation, confident: 'yes' }, { decision: 'dismiss', reasons: ['No'], draft: '', confident: true }]) assert.throws(() => validateEvaluation(result), /invalid/);
+  const write = { write: true };
+  assert.deepEqual(validateEvaluation(evaluation, write), evaluation);
+  assert.deepEqual(validateEvaluation({ ...evaluation, draft: '' }), { ...evaluation, draft: '' }, 'screening writes no draft');
+  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, reasons: [] }, { ...evaluation, decision: 'dismiss', confident: false }, { ...evaluation, draft: 'x'.repeat(5001) }, { ...evaluation, confident: 'yes' }]) assert.throws(() => validateEvaluation(result, write), /invalid/);
+  for (const result of [evaluation, { decision: 'dismiss', reasons: ['No'], draft: '', confident: true }]) assert.throws(() => validateEvaluation(result), /invalid/);
 });
 
 test('Telegram approves exact review only for configured private actor and rejects replay/tampering', async (t) => {
@@ -72,7 +75,7 @@ test('Telegram sends entire draft before controls and binds callback to changed 
   const draft = '🙂'.repeat(2200) + '\n<b>Literal markup</b> & [a link](https://example.com)\nEnd of exact draft';
   const item = review(store, draft);
   const { agent, calls } = telegram(t, store);
-  await agent.notify(item);
+  await agent.notify(item, { again: true });
   const buttonMessage = calls.at(-1);
   assert.equal(buttonMessage.method, 'sendMessage');
   assert.ok(buttonMessage.body.reply_markup.inline_keyboard);
@@ -184,15 +187,15 @@ test('Telegram edit: button prompts, only a reply from the owner reaches the age
   await agent.handleUpdate(reply('mention my cat'));
   await agent.handleUpdate(reply('again'));
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(revised, [[item.id, 1, 'mention my cat']]);
+  assert.deepEqual(revised, [[item.id, 1, 'mention my cat', { manual: false }]]);
   store.dispatch(item.id, { type: 'dismiss', version: 1 });
   await agent.handleUpdate(update(agent.callback(item, 'e')));
   assert.match(calls.at(-1).body.text, /already handled/);
 });
 
-test('Telegram sends a typical review as one message with details, draft, and buttons', async (t) => {
+test('Telegram sends a new listing as one compact card with details and Write/Dismiss, the draft as a reply', async (t) => {
   const store = new Store(':memory:', { now: () => 1 }); t.after(() => store.close());
-  const item = review(store);
+  const item = review(store, '');
   const { agent, calls } = telegram(t, store);
   const image = 'https://pictures.immobilienscout24.de/listings/photo.jpg/ORIG/resize/800x600%3E/format/jpg/quality/80';
   await agent.notify({ ...item, snapshot: { ...item.snapshot, image_url: 'https://pictures.immobilienscout24.de/listings/photo.jpg/ORIG/resize/800x600>/format/webp/quality/80', description: 'Long description. '.repeat(500) } });
@@ -205,15 +208,50 @@ test('Telegram sends a typical review as one message with details, draft, and bu
   agent.fetchImpl = fetchImpl;
   assert.equal(calls.length, 1);
   const [{ body }] = calls;
-  assert.ok(body.text.length <= 4096 && body.reply_markup.inline_keyboard[0].length === 3);
+  assert.ok(body.text.length <= 4096);
+  assert.deepEqual(body.reply_markup.inline_keyboard[0].map(button => button.text), ['✍️ Write message', '✖️ Dismiss']);
   assert.deepEqual(body.link_preview_options, { url: image, prefer_large_media: true, show_above_text: true });
   const quoted = type => body.entities.filter(entity => entity.type === type).map(entity => body.text.slice(entity.offset, entity.offset + entity.length));
-  assert.deepEqual(quoted('blockquote'), [item.draft]);
-  assert.match(quoted('expandable_blockquote')[0], /…$/, 'details are shortened to fit, the draft never is');
+  assert.deepEqual(quoted('blockquote'), [], 'no draft before you ask for one');
+  assert.match(quoted('expandable_blockquote')[0], /…$/, 'details are shortened to fit');
   assert.ok(!body.text.includes(item.id), 'no internal IDs shown');
+  assert.ok(!body.text.includes('\n\n'), 'compact: no blank lines');
   await agent.notify({ ...item, snapshot: { ...item.snapshot, address: 'Alandstr. 67, 13599 Berlin', published: 'vor 2 Stunden', earlyAccess: true } });
   const extra = calls.pop().body;
-  assert.match(extra.text, /\n\n🕒 \d\d\.\d\d\. \d\d:\d\d  ·  🔒 Suchen\+\n\n/);
+  assert.match(extra.text, /^Apartment\n📍 Alandstr\. 67, 13599 Berlin\n💶 \? € · 📐 \? m² · 🚪 \? Zi\. · 🕒 \d\d\.\d\d\. \d\d:\d\d · 🔒 Suchen\+\n/);
   const links = extra.entities.filter(entity => entity.type === 'text_link').map(entity => [extra.text.slice(entity.offset, entity.offset + entity.length), entity.url]);
   assert.deepEqual(links, [['Listing', 'https://www.immobilienscout24.de/expose/123'], ['Google Maps', 'https://www.google.com/maps/search/?api=1&query=Alandstr.%2067%2C%2013599%20Berlin'], ['Apple Maps', 'https://maps.apple.com/?q=Alandstr.%2067%2C%2013599%20Berlin']]);
+  // The written draft: a short reply under the card, with the draft buttons.
+  const written = store.dispatch(item.id, { type: 'revise', version: 1, draft: 'Hallo!', reasons: ['Fits'], bindings });
+  await agent.notify(written);
+  const draft = calls.pop().body;
+  assert.equal(draft.text, '✉️ Apartment\nHallo!');
+  assert.equal(draft.reply_parameters.message_id, 1, 'replies to the listing card');
+  assert.deepEqual(draft.reply_markup.inline_keyboard.flat().map(button => button.text), ['✅ Send', '✖️ Dismiss', '✏️ Improve', '📝 Write myself', '🧠 Remember']);
+});
+
+test('Telegram: Write writes on request; Write myself takes your text verbatim; Remember saves the instruction', async (t) => {
+  const store = new Store(':memory:', { now: () => 1 }); t.after(() => store.close());
+  const item = review(store, '');
+  const { agent, calls } = telegram(t, store);
+  const revised = [];
+  const remembered = [];
+  agent.workflow.revise = async (...args) => { revised.push(args); };
+  agent.assistant.remember = text => { remembered.push(text); };
+  await agent.handleUpdate(update(agent.callback(item, 'a')));
+  assert.equal(store.get(item.id).status, 'awaiting_approval', 'nothing to send before a draft exists');
+  await agent.handleUpdate(update(agent.callback(item, 'w')));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(revised.pop(), [item.id, 1, '', undefined]);
+  const reply = (action, text) => async () => {
+    await agent.handleUpdate(update(agent.callback(item, action)));
+    const promptId = calls.findLastIndex(call => call.body.reply_markup?.force_reply) + 1;
+    await agent.handleUpdate({ message: { text, from: { id: 12345 }, chat: { id: 12345, type: 'private' }, reply_to_message: { message_id: promptId } } });
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await reply('m', 'My own text')();
+  assert.deepEqual(revised.pop(), [item.id, 1, 'My own text', { manual: true }]);
+  await reply('r', 'Always mention my cat')();
+  assert.deepEqual(remembered, ['Always mention my cat']);
+  assert.deepEqual(revised.pop(), [item.id, 1, 'Always mention my cat', { manual: false }]);
 });

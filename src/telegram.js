@@ -69,7 +69,7 @@ export class Telegram {
     if (Buffer.byteLength(value) > 64) throw new Error('Review callback is too long');
     return value;
   }
-  async formatted(text, entities = [], { last = {}, image = null, reviewId = null } = {}) {
+  async formatted(text, entities = [], { last = {}, image = null, reviewId = null, replyTo = null } = {}) {
     let offset = 0;
     const parts = chunks(text);
     for (const [index, part] of parts.entries()) {
@@ -82,7 +82,8 @@ export class Telegram {
       // Native entities preserve literal listing/draft text. No markup from
       // untrusted content can become formatting, links, or hidden instructions.
       // The photo is a large link preview, not a captioned photo: captions are capped at 1024 characters.
-      const message = { chat_id: this.chatId, text: part, entities: clipped, link_preview_options: { is_disabled: true }, ...(index === parts.length - 1 ? last : {}) };
+      const message = { chat_id: this.chatId, text: part, entities: clipped, link_preview_options: { is_disabled: true },
+        ...(index === 0 && replyTo && { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }), ...(index === parts.length - 1 ? last : {}) };
       // A rejected photo must never block the review itself.
       const sent = index === 0 && image
         ? await this.api('sendMessage', { ...message, link_preview_options: { url: image, prefer_large_media: true, show_above_text: true } }).catch(() => this.api('sendMessage', message))
@@ -91,10 +92,15 @@ export class Telegram {
       offset = end;
     }
   }
-  // One message per listing. Only a draft near the 5000-character cap splits it; the draft is never
-  // shortened (listing details are, to fit), and the buttons sit on the final part.
-  // heading/note: an outcome shown above the listing instead of approval buttons (auto-sent reviews).
-  async notify(review, { heading = '', note = '' } = {}) {
+  buttons(review, layout) {
+    return { inline_keyboard: layout.map(row => row.map(([text, action]) => ({ text, callback_data: this.callback(review, action) }))) };
+  }
+  cardButtons(review) { return this.buttons(review, [[['✍️ Write message', 'w'], ['✖️ Dismiss', 'd']]]); }
+  // A new listing is a compact card; you decide from it whether ChatGPT writes a message. A draft (written
+  // on request, or revised) arrives as its own short reply under the card. again: show the card and its draft.
+  // heading/note: an outcome shown above the listing and its message instead of buttons (auto-sent reviews).
+  async notify(review, { heading = '', note = '', again = false } = {}) {
+    if (review.draft && !heading && !again) return this.notifyDraft(review);
     const listing = review.snapshot;
     let text = '';
     const entities = [];
@@ -105,11 +111,11 @@ export class Telegram {
     if (heading) { append(heading, 'bold'); append(`\n${note}\n\n`); }
     const address = String(listing.address || '').replace(/\s*\([^)]*\)/g, '').trim();
     append(String(listing.title), 'bold');
-    append(`\n\n📍 ${address || 'Address unavailable'}`);
-    append('\n\n💶 '); append(`${listing.price ?? '?'} €`, 'bold');
-    append(`  ·  📐 ${listing.area ?? '?'} m²  ·  🚪 ${listing.rooms ?? '?'} Zi.\n\n`);
-    const badges = [listing.published && `🕒 ${new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(new Date()).replace(',', '')}`, listing.earlyAccess && '🔒 Suchen+'].filter(Boolean).join('  ·  ');
-    if (badges) append(`${badges}\n\n`);
+    append(`\n📍 ${address || 'Address unavailable'}\n💶 `); append(`${listing.price ?? '?'} €`, 'bold');
+    const facts = [`📐 ${listing.area ?? '?'} m²`, `🚪 ${listing.rooms ?? '?'} Zi.`,
+      listing.published && `🕒 ${new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(new Date()).replace(',', '')}`,
+      listing.earlyAccess && '🔒 Suchen+'].filter(Boolean);
+    append(` · ${facts.join(' · ')}\n`);
     // URLs are built here, never taken from listing data.
     const query = encodeURIComponent(address);
     const links = [
@@ -117,22 +123,27 @@ export class Telegram {
       address && ['Google Maps', `https://www.google.com/maps/search/?api=1&query=${query}`],
       address && ['Apple Maps', `https://maps.apple.com/?q=${query}`],
     ].filter(Boolean);
-    const tail = [[review.draft, 'blockquote'], ...(links.length ? [['\n\n']] : []),
-      ...links.flatMap(([label, url], index) => [...(index ? [['  ·  ']] : []), [label, 'text_link', { url }]])];
-    const detailHeader = '📋 Listing details';
-    const details = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n\n');
-    const room = LIMIT - text.length - tail.reduce((sum, [part]) => sum + part.length, 0) - detailHeader.length - 3;
+    const tail = [...links.flatMap(([label, url], index) => [...(index ? [[' · ']] : []), [label, 'text_link', { url }]]),
+      ...(heading && review.draft ? [['\n\n✉️ Message\n', 'bold'], [review.draft, 'blockquote']] : [])];
+    const details = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n');
+    const room = LIMIT - text.length - tail.reduce((sum, [part]) => sum + part.length, 0) - 2;
     if (details && room > 100) {
       let cut = Math.min(details.length, room - 1);
       if (cut < details.length && /[\uD800-\uDBFF]/.test(details[cut - 1])) cut--;
-      append(detailHeader, 'bold'); append('\n');
-      append(cut < details.length ? `${details.slice(0, cut)}…` : details, 'expandable_blockquote'); append('\n\n');
+      append(cut < details.length ? `${details.slice(0, cut)}…` : details, 'expandable_blockquote'); append('\n');
     }
     for (const [part, type, extra] of tail) append(part, type, extra);
     const image = previewImage(listing.image_url);
-    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading ? {} : {
-      reply_markup: { inline_keyboard: [[{ text: '✅ Send', callback_data: this.callback(review, 'a') }, { text: '✏️ Edit', callback_data: this.callback(review, 'e') }, { text: '✖️ Dismiss', callback_data: this.callback(review, 'd') }]] },
-    } });
+    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || review.draft ? {} : { reply_markup: this.cardButtons(review) } });
+    if (again && review.draft && !heading) await this.notifyDraft(review);
+  }
+  // Only a draft near the 5000-character cap splits; the draft is never shortened and the buttons sit on the final part.
+  async notifyDraft(review) {
+    const heading = `✉️ ${review.snapshot.title}`;
+    const card = (review.telegramMessages || []).find(message => message.chatId === this.chatId)?.messageId;
+    await this.formatted(`${heading}\n${review.draft}`, [{ type: 'bold', offset: 0, length: heading.length }, { type: 'blockquote', offset: heading.length + 1, length: review.draft.length }], {
+      reviewId: review.id, replyTo: card, last: { reply_markup: this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Improve', 'e'], ['📝 Write myself', 'm'], ['🧠 Remember', 'r']]]) },
+    });
   }
   async notifyOutcome(review) {
     const text = review.status === 'sent' ? 'IS24 accepted your request.'
@@ -166,12 +177,21 @@ export class Telegram {
     const instructions = text;
     if (!target) return instructions ? this.assistant.text(instructions) : undefined;
     if (!instructions) return;
-    if (instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
+    const manual = target.mode === 'manual';
+    if (!manual && instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
+    // 🧠 Remember: kept in your writing style, so every later draft follows it too.
+    if (target.mode === 'remember') {
+      try { this.assistant.remember(instructions); } catch (error) { return this.send(error.message); }
+    }
     this.editPrompts.delete(promptId);
-    await this.send('✍️ Revising the draft…');
+    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to your writing style (/prompt). Revising the draft…' : '✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
-    Promise.resolve().then(() => this.workflow.revise(target.id, target.version, instructions))
-      .catch(error => this.send(`Could not revise the draft: ${error.message}`).catch(failure => this.onError(failure.message)));
+    this.revise(target.id, target.version, instructions, { manual });
+  }
+  revise(id, version, instructions, options) {
+    Promise.resolve().then(() => this.workflow.revise(id, version, instructions, options))
+      .catch(error => this.send(`Could not ${instructions ? 'revise' : 'write'} the draft: ${error.message}`, instructions ? {} : { reply_markup: this.cardButtons(this.store.get(id)) })
+        .catch(failure => this.onError(failure.message)));
   }
   async handleUpdate(update) {
     if (this.controller.signal.aborted) return;
@@ -187,7 +207,7 @@ export class Telegram {
       try { ({ text: answer, used: accepted = false, edit: view = null } = await this.assistant.choice(query.data)); }
       catch (error) { answer = error.message; }
     } else if (owner) {
-      const match = /^([ade]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
+      const match = /^([adewmr]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
       if (match) {
         const [, action, rawId, version, supplied] = match;
         const id = `${rawId.slice(0, 8)}-${rawId.slice(8, 12)}-${rawId.slice(12, 16)}-${rawId.slice(16, 20)}-${rawId.slice(20)}`;
@@ -199,12 +219,23 @@ export class Telegram {
               this.workflow.approve(id, review.version, review.draftHash);
               accepted = true;
               answer = 'Approved. The agent will verify and send this exact draft.';
-            } else if (action === 'e') {
+            } else if (action === 'w') {
               if (review.status !== 'awaiting_approval') conflict('Review was already handled');
+              if (review.draft) conflict('The message is already written.');
+              this.revise(id, review.version, '');
+              accepted = true;
+              answer = 'Writing the message…';
+            } else if ('emr'.includes(action)) {
+              if (review.status !== 'awaiting_approval') conflict('Review was already handled');
+              const [ask, placeholder] = {
+                e: ['✏️ What should change?', 'e.g. shorter, mention move-in 1 March'],
+                m: ['📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', 'Your message'],
+                r: ['🧠 What should I always do differently? I save it to your writing style (/prompt) and rewrite this draft with it.', 'e.g. always mention my cat'],
+              }[action];
               // Threaded under the review it edits, so the listing need not be repeated.
-              const prompt = await this.send('✏️ What should change?', { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
-                reply_markup: { force_reply: true, input_field_placeholder: 'e.g. shorter, mention move-in 1 March' } });
-              this.editPrompts.set(prompt.message_id, { id, version: review.version });
+              const prompt = await this.send(ask, { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
+                reply_markup: { force_reply: true, input_field_placeholder: placeholder } });
+              this.editPrompts.set(prompt.message_id, { id, version: review.version, mode: { e: 'ai', m: 'manual', r: 'remember' }[action] });
               this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
               answer = 'Reply to the prompt with your changes.';
             } else {

@@ -83,9 +83,10 @@ export class Workflow {
     return review;
   }
   dismiss(id, version) { return this.store.dispatch(id, { type: 'dismiss', version }); }
-  revise(id, version, instructions) {
+  // Writes the first draft (instructions ''), revises it, or, with manual, takes instructions as the new draft verbatim.
+  revise(id, version, instructions, { manual = false } = {}) {
     if (this.closed) return Promise.reject(new Error('Workflow is closed'));
-    const task = this.reviseInternal(id, version, instructions).finally(() => this.revisions.delete(task));
+    const task = this.reviseInternal(id, version, instructions, manual).finally(() => this.revisions.delete(task));
     this.revisions.add(task);
     return task;
   }
@@ -153,11 +154,10 @@ export class Workflow {
       if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
       this.emit({ type: 'analysis', review: saved });
-      // Auto-send: the owner's standing approval for clear matches, sent in this same tick. Only for newly
+      // Auto-send: the owner's standing approval for clear matches, written and sent in this same tick. Only for newly
       // published listings: the first check, or one after a search change, would otherwise mass-apply.
-      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true) {
-        this.store.dispatch(review.id, { type: 'approve', version: saved.version, draftHash: saved.draftHash, bindings, by: 'auto' });
-      } else if (saved.status === 'awaiting_approval') { batch.tried.add(saved.id); await this.deliver(saved); } // Each draft as soon as it is ready.
+      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true && await this.autoSend(saved, bindings)) return;
+      if (saved.status === 'awaiting_approval') { batch.tried.add(saved.id); await this.deliver(saved); } // Each listing as soon as it is screened.
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.
       const systemic = this.closed || error.code === 'BLOCKED' || error.code === 'LLM_UNAVAILABLE';
@@ -174,6 +174,16 @@ export class Workflow {
       }
     }
   }
+  // False if writing failed; then the listing waits for the user like any other.
+  async autoSend(review, bindings) {
+    try {
+      const written = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
+      if (this.closed || written.decision !== 'message' || hash(bindings) !== hash(this.bindings())) return false;
+      const revised = this.store.dispatch(review.id, { type: 'revise', version: review.version, draft: written.draft, reasons: review.reasons, bindings });
+      this.store.dispatch(review.id, { type: 'approve', version: revised.version, draftHash: revised.draftHash, bindings, by: 'auto' });
+      return true;
+    } catch (error) { this.emit({ type: 'analysis_error', id: review.id, detail: error.message }); return false; }
+  }
   // Undelivered drafts stay pending and are retried every poll without another LLM call.
   async deliver(review) {
     try {
@@ -187,11 +197,12 @@ export class Workflow {
       return false;
     }
   }
-  async reviseInternal(id, version, instructions) {
+  async reviseInternal(id, version, instructions, manual) {
     const review = this.store.get(id);
     if (review?.status !== 'awaiting_approval' || review.version !== version) throw new Error('This draft was already handled or changed');
     const bindings = this.bindings();
-    const result = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
+    const result = manual ? { decision: 'message', draft: instructions, reasons: review.reasons }
+      : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
     if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
     if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during revision; tap Edit again');
