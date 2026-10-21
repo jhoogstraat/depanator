@@ -107,6 +107,12 @@ export class Assistant {
     return { text: 'Saved.', used: true };
   }
   show(view) { return this.send(view.text, view.extra); }
+  // 🧠 Remember on a draft: one more line of writing style, used for every later draft.
+  remember(instruction) {
+    const style = [this.settings.config.style, instruction.trim()].filter(Boolean).join('\n');
+    if (style.length > 1000) throw new Error('Your writing style is full (1000 characters). Shorten it in /prompt first.');
+    this.settings.set('style', style);
+  }
   async command(name) {
     if (name === '/start' || name === '/setup') {
       if (this.settings.complete()) return this.send(`Setup is complete. ${MENU_HINT}`);

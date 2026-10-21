@@ -10,7 +10,7 @@ import { Telegram } from '../src/telegram.js';
 
 const fullDraft = `Guten Tag,\n${'Ich interessiere mich für die Wohnung. 🏠 '.repeat(110)}\nMit freundlichen Grüßen\nAlex`;
 function callback(data, user = '42', versionChange = false) {
-  return { update_id: 1, callback_query: { id: 'callback', data: versionChange ? data.replace(':1:', ':2:') : data, from: { id: user }, message: { chat: { id: '42', type: 'private' } } } };
+  return { update_id: 1, callback_query: { id: 'callback', data: versionChange ? data.replace(/:(\d+):/, (_, version) => `:${Number(version) + 1}:`) : data, from: { id: user }, message: { chat: { id: '42', type: 'private' } } } };
 }
 function setup(directory, options = {}) {
   const config = { searchUrl: 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500', accountEmail: 'alex@example.com', persona: { vorname: 'Alex' }, preferences: 'A balcony', llm: { model: 'offline' }, telegramBotToken: 'offline-token', chatId: '42', dataDir: directory };
@@ -19,10 +19,10 @@ function setup(directory, options = {}) {
   const calls = { llm: [], telegram: [], sends: [] };
   const store = new Store(join(directory, 'state.sqlite'), { now: () => 100 });
   // The model is replaced, but its output passes the same validation as a real Codex result.
-  const evaluate = async listing => {
+  const evaluate = async (listing, { revision } = {}) => {
     calls.llm.push(listing);
     assert.deepEqual(listing, snapshots.find(item => item.expose_id === listing.expose_id));
-    return validateEvaluation(listing.expose_id === '111' ? { decision: 'message', reasons: ['Balcony matches preferences'], draft: fullDraft, confident: false } : { decision: 'dismiss', reasons: ['Missing balcony'], draft: '', confident: false });
+    return validateEvaluation(listing.expose_id === '111' ? { decision: 'message', reasons: ['Balcony matches preferences'], draft: revision ? fullDraft : '', confident: false } : { decision: 'dismiss', reasons: ['Missing balcony'], draft: '', confident: false }, { write: Boolean(revision) });
   };
   const adapter = {
     search: async () => ({ listings: summaries, complete: true, pages: 1 }),
@@ -55,17 +55,26 @@ test('all real modules: scrape/enrich/evaluate/notify/signed approval/send once 
   assert.equal(f.calls.llm.length, 2);
   assert.equal(f.calls.sends.length, 0);
   const reviews = f.store.list();
-  const review = reviews.find(item => item.exposeId === '111');
+  assert.equal(reviews.find(item => item.exposeId === '111').draft, '', 'nothing is written before you ask');
+  assert.equal(reviews.find(item => item.exposeId === '222').status, 'dismissed');
+  // The listing card offers Write and Dismiss; Send is impossible without a draft.
+  const card = f.calls.telegram.find(call => call.method === 'sendMessage').body;
+  const [write] = card.reply_markup.inline_keyboard[0];
+  assert.equal(write.text, '✍️ Write message');
+  await f.telegram.handleUpdate(callback(write.callback_data));
+  await Promise.all(f.workflow.revisions);
+  assert.equal(f.calls.llm.length, 3);
+  const review = f.store.list().find(item => item.exposeId === '111');
   assert.equal(review.status, 'awaiting_approval');
   assert.equal(review.draft, fullDraft);
-  assert.equal(reviews.find(item => item.exposeId === '222').status, 'dismissed');
-  const notifications = f.calls.telegram.filter(call => call.method === 'sendMessage').map(call => call.body);
+  const notifications = f.calls.telegram.filter(call => call.method === 'sendMessage').map(call => call.body).slice(1);
+  assert.equal(notifications[0].reply_parameters.message_id, 1, 'the draft replies to its listing card');
   const buttons = notifications.findIndex(message => message.reply_markup);
   assert.equal(buttons, notifications.length - 1, 'buttons follow every part of the draft');
   const assembled = notifications.flatMap(message => (message.entities || []).filter(entity => entity.type === 'blockquote').map(entity => message.text.slice(entity.offset, entity.offset + entity.length))).join('');
   assert.equal(assembled, review.draft);
   assert.equal(notifications[0].text.includes(f.config.accountEmail), false);
-  const approvedData = notifications[buttons].reply_markup.inline_keyboard.at(-1)[0].callback_data;
+  const approvedData = notifications[buttons].reply_markup.inline_keyboard[0][0].callback_data;
   for (const update of [callback(approvedData, 'foreign-user'), callback(approvedData, '42', true), callback(approvedData.slice(0, -1) + (approvedData.endsWith('A') ? 'B' : 'A'))]) {
     await f.telegram.handleUpdate(update);
     assert.equal(f.store.get(review.id).status, 'awaiting_approval');
@@ -78,7 +87,7 @@ test('all real modules: scrape/enrich/evaluate/notify/signed approval/send once 
   await f.telegram.handleUpdate(callback(approvedData));
   await f.workflow.tick();
   assert.equal(f.calls.sends.length, 1);
-  assert.equal(f.calls.llm.length, 2);
+  assert.equal(f.calls.llm.length, 3);
   assert.equal(f.store.get(review.id).status, 'sent');
 });
 
@@ -87,6 +96,7 @@ test('persisted uncertain submission survives restart; old Telegram actions cann
   let f = setup(directory);
   t.after(async () => { await f.telegram.close(); await f.workflow.close(); rmSync(directory, { recursive: true, force: true }); });
   await f.workflow.poll();
+  await f.workflow.revise(f.store.list().find(item => item.exposeId === '111').id, 1, '');
   const review = f.store.list().find(item => item.exposeId === '111');
   const signed = f.telegram.callback(review, 'a');
   f.store.dispatch(review.id, { type: 'approve', version: review.version, draftHash: review.draftHash, bindings: f.workflow.bindings() });
