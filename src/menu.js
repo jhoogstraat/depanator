@@ -9,6 +9,7 @@ export const COMMANDS = [
   ['model', 'ChatGPT model and thinking level'],
   ['autosend', 'Send clear matches without asking'],
   ['connect', 'Reconnect ImmoScout24'],
+  ['immomio', 'Connect Immomio for listings that apply there'],
   ['login', 'Reconnect ChatGPT'],
 ];
 export const MENU_HINT = 'Everything is in the menu: tap ☰ next to the message field.';
@@ -24,7 +25,7 @@ const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, model, thinking, chatgpt: { email, plan }, quietHours, quiet }
+// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, immomioEmail, model, thinking, chatgpt: { email, plan }, quietHours, quiet }
 const hours = quietHours => quietHours.split('-').map(hour => `${hour.padStart(2, '0')}:00`);
 export function statusView(s) {
   const n = key => s.counts[key] ?? 0;
@@ -35,6 +36,7 @@ export function statusView(s) {
     `🌙 Night pause: ${s.quietHours ? `${hours(s.quietHours).join(' – ')}` : 'off'}`,
     `🕑 Last check: ${when(s.lastPollAt)}`,
     `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`, s.blocked) : '❌ not connected, /connect'}`,
+    `🏢 Immomio: ${s.immomioEmail ? `connected as ${esc(s.immomioEmail)}` : 'not connected, /immomio'}`,
     `🤖 ChatGPT${s.chatgpt.plan ? ` ${esc(s.chatgpt.plan[0].toUpperCase() + s.chatgpt.plan.slice(1))}` : ''}: ${health(s.failures.LLM, s.chatgpt.email ? `connected as ${esc(s.chatgpt.email)}` : 'connected')}`,
     `🧠 Model: ${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`,
     `📤 Auto-send: ${s.autoSend ? 'on' : 'off'}`,

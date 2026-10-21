@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { conflict } from './review.js';
+import { usesImmomio } from './immomio.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
 
@@ -99,9 +100,11 @@ export class Telegram {
   // A new listing is a compact card; you decide from it whether ChatGPT writes a message. A draft (written
   // on request, or revised) arrives as its own short reply under the card. again: show the card and its draft.
   // heading/note: an outcome shown above the listing and its message instead of buttons (auto-sent reviews).
+  // An Immomio listing has no message: its card shows the application it approves and is decided right there.
   async notify(review, { heading = '', note = '', again = false } = {}) {
-    if (review.draft && !heading && !again) return this.notifyDraft(review);
     const listing = review.snapshot;
+    const immomio = usesImmomio(listing, this.config);
+    if (review.draft && !heading && !again && !immomio) return this.notifyDraft(review);
     let text = '';
     const entities = [];
     const append = (part, type, extra = {}) => {
@@ -124,7 +127,7 @@ export class Telegram {
       address && ['Apple Maps', `https://maps.apple.com/?q=${query}`],
     ].filter(Boolean);
     const tail = [...links.flatMap(([label, url], index) => [...(index ? [[' · ']] : []), [label, 'text_link', { url }]]),
-      ...(heading && review.draft ? [['\n\n✉️ Message\n', 'bold'], [review.draft, 'blockquote']] : [])];
+      ...((heading || immomio) && review.draft ? [[immomio ? '\n\n🏢 Immomio application\n' : '\n\n✉️ Message\n', 'bold'], [review.draft, 'blockquote']] : [])];
     const details = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n');
     const room = LIMIT - text.length - tail.reduce((sum, [part]) => sum + part.length, 0) - 2;
     if (details && room > 100) {
@@ -134,8 +137,9 @@ export class Telegram {
     }
     for (const [part, type, extra] of tail) append(part, type, extra);
     const image = previewImage(listing.image_url);
-    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || review.draft ? {} : { reply_markup: this.cardButtons(review) } });
-    if (again && review.draft && !heading) await this.notifyDraft(review);
+    const buttons = immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a'], ['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
+    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || (review.draft && !immomio) ? {} : { reply_markup: buttons } });
+    if (again && review.draft && !heading && !immomio) await this.notifyDraft(review);
   }
   // Only a draft near the 5000-character cap splits; the draft is never shortened and the buttons sit on the final part.
   async notifyDraft(review) {
@@ -146,10 +150,11 @@ export class Telegram {
     });
   }
   async notifyOutcome(review) {
-    const text = review.status === 'sent' ? 'IS24 accepted your request.'
-      : review.status === 'unknown_outcome' ? 'Submission outcome is uncertain. Check your IS24 messages before taking any further action. The agent will not retry.'
+    const site = usesImmomio(review.snapshot, this.config) ? 'Immomio' : 'IS24';
+    const text = review.status === 'sent' ? (site === 'IS24' ? 'IS24 accepted your request.' : '')
+      : review.status === 'unknown_outcome' ? `Submission outcome is uncertain. Check your ${site === 'IS24' ? 'IS24 messages' : 'Immomio applications'} before taking any further action. The agent will not retry.`
       : 'The message was not sent. No automatic retry will occur.';
-    const heading = review.status === 'sent' ? '✅ Message sent' : review.status === 'unknown_outcome' ? '⚠️ Check your IS24 account' : '❌ Message not sent';
+    const heading = review.status === 'sent' ? (site === 'IS24' ? '✅ Message sent' : '✅ Applied on Immomio') : review.status === 'unknown_outcome' ? `⚠️ Check your ${site} account` : '❌ Message not sent';
     // You never saw an auto-sent listing, so it comes with the full listing and the message.
     if (review.approvedBy === 'auto') return this.notify(review, { heading: `${heading} (auto-send)`, note: `${text}${review.detail ? `\n${review.detail}` : ''}` });
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);

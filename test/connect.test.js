@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { ConnectApp, verifyInitData } from '../src/connect.js';
+import { BRANDS, ConnectApp, verifyInitData } from '../src/connect.js';
 
 const token = '123:secret';
 function initData(user = 42, authDate = Math.floor(Date.now() / 1000), botToken = token) {
@@ -51,4 +51,26 @@ test('connect: email and password go to the session once, a 2FA code is asked, s
   assert.equal(await done, 'me@example.com');
   assert.deepEqual(logins, [['me@example.com', 'wrong'], ['me@example.com', 'secret'], '123456'], 'one login at a time; the code is trimmed');
   assert.deepEqual([(await state()).step, (await state()).message], ['done', 'me@example.com']);
+});
+
+test('the Immomio page is served beside the IS24 one, with its own login and pending request', async t => {
+  const telegramApi = async () => ({ json: async () => ({ ok: true, result: { id: 1, first_name: 'Depanator' } }) });
+  const config = { telegramBotToken: token, chatId: '42', accountEmail: 'is24@example.com', immomioEmail: 'immomio@example.com' };
+  const logins = [];
+  const immomio = new ConnectApp({ config, session: { login: async ({ email }) => { logins.push(email); return email; } }, brand: BRANDS.immomio, fetchImpl: telegramApi });
+  const app = new ConnectApp({ config, session: { login: async () => assert.fail('IS24 login must not be used') }, port: 0, fetchImpl: telegramApi, apps: [immomio] });
+  await app.listen();
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const headers = { 'X-Init-Data': initData(), 'Content-Type': 'application/json' };
+  const html = await (await fetch(`${base}/immomio`)).text();
+  assert.match(html, /with Immomio<\/h1>/);
+  assert.match(html, /fetch\('immomio\/state/);
+  assert.match(await (await fetch(`${base}/connect`)).text(), /with ImmoScout24<\/h1>/);
+  const { done } = immomio.request();
+  assert.equal((await (await fetch(`${base}/connect/state`, { headers })).json()).step, 'idle', 'the IS24 page has nothing pending');
+  assert.equal((await (await fetch(`${base}/immomio/state`, { headers })).json()).email, 'immomio@example.com');
+  await fetch(`${base}/immomio/login`, { method: 'POST', headers, body: JSON.stringify({ email: 'immomio@example.com', password: 'secret' }) });
+  assert.equal(await done, 'immomio@example.com');
+  assert.deepEqual(logins, ['immomio@example.com']);
 });

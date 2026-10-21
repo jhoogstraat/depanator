@@ -24,17 +24,31 @@ const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
 // "Connect with ImmoScout24": a Telegram Mini App where the owner enters the IS24 email, password and any
 // 2FA code. They go straight to session.login (IS24's own login service) and are never stored or logged.
 // Steps: form → working → (code → working) → done; a failure returns to the form with the reason.
+// What differs per service: the page's name, logo and promises, the page path, and the email to prefill.
+// Other apps (`apps`) are served by this one's server under their own path.
+export const BRANDS = {
+  is24: { name: 'ImmoScout24', path: 'connect', email: config => config.accountEmail,
+    logo: '<div class="logo is24"><svg width="42" height="42" viewBox="0 0 42 42" fill="none" stroke="#1a1a1a" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"><path d="M7 20 21 8l14 12"/><path d="M11 17v16h20V17"/><path d="M18 33v-8h6v8"/></svg></div>',
+    perks: ['Read new listings of your search', 'Send the applications you approve', 'Use your name and contact details in them'] },
+  immomio: { name: 'Immomio', path: 'immomio', email: config => config.immomioEmail,
+    logo: '<div class="logo immomio">im</div>',
+    perks: ['Apply on Immomio when an approved listing links there', 'Use your Immomio profile for those applications', 'Never send applications you did not approve'] },
+};
 export class ConnectApp {
-  constructor({ config, session, port = 8080, fetchImpl = fetch }) {
-    Object.assign(this, { config, session, port, fetch: fetchImpl });
+  constructor({ config, session, port = 8080, fetchImpl = fetch, brand = BRANDS.is24, apps = [] }) {
+    Object.assign(this, { config, session, port, fetch: fetchImpl, brand, apps });
+    this.route = new RegExp(`\\/${brand.path}(\\/state|\\/login|\\/code|\\/avatar)?$`);
+    this.page = page(brand);
     this.pending = null;
     this.connected = null; // { email, at } of the last success, so the open page can show it.
   }
   listen() {
-    this.server = createServer((req, res) => this.handle(req, res).catch(() => { if (!res.headersSent) send(res, 500); }));
+    const app = req => [this, ...this.apps].find(candidate => candidate.route.test(new URL(req.url, 'http://localhost').pathname)) || this;
+    this.server = createServer((req, res) => app(req).handle(req, res).catch(() => { if (!res.headersSent) send(res, 500); }));
     return new Promise(resolve => this.server.listen(this.port, resolve));
   }
   close() {
+    for (const app of this.apps) app.close();
     this.pending?.reject(new Error('Shutting down'));
     this.pending = null;
     return new Promise(resolve => (this.server ? this.server.close(() => resolve()) : resolve()));
@@ -97,9 +111,10 @@ export class ConnectApp {
   }
   async handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
-    // Suffix match: a reverse proxy may serve this under a path prefix.
-    const path = url.pathname.match(/\/connect(\/state|\/login|\/code|\/avatar)?$/)?.[0];
-    if (req.method === 'GET' && path === '/connect') return send(res, 200, 'text/html; charset=utf-8', PAGE);
+    // Suffix match: a reverse proxy may serve this under a path prefix. Below, every app's path reads /connect.
+    const match = url.pathname.match(this.route);
+    const path = match && `/connect${match[1] || ''}`;
+    if (req.method === 'GET' && path === '/connect') return send(res, 200, 'text/html; charset=utf-8', this.page);
     if (req.method === 'GET' && path === '/connect/avatar') {
       const { photo } = await this.bot().catch(() => ({}));
       return photo ? send(res, 200, 'image/jpeg', photo, { 'Cache-Control': 'max-age=3600' }) : send(res, 404);
@@ -113,7 +128,7 @@ export class ConnectApp {
         await new Promise(resolve => { const timer = setTimeout(resolve, 10_000); pending.waiters.add(() => { clearTimeout(timer); resolve(); }); });
       }
       const name = await this.bot().then(bot => bot.name, () => 'Your agent');
-      return send(res, 200, 'application/json', JSON.stringify({ ...(pending && pending !== this.pending ? { step: pending.step, message: pending.message, version: pending.version } : this.state()), bot: name, email: this.config.accountEmail || '' }));
+      return send(res, 200, 'application/json', JSON.stringify({ ...(pending && pending !== this.pending ? { step: pending.step, message: pending.message, version: pending.version } : this.state()), bot: name, email: this.brand.email(this.config) || '' }));
     }
     if (req.method !== 'POST') return send(res, 405);
     let body = '';
@@ -135,8 +150,8 @@ export class ConnectApp {
   }
 }
 
-const PAGE = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<title>Connect ImmoScout24</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+const page = ({ name, path, logo, perks }) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Connect ${name}</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{--bg:var(--tg-theme-bg-color,#fff);--text:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#8a8a8e);--card:var(--tg-theme-secondary-bg-color,#f2f2f7);--accent:var(--tg-theme-button-color,#2481cc);--danger:var(--tg-theme-destructive-text-color,#e5484d)}
 *{box-sizing:border-box}body{margin:0;font:16px/1.4 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:28px 20px calc(24px + env(safe-area-inset-bottom))}
@@ -144,7 +159,7 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewp
 .logos{display:flex;align-items:center;justify-content:center;gap:14px;margin:8px 0 22px}
 .logo{width:68px;height:68px;border-radius:18px;overflow:hidden;display:grid;place-items:center;box-shadow:0 2px 10px rgba(0,0,0,.12)}
 #avatar{border-radius:50%;background:var(--accent);color:#fff;font-size:34px}#avatar img{width:100%;height:100%;object-fit:cover}
-.is24{background:#3ce0be}.link{display:flex;gap:5px}.link i{width:6px;height:6px;border-radius:50%;background:var(--hint);opacity:.6}
+.is24{background:#3ce0be}.immomio{background:#0d4f8b;color:#fff;font:700 28px/1 -apple-system,system-ui,sans-serif}.link{display:flex;gap:5px}.link i{width:6px;height:6px;border-radius:50%;background:var(--hint);opacity:.6}
 h1{font-size:22px;line-height:1.25;text-align:center;margin:0 0 6px}.sub{color:var(--hint);text-align:center;margin:0 0 22px;font-size:15px}
 ul{list-style:none;padding:14px 16px;margin:0 0 22px;background:var(--card);border-radius:14px}li{display:flex;gap:10px;padding:5px 0}li b{color:#2fbf71;font-weight:600}
 label{display:block;font-size:13px;color:var(--hint);margin:0 0 6px 4px}
@@ -156,15 +171,15 @@ input:focus{border-color:var(--accent)}#error{color:var(--danger);font-size:14px
 #fallback{width:100%;margin-top:8px;font-size:17px;padding:14px;border:0;border-radius:12px;background:var(--accent);color:var(--tg-theme-button-text-color,#fff)}
 </style></head><body><main>
 <div class="logos"><div class="logo" id="avatar">🤖</div><div class="link"><i></i><i></i><i></i></div>
-<div class="logo is24"><svg width="42" height="42" viewBox="0 0 42 42" fill="none" stroke="#1a1a1a" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"><path d="M7 20 21 8l14 12"/><path d="M11 17v16h20V17"/><path d="M18 33v-8h6v8"/></svg></div></div>
+${logo}</div>
 <section id="form" hidden>
-<h1>Connect <span class="bot">your agent</span><br>with ImmoScout24</h1>
+<h1>Connect <span class="bot">your agent</span><br>with ${name}</h1>
 <p class="sub">Log in once. <span class="bot">Your agent</span> stays connected.</p>
-<ul><li><b>✓</b>Read new listings of your search</li><li><b>✓</b>Send the applications you approve</li><li><b>✓</b>Use your name and contact details in them</li></ul>
-<form id="login" autocomplete="on"><label for="email">ImmoScout24 email</label><input id="email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" required>
+<ul>${perks.map(perk => `<li><b>✓</b>${perk}</li>`).join('')}</ul>
+<form id="login" autocomplete="on"><label for="email">${name} email</label><input id="email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" required>
 <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required><div id="error" hidden></div>
 <button id="fallback" hidden>Connect</button></form>
-<p class="fine"><span>🔒</span><span>Your password goes directly to ImmoScout24's login and is used only for this login. It is never stored or shown to anyone.</span></p>
+<p class="fine"><span>🔒</span><span>Your password goes directly to ${name}'s login and is used only for this login. It is never stored or shown to anyone.</span></p>
 </section>
 <section id="code" hidden><h1>Security code</h1><p class="sub" id="codeHint"></p>
 <form id="codeForm"><input id="codeInput" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" required><button id="codeFallback" hidden>Continue</button></form></section>
@@ -175,10 +190,10 @@ input:focus{border-color:var(--accent)}#error{color:var(--danger);font-size:14px
 const tg = window.Telegram.WebApp; tg.ready(); tg.expand();
 const $ = id => document.getElementById(id);
 const headers = { 'X-Init-Data': tg.initData, 'Content-Type': 'application/json' };
-const post = (path, body) => fetch('connect/' + path, { method: 'POST', headers, body: JSON.stringify(body) });
+const post = (path, body) => fetch('${path}/' + path, { method: 'POST', headers, body: JSON.stringify(body) });
 const main = tg.MainButton, native = Boolean(tg.initData && main);
 let step = '', version = 0, submit = null;
-const avatar = new Image(); avatar.onload = () => { $('avatar').textContent = ''; $('avatar').append(avatar); }; avatar.src = 'connect/avatar';
+const avatar = new Image(); avatar.onload = () => { $('avatar').textContent = ''; $('avatar').append(avatar); }; avatar.src = '${path}/avatar';
 function button(text, action) {
   submit = action;
   if (!native) { $('fallback').hidden = step !== 'form'; $('codeFallback').hidden = step !== 'code'; return; }
@@ -208,7 +223,7 @@ function render(s) {
 async function poll() {
   for (;;) {
     let res;
-    try { res = await fetch('connect/state?after=' + version, { headers }); } catch { await new Promise(r => setTimeout(r, 2000)); continue; }
+    try { res = await fetch('${path}/state?after=' + version, { headers }); } catch { await new Promise(r => setTimeout(r, 2000)); continue; }
     if (res.status === 403) return render({ step: 'idle' });
     const s = await res.json(); version = s.version;
     if (!(step === 'working' && s.step === 'form' && !s.message)) render(s);

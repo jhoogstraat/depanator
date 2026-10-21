@@ -97,7 +97,7 @@ export class Settings {
       if (field.optional && raw === '') value = '';
       else if (choices.length) { if (!choices.some(([choice]) => choice === raw)) throw new Error('Please pick one of the buttons.'); }
       else value = field.parse(raw);
-    } else if (!['chatId', 'accountEmail'].includes(key)) throw new Error(`Unknown setting ${key}`); // Set by pairing / connecting IS24.
+    } else if (!['chatId', 'accountEmail', 'immomioEmail'].includes(key)) throw new Error(`Unknown setting ${key}`); // Set by pairing / connecting IS24 or Immomio.
     // A pause/resume or changed search starts a new observation window, even between polls.
     if (['paused', 'searchUrl'].includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
     this.store.saveSetting(key, value);
@@ -109,7 +109,7 @@ export class Settings {
   apply() {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
-      chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
+      chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', immomioEmail: this.values.immomioEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
       pollIntervalMs: value('pollIntervalMs'), maxPages: 1, autoSend: value('autoSend'), paused: value('paused'), quietHours: value('quietHours'), style: value('style') ?? '',
     });
     // maxPages: one page (the 20 newest) per check; more new listings between two checks do not happen.

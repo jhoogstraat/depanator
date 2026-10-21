@@ -104,12 +104,13 @@ export class IS24Session {
     if (!this.connected) throw loginRequired();
     if (Date.now() < this.tokens.expiresAt - 60_000) return this.tokens.access_token;
     // One renewal at a time: IS24 may rotate the refresh token, so a parallel renewal would use a spent one.
-    this.renewing ??= token(this.fetch, { grant_type: 'refresh_token', refresh_token: this.tokens.refresh_token })
+    this.renewing ??= this.renew(this.tokens.refresh_token)
       .then(tokens => this.save(tokens, this.email), error => { if (error.code === 'LOGIN_REQUIRED') this.clear(); throw error; })
       .finally(() => { this.renewing = null; });
     await this.renewing;
     return this.tokens.access_token;
   }
+  renew(refreshToken) { return token(this.fetch, { grant_type: 'refresh_token', refresh_token: refreshToken }); }
   save(tokens, email) {
     this.tokens = { access_token: tokens.access_token, refresh_token: tokens.refresh_token || this.tokens?.refresh_token, id_token: tokens.id_token || this.tokens?.id_token,
       expiresAt: Date.now() + (Number.isFinite(Number(tokens.expires_in ?? NaN)) ? Number(tokens.expires_in) : 3600) * 1000, email };

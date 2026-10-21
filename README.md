@@ -40,6 +40,7 @@ The bot's menu (☰ next to the message field):
 | `/model` | Pick a ChatGPT model from your plan, then its thinking level |
 | `/autosend` | Send clear matches without asking you first |
 | `/connect` | Reconnect your ImmoScout24 account (also asked automatically when IS24 ends the login) |
+| `/immomio` | Connect Immomio, for listings that take applications there |
 | `/login` | Reconnect your ChatGPT subscription |
 
 ### Being early
@@ -53,6 +54,14 @@ Each new match arrives as one compact card: photo, title, rent/size/rooms, colla
 The agent heals itself before asking for help. Search outages and IS24 blocks trigger exponential backoff (up to an hour); sends pause while IS24 blocks access. ChatGPT outages pause analysis without using up a listing's retries. Telegram alerts you only when a component fails three times in a row, when it recovers, or when a listing is given up after five failed analyses.
 
 Each review runs the pinned official Codex CLI ephemerally with no tools (no shell, files, browsers, web search or MCP), a private empty working directory, and a restricted environment; its output is validated against a strict schema. Listing details, your preferences and contact facts go to ChatGPT; drafts and listing details go to your Telegram bot. `bun run status` prints the review history. Keep one agent per data directory (default `.depanator/`).
+
+### Immomio
+
+Some landlords take applications only on Immomio and put a `tenant.immomio.com/apply/…` link in the IS24 description. Send `/immomio` and tap **🔗 Connect Immomio** to enter your Immomio email and password (and a security code, if asked). As with IS24, they go straight to Immomio's login and are never stored; the agent keeps only the renewable login key (`immomio-session.json`). Keep your Immomio profile complete: it is what the landlord sees, because an Immomio application has no message.
+
+A listing with exactly one Immomio link then arrives with **✅ Apply on Immomio** instead of a draft to send. After you approve, the agent checks the connected account, that the listing is still open, and that you have not applied yet, then submits one application through Immomio's tenant API. Listings that ask for a captcha or SMS verification are not submitted: you get the link to apply yourself. Landlord questions are not answered for you; the outcome tells you how many are waiting on Immomio. Without a connected Immomio account, such listings get the IS24 contact request as before.
+
+The Immomio login and API are unofficial and undocumented, and have **not** been tested against a live account: check your Immomio applications after the first ones.
 
 ## Submission and recovery
 

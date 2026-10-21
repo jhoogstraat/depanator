@@ -8,8 +8,8 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
-  constructor({ settings, store, send, codex, is24, workflow = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, workflow, redeliver, onReady, onError });
+  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
+    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, redeliver, onReady, onError });
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
@@ -136,6 +136,10 @@ export class Assistant {
       if (this.track(() => this.connectIS24(), '/connect')) return;
       return this.send('One moment, I am still on the previous step.');
     }
+    if (name === '/immomio') {
+      if (this.track(() => this.connectImmomio(), '/immomio')) return;
+      return this.send('One moment, I am still on the previous step.');
+    }
     if (name === '/login') {
       if (this.track(() => this.chatgptLogin(), '/login')) return;
       return this.send('One moment, I am still on the previous step.');
@@ -151,7 +155,7 @@ export class Assistant {
     // The level the model uses when none is chosen; unknown if the model list cannot be read.
     const modelDefault = config.llm.thinking ? null : await this.models().then(list => list.find(model => model.id === config.llm.model)?.defaultThinking, () => null);
     return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
+      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
       quietHours: config.quietHours, quiet: isQuiet(config.quietHours), chatgpt: this.codex.account?.() ?? {} });
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
@@ -226,6 +230,10 @@ export class Assistant {
     await this.codex.login({ onCode: ({ url, code }) => this.send(`1. Open ${url}\n2. Sign in to ChatGPT\n3. Enter this code: ${code}\n\nThe code expires in 15 minutes. If ChatGPT asks, allow device code login in its security settings.`).catch(error => this.onError(error.message)) });
     this.chatgpt = true;
     await this.send('✅ ChatGPT connected.');
+  }
+  async connectImmomio() {
+    const email = await this.immomio.connect();
+    await this.send(`✅ Connected to Immomio as ${email}. When a listing's IS24 description links to an Immomio application, I apply there with your Immomio profile once you approve. Keep that profile complete on tenant.immomio.com.`);
   }
   // Sends the "Connect ImmoScout24" button and waits until the owner connected the account there.
   async connectIS24() {

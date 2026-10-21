@@ -1,5 +1,6 @@
 import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
 import { loginRequired } from './is24-auth.js';
+import { applyOnImmomio, immomioClient, immomioPropertyId, immomioUrl, usesImmomio } from './immomio.js';
 
 // Everything goes through the IS24 app's API (api.mobile.immobilienscout24.de): no website, no browser.
 const ORIGIN = 'https://www.immobilienscout24.de';
@@ -96,8 +97,8 @@ export function contactRequest(expose, persona, message, ssoId) {
 
 export class IS24Adapter {
   // config is the live settings object: a changed search URL or persona applies to the next task.
-  constructor(config, { session, fetch = globalThis.fetch } = {}) {
-    Object.assign(this, { config, session, fetch });
+  constructor(config, { session, immomio = null, fetch = globalThis.fetch } = {}) {
+    Object.assign(this, { config, session, immomio, fetch });
   }
   get filters() {
     if (this.filtersFor !== this.config.searchUrl) { this.cachedFilters = searchFilters(this.config.searchUrl); this.filtersFor = this.config.searchUrl; }
@@ -154,8 +155,10 @@ export class IS24Adapter {
   async details(listing) {
     const detail = readExpose(await this.expose(listing.expose_id), this.filters.price.type);
     const { expose_id, image_url = '', published, earlyAccess } = listing;
+    const immomio = immomioPropertyId(detail.description);
     return { expose_id: String(expose_id), title: detail.title, price: detail.price, area: detail.area, rooms: detail.rooms, address: detail.address,
-      image_url, url: listingUrl(expose_id), published, earlyAccess, description: detail.description, amenities: detail.amenities };
+      image_url, url: listingUrl(expose_id), published, earlyAccess, description: detail.description, amenities: detail.amenities,
+      ...(immomio && { immomio: { propertyId: immomio, url: immomioUrl(immomio) } }) };
   }
   // Resolves once IS24 access works; onRequired() asks the owner to connect the account and resolves after.
   async authenticate(onRequired) {
@@ -169,6 +172,13 @@ export class IS24Adapter {
     let attempted = false;
     try {
       if (typeof beforeSubmit !== 'function') throw new Error('Persistent approval check required');
+      if (usesImmomio(review.snapshot, this.config)) {
+        if (this.immomio?.email !== this.config.immomioEmail) throw new Error('The connected Immomio account differs from the approved one');
+        const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio ended my login; send /immomio to connect again, or apply yourself: ${review.snapshot.immomio.url}`); });
+        const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, beforeSubmit,
+          onSubmitAttempt: () => { assertCanSubmit?.(); attempted = true; } });
+        return { outcome: 'sent', detail };
+      }
       if (this.session.email !== this.config.accountEmail) throw loginRequired('The connected IS24 account differs from the approved one');
       const id = review.snapshot.expose_id;
       const { body, reason } = contactRequest(await this.expose(id), this.config.persona, review.draft, this.session.ssoId);

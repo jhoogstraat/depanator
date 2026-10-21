@@ -36,10 +36,11 @@ export function bindingFor(config) {
   return hash({ accountEmail: config.accountEmail.toLowerCase().trim() });
 }
 export function configHashFor(config) {
-  const { searchUrl, accountEmail, persona } = config;
+  const { searchUrl, accountEmail, persona, immomioEmail } = config;
   // What the request sends and to whom. Secrets, notification destinations, the criteria and the model
   // (they only decide and write drafts, which are approved verbatim) do not authorize or change a message.
-  return hash({ searchUrl, accountEmail, persona });
+  // An unset Immomio account leaves the hash, and so every existing approval, unchanged.
+  return hash({ searchUrl, accountEmail, persona, immomioEmail: immomioEmail || undefined });
 }
 
 export function conflict(message) {

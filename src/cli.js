@@ -13,8 +13,9 @@ import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './
 import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
 import { COMMANDS } from './menu.js';
-import { ConnectApp } from './connect.js';
+import { BRANDS, ConnectApp } from './connect.js';
 import { IS24Session } from './is24-auth.js';
+import { ImmomioSession } from './immomio.js';
 import { acquireLock } from './lock.js';
 
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
@@ -74,8 +75,11 @@ export async function main(args = process.argv.slice(2)) {
     const session = new IS24Session(join(runtime.dataDir, 'is24-session.json'));
     // The account email comes from the connected IS24 session; without one, setup asks to connect.
     if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
-    const adapter = new IS24Adapter(config, { session });
-    connectApp = new ConnectApp({ config, session, port: config.port });
+    const immomioSession = new ImmomioSession(join(runtime.dataDir, 'immomio-session.json'));
+    if (!immomioSession.connected && config.immomioEmail) settings.set('immomioEmail', '');
+    const adapter = new IS24Adapter(config, { session, immomio: immomioSession });
+    const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
+    connectApp = new ConnectApp({ config, session, port: config.port, apps: [immomioApp] });
     await connectApp.listen();
     // Sends the "Connect ImmoScout24" button (once per request) and resolves with the connected email.
     const connect = async (intro = '🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') => {
@@ -86,6 +90,14 @@ export async function main(args = process.argv.slice(2)) {
       }
       const email = await done;
       if (email !== config.accountEmail) settings.set('accountEmail', email);
+      return email;
+    };
+    // Optional: only listings that link to Immomio need it. Resolves with the connected email.
+    const connectImmomio = async () => {
+      const { fresh, done } = immomioApp.request();
+      if (fresh) await telegram.send('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.', { reply_markup: { inline_keyboard: [[{ text: '🔗 Connect Immomio', web_app: { url: `${config.publicUrl}/immomio` } }]] } });
+      const email = await done;
+      if (email !== config.immomioEmail) settings.set('immomioEmail', email);
       return email;
     };
     workflow = new Workflow({
@@ -105,6 +117,7 @@ export async function main(args = process.argv.slice(2)) {
       settings, store, send: (text, extra) => telegram.send(text, extra),
       codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
       is24: { connect: () => connect() },
+      immomio: { connect: connectImmomio },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       onReady: () => tick(), onError: message => console.error(message),
     });

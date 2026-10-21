@@ -1,3 +1,5 @@
+import { immomioDraft, usesImmomio } from './immomio.js';
+
 export const SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['decision', 'reasons', 'draft', 'confident'],
@@ -41,7 +43,9 @@ export function reviewInput(config, snapshot, revision) {
 export function createEvaluator(config) {
   return async (snapshot, options) => {
     const { evaluateWithCodex } = await import('./codex.js');
-    return validateEvaluation(await evaluateWithCodex(config, snapshot, options), { write: Boolean(options?.revision) });
+    const result = validateEvaluation(await evaluateWithCodex(config, snapshot, options), { write: Boolean(options?.revision) });
+    // Immomio applies with the account's profile: the approval covers that exact action, so there is nothing to write.
+    return usesImmomio(snapshot, config) && result.decision === 'message' ? { ...result, draft: immomioDraft(config, snapshot) } : result;
   };
 }
 
