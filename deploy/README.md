@@ -44,7 +44,7 @@ When no IS24 account is connected, or IS24 ends the login, the bot sends a **ðŸ”
 
 The page is served on port **8080** (`/connect`). Telegram only opens Mini Apps over HTTPS, so route a public HTTPS address to that port and set `DEPANATOR_PUBLIC_URL` to it; a path prefix is fine. Every request except the static page and the bot's avatar must carry the owner's Telegram-signed Mini App data (checked against the bot token and the paired chat, valid for one hour), so nobody else can use it even though the address is public. Logins are accepted only while the agent is waiting for one. The password passes through whatever terminates HTTPS for that address (your reverse proxy, or the tunnel provider).
 
-Listings and contact requests use the IS24 app's API. It is unofficial and can change; sending a contact request has not been verified against a live listing yet.
+Listings and contact requests use the IS24 app's API. It is unofficial and can change; sending contact requests was confirmed live on 2026-10-21 (IS24 answers delivered requests with HTTP 500).
 
 ## Publishing
 

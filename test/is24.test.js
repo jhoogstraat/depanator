@@ -93,7 +93,8 @@ test('send: one request after the last approval check; answers map to sent, fail
   assert.deepEqual(await ok.adapter.send(review, { beforeSubmit: async () => true }), { outcome: 'sent', detail: 'IS24 accepted the request' });
   assert.deepEqual([ok.posts.length, ok.posts[0].url, ok.posts[0].auth, ok.posts[0].body['expose.contactForm'].message], [1, 'https://api.mobile.immobilienscout24.de/expose/123/contact?referrer=resultlist', 'Bearer token', 'Hallo!']);
   assert.equal((await sending({ status: 400 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'failed');
-  assert.equal((await sending({ status: 500 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'unknown_outcome', 'a server error may come after delivery');
+  assert.equal((await sending({ status: 500 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'sent', 'IS24 answers delivered requests with 500');
+  assert.equal((await sending({ status: 502 }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'unknown_outcome', 'a gateway error may come after delivery');
   assert.equal((await sending({ error: new Error('socket hang up') }).adapter.send(review, { beforeSubmit: async () => true })).outcome, 'unknown_outcome');
   const revoked = sending();
   assert.equal((await revoked.adapter.send(review, { beforeSubmit: async () => false })).outcome, 'failed');

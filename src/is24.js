@@ -181,8 +181,10 @@ export class IS24Adapter {
         headers: { 'User-Agent': CONTACT_USER_AGENT, Accept: 'application/json', 'Content-Type': 'application/json; charset=UTF-8', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
       if (response.ok) return { outcome: 'sent', detail: 'IS24 accepted the request' };
       const answer = (await response.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 200);
-      // A server error may come after IS24 already forwarded the request.
-      if (response.status >= 500) return { outcome: 'unknown_outcome', detail: `IS24 answered HTTP ${response.status}; check your IS24 messages whether it arrived` };
+      // IS24 answers delivered contact requests with HTTP 500 (confirmed live in the account's messages).
+      if (response.status === 500) return { outcome: 'sent', detail: 'IS24 delivered the request' };
+      // Other server errors may come after IS24 already forwarded the request.
+      if (response.status > 500) return { outcome: 'unknown_outcome', detail: `IS24 answered HTTP ${response.status}${answer && `: ${answer}`}; check your IS24 messages whether it arrived` };
       return { outcome: 'failed', detail: `IS24 rejected the request (HTTP ${response.status}${answer && `: ${answer}`})` };
     } catch (error) { return { outcome: attempted ? 'unknown_outcome' : 'failed', detail: error.message }; }
   }
