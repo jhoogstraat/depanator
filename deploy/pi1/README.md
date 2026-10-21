@@ -4,9 +4,11 @@ Deployed on 2026-10-19 as `depanator.service`, using the adjacent Quadlet.
 The ARM64 image was built from this working tree, including the night pause
 and account status fixes, and published through the repository image workflow.
 
-- Published source commit: `e366e6ac7058750e7f590d43ef7f58f7dbda2d8a`.
-- ARM64 image: `ghcr.io/jhoogstraat/depanator:sha-e366e6a`.
-- Pinned manifest: `sha256:527902a25679de5c1243560664fbfd6498e17f6bad5eb3e7be16107fe0c6cdd8`.
+- Published source commit: `0d9e1e2fb644e84d83cb2e6d14a14cbe259b90ae` (updated 2026-10-21;
+  IS24 HTTP 500 contact answers count as sent).
+- ARM64 image: `ghcr.io/jhoogstraat/depanator:sha-0d9e1e2`.
+- Pinned manifest: `sha256:c72b0c02630fc493f31fd7834e39b17f776be87c528bdf997be1814ef13ed1d0`.
+- Previous unit: `/var/lib/homelab/recovery/depanator.container.before-0d9e1e2`.
 - Data: `/var/lib/homelab/apps/depanator/data` (101 known listings migrated).
 - Bot token: private `config/bot-token`, mounted through `_FILE`.
 - Public Telegram Mini App:
