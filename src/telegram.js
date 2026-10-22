@@ -239,6 +239,8 @@ export class Telegram {
     const review = match && this.store.get(expandId(match[2]));
     if (!review) return INVALID;
     const [, action, , version, signature] = match;
+    // Deleting a dismissed listing's leftovers changes nothing, so any of its Dismiss buttons may do it, even an older card's.
+    if (review.status === 'dismissed' && action === 'd') return { text: 'Already dismissed. Removing it.', dismissed: review };
     if (review.version !== Number(version)) return { text: 'A newer draft replaced this one.' };
     if (!timingSafeEqual(Buffer.from(signature), Buffer.from(this.signature(review, action)))) return INVALID;
     try { return await this.reviewAction(action, review, query.message.message_id); }
@@ -251,8 +253,6 @@ export class Telegram {
       return { text: 'Approved. The agent will verify and send this exact draft.', used: true };
     }
     if (action === 'd') {
-      // Dismissed elsewhere (e.g. Clear all) still leaves its messages behind; tapping removes them.
-      if (review.status === 'dismissed') return { text: 'Already dismissed. Removing it.', dismissed: review };
       this.workflow.dismiss(id, version);
       return { text: 'Dismissed. No message will be sent.', dismissed: review };
     }

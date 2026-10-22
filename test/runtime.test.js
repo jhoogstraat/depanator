@@ -144,6 +144,11 @@ test('Telegram dismiss removes an existing listing sent before message tracking'
   await agent.handleUpdate(dismissal);
   assert.equal(store.get(item.id).status, 'dismissed');
   assert.deepEqual(calls.find(call => call.method === 'deleteMessage').body, { chat_id: '12345', message_id: 77 });
+  // A card from before a revision carries an older version and still cleans up.
+  const stale = update(agent.callback(item, 'd').replace(`:${item.version}:`, `:${item.version + 5}:`));
+  stale.callback_query.message.message_id = 78;
+  await agent.handleUpdate(stale);
+  assert.deepEqual(calls.filter(call => call.method === 'deleteMessage').at(-1).body, { chat_id: '12345', message_id: 78 });
 });
 
 test('Telegram deletion failure still dismisses, attempts remaining parts, and answers the callback', async t => {
