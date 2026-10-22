@@ -2,6 +2,7 @@
   "name": "depanator",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Telegram apartment agent for ImmoScout24: LLM review and approval-gated applications",
   "engines": {
