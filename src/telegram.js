@@ -244,10 +244,12 @@ export class Telegram {
               this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
               answer = 'Reply to the prompt with your changes.';
             } else {
-              this.workflow.dismiss(id, review.version);
+              // Dismissed elsewhere (e.g. Clear all) still leaves its messages behind; tapping removes them.
+              const already = review.status === 'dismissed';
+              if (!already) this.workflow.dismiss(id, review.version);
               accepted = true;
               dismissed = review;
-              answer = 'Dismissed. No message will be sent.';
+              answer = already ? 'Already dismissed. Removing it.' : 'Dismissed. No message will be sent.';
             }
           } catch (error) { answer = error.code === 'CONFLICT' ? error.message : 'The action failed; check the agent logs.'; }
         }

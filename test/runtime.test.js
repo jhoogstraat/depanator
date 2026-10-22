@@ -121,8 +121,18 @@ test('Telegram dismiss deletes every listing part after restart and leaves other
   assert.equal(store.get(item.id).status, 'dismissed');
   assert.equal(store.get(other.id).status, 'discovered');
   assert.deepEqual(restarted.calls.filter(call => call.method === 'deleteMessage').map(call => call.body), ids.map(message_id => ({ chat_id: '12345', message_id })));
-  await restarted.agent.handleUpdate(dismissal);
-  assert.equal(restarted.calls.filter(call => call.method === 'deleteMessage').length, ids.length);
+});
+
+test('Telegram dismiss on a listing dismissed elsewhere still deletes its messages', async t => {
+  const store = new Store(':memory:', { now: () => 1 }); t.after(() => store.close());
+  const item = review(store);
+  const { agent, calls } = telegram(t, store);
+  store.dispatch(item.id, { type: 'dismiss', version: item.version });
+  const dismissal = update(agent.callback(item, 'd'));
+  dismissal.callback_query.message.message_id = 77;
+  await agent.handleUpdate(dismissal);
+  assert.equal(calls.find(call => call.method === 'answerCallbackQuery').body.text, 'Already dismissed. Removing it.');
+  assert.deepEqual(calls.find(call => call.method === 'deleteMessage').body, { chat_id: '12345', message_id: 77 });
 });
 
 test('Telegram dismiss removes an existing listing sent before message tracking', async t => {
