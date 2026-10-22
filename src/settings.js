@@ -62,6 +62,16 @@ export const FIELDS = [
   { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
 ];
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
+// Set by pairing and by connecting IS24 or Immomio, never typed.
+const INTERNAL = ['chatId', 'accountEmail', 'immomioEmail'];
+
+// A typed or tapped answer as the value to store. '' skips an optional field.
+function parse(field, raw) {
+  if (field.optional && raw === '') return '';
+  if (!field.choices) return field.parse(raw);
+  if (!field.choices.some(([choice]) => choice === raw)) throw new Error('Please pick one of the buttons.');
+  return raw;
+}
 
 // The configuration made in the chat. `config` is one live object shared by every module, updated in place.
 export class Settings {
@@ -91,13 +101,8 @@ export class Settings {
   // Validates, persists and applies. Errors are user-facing. '' skips an optional field.
   set(key, raw) {
     const field = FIELD[key];
-    let value = raw;
-    if (field) {
-      const choices = this.choices(key);
-      if (field.optional && raw === '') value = '';
-      else if (choices.length) { if (!choices.some(([choice]) => choice === raw)) throw new Error('Please pick one of the buttons.'); }
-      else value = field.parse(raw);
-    } else if (!['chatId', 'accountEmail', 'immomioEmail'].includes(key)) throw new Error(`Unknown setting ${key}`); // Set by pairing / connecting IS24 or Immomio.
+    if (!field && !INTERNAL.includes(key)) throw new Error(`Unknown setting ${key}`);
+    const value = field ? parse(field, raw) : raw;
     // A pause/resume or changed search starts a new observation window, even between polls.
     if (['paused', 'searchUrl'].includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
     this.store.saveSetting(key, value);

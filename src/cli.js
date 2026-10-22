@@ -18,6 +18,8 @@ import { IS24Session } from './is24-auth.js';
 import { ImmomioSession } from './immomio.js';
 import { acquireLock } from './lock.js';
 
+// Why Workflow.check() did not search.
+const SKIPPED = { paused: 'Paused', quiet: 'Night pause', skipped: 'Backing off IS24' };
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
 
 export async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
@@ -81,29 +83,25 @@ export async function main(args = process.argv.slice(2)) {
     const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
     connectApp = new ConnectApp({ config, session, port: config.port, apps: [immomioApp] });
     await connectApp.listen();
-    // Sends the "Connect ImmoScout24" button (once per request) and resolves with the connected email.
-    const connect = async (intro = '🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') => {
-      const { fresh, done } = connectApp.request();
+    // Sends the connect button (once per request) and resolves with the connected email, saved as `setting`.
+    const connector = (app, setting, name, path) => async intro => {
+      const { fresh, done } = app.request();
       if (fresh) {
-        console.log('Waiting for the owner to connect ImmoScout24.');
-        await telegram.send(intro, { reply_markup: { inline_keyboard: [[{ text: '🔗 Connect ImmoScout24', web_app: { url: `${config.publicUrl}/connect` } }]] } }).catch(error => console.error(error.message));
+        console.log(`Waiting for the owner to connect ${name}.`);
+        await telegram.send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 Connect ${name}`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(error => console.error(error.message));
       }
       const email = await done;
-      if (email !== config.accountEmail) settings.set('accountEmail', email);
+      if (email !== config[setting]) settings.set(setting, email);
       return email;
     };
-    // Optional: only listings that link to Immomio need it. Resolves with the connected email.
-    const connectImmomio = async () => {
-      const { fresh, done } = immomioApp.request();
-      if (fresh) await telegram.send('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.', { reply_markup: { inline_keyboard: [[{ text: '🔗 Connect Immomio', web_app: { url: `${config.publicUrl}/immomio` } }]] } });
-      const email = await done;
-      if (email !== config.immomioEmail) settings.set('immomioEmail', email);
-      return email;
-    };
+    const connect = connector(connectApp, 'accountEmail', 'ImmoScout24', 'connect');
+    // Optional: only listings that link to Immomio need it.
+    const connectImmomio = connector(immomioApp, 'immomioEmail', 'Immomio', 'immomio');
     workflow = new Workflow({
       store, adapter, config, evaluate: createEvaluator(config),
       notify: review => telegram.notify(review),
       report: review => telegram.notifyOutcome(review),
+      withdraw: review => telegram.withdraw(review),
       alert: text => { console.error(text); return telegram.send(text); },
       beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
       onEvent(event) {
@@ -116,8 +114,8 @@ export async function main(args = process.argv.slice(2)) {
     telegram.assistant = new Assistant({
       settings, store, send: (text, extra) => telegram.send(text, extra),
       codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
-      is24: { connect: () => connect() },
-      immomio: { connect: connectImmomio },
+      is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
+      immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       onReady: () => tick(), onError: message => console.error(message),
     });
@@ -130,7 +128,8 @@ export async function main(args = process.argv.slice(2)) {
       if (!settings.complete()) return heartbeat(); // Nothing to poll until the chat setup is done.
       return workflow.tick().then(result => {
         if (closing) return result;
-        console.log(result?.skipped ? 'Backing off IS24; poll skipped.' : result?.paused ? 'Paused; poll skipped.' : result?.quiet ? 'Night pause; poll skipped.' : `Poll complete. ${result.tracked} listings tracked.`);
+        const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
+        console.log(skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`);
         if (result?.warning) console.error(result.warning);
         return result;
       }).catch(error => { console.error(`Agent: ${error.message}`); return { error: error.message }; }).finally(() => { if (!closing) heartbeat(); });

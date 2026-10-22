@@ -58,7 +58,8 @@ export class ConnectApp {
     if (this.pending) return { fresh: false, done: this.pending.done };
     let resolve, reject;
     const done = new Promise((ok, fail) => { resolve = ok; reject = fail; });
-    this.pending = { done, resolve, reject, step: 'form', message: '', version: 1, waiters: new Set(), code: null, running: false };
+    // step: form → working → (code → working) → done, or back to form with the reason. code: answers the open code question.
+    this.pending = { done, resolve, reject, step: 'form', message: '', version: 1, waiters: new Set(), code: null };
     return { fresh: true, done };
   }
   show(pending, step, message = '') {
@@ -68,7 +69,6 @@ export class ConnectApp {
     pending.waiters.clear();
   }
   async login(pending, email, password) {
-    pending.running = true;
     this.show(pending, 'working', 'Connecting…');
     try {
       const account = await this.session.login({ email, password, askCode: message => new Promise(resolve => { pending.code = resolve; this.show(pending, 'code', message); }) });
@@ -78,7 +78,7 @@ export class ConnectApp {
       pending.resolve(account);
     } catch (error) {
       this.show(pending, 'form', error.message);
-    } finally { pending.running = false; pending.code = null; }
+    } finally { pending.code = null; }
   }
   state() {
     const pending = this.pending;
@@ -137,10 +137,10 @@ export class ConnectApp {
     try { input = JSON.parse(body); } catch { return send(res, 400); }
     const pending = this.pending;
     if (!pending) return send(res, 409);
-    if (path === '/connect/login' && !pending.running && typeof input.email === 'string' && typeof input.password === 'string') {
+    if (path === '/connect/login' && pending.step === 'form' && typeof input.email === 'string' && typeof input.password === 'string') {
       const email = input.email.trim().toLowerCase();
       if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && input.password && input.password.length <= 200) this.login(pending, email, input.password);
-    } else if (path === '/connect/code' && pending.code && typeof input.code === 'string') {
+    } else if (path === '/connect/code' && pending.step === 'code' && typeof input.code === 'string') {
       const resolve = pending.code;
       pending.code = null;
       this.show(pending, 'working', 'Checking the code…');

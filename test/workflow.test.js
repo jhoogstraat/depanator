@@ -395,3 +395,27 @@ test('real searches warm up on startup and every resume, even when older listing
   assert.equal(f.calls.notify, 3, 'the first arrival after an empty baseline is a new candidate');
   await f.workflow.close();
 });
+test('once a day, the first check removes undecided listings IS24 took offline', async () => {
+  const gone = Object.assign(new Error('Listing is no longer available'), { code: 'LISTING_GONE' });
+  const withdrawn = [];
+  const f = fixture({ workflow: { withdraw: async review => { withdrawn.push(review.exposeId); } } });
+  const other = { ...f.snapshot, expose_id: '456' };
+  f.store.now = Date.now; // Discovered within the last day.
+  f.adapter.search = async () => ({ listings: [f.snapshot, other], complete: true, pages: 1 });
+  f.adapter.details = async listing => ({ ...f.snapshot, expose_id: listing.expose_id });
+  f.adapter.expose = async id => { if (id === '123') throw gone; return {}; };
+  await f.workflow.tick();
+  f.config.quietHours = '0-24';
+  f.workflow.cleanedOn = 'yesterday';
+  await f.workflow.tick();
+  assert.deepEqual(withdrawn, [], 'nothing during the night pause');
+  f.config.quietHours = '';
+  await f.workflow.tick();
+  await f.workflow.tick();
+  assert.deepEqual(withdrawn, ['123'], 'once, on the first check of the day');
+  const byId = Object.fromEntries(f.store.list().map(review => [review.exposeId, review]));
+  assert.equal(byId['123'].status, 'dismissed');
+  assert.equal(byId['123'].detail, 'Listing no longer available');
+  assert.equal(byId['456'].status, 'awaiting_approval');
+  await f.workflow.close();
+});

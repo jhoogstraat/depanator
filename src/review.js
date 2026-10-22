@@ -43,6 +43,10 @@ export function configHashFor(config) {
   return hash({ searchUrl, accountEmail, persona, immomioEmail: immomioEmail || undefined });
 }
 
+// Telegram's 64-byte button data carries review IDs (UUIDs) without dashes.
+export const compactId = id => id.replaceAll('-', '');
+export const expandId = compact => compact.replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-');
+
 export function conflict(message) {
   const error = new Error(message);
   error.code = 'CONFLICT';
@@ -75,9 +79,9 @@ function giveUpOr(review, detail) {
     : { ...review, detail };
 }
 
-const dismiss = (review, { version }) => {
+const dismiss = (review, { version, detail = 'Dismissed by user' }) => {
   sameVersion(review, version);
-  return { ...review, status: 'dismissed', detail: 'Dismissed by user' };
+  return { ...review, status: 'dismissed', detail };
 };
 
 const MACHINE = {

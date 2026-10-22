@@ -1,10 +1,18 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { conflict } from './review.js';
+import { compactId, conflict, expandId } from './review.js';
 import { usesImmomio } from './immomio.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
+const INVALID = { text: 'This approval is invalid.' };
+// Review buttons, one letter each to fit Telegram's 64-byte limit: a approve, d dismiss, w write the message,
+// and the three edits below, whose prompt's reply revises the draft.
+const EDITS = {
+  e: { mode: 'ai', ask: '✏️ What should change?', placeholder: 'e.g. shorter, mention move-in 1 March' },
+  m: { mode: 'manual', ask: '📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', placeholder: 'Your message' },
+  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to your writing style (/prompt) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
+};
 
 function chunks(text, limit = LIMIT) {
   const result = [];
@@ -66,7 +74,7 @@ export class Telegram {
     return createHmac('sha256', this.token).update(JSON.stringify([this.chatId, review.id, action, review.version, review.draftHash, review.snapshotHash, review.accountBinding, review.configHash])).digest('base64url').slice(0, 16);
   }
   callback(review, action) {
-    const value = `${action}:${review.id.replaceAll('-', '')}:${review.version}:${this.signature(review, action)}`;
+    const value = `${action}:${compactId(review.id)}:${review.version}:${this.signature(review, action)}`;
     if (Buffer.byteLength(value) > 64) throw new Error('Review callback is too long');
     return value;
   }
@@ -159,6 +167,14 @@ export class Telegram {
     if (review.approvedBy === 'auto') return this.notify(review, { heading: `${heading} (auto-send)`, note: `${text}${review.detail ? `\n${review.detail}` : ''}` });
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
   }
+  // Deletes every message shown for a review.
+  async withdraw(review, extra = []) {
+    const messageIds = new Set([...(review.telegramMessages || []).filter(message => message.chatId === this.chatId).map(message => message.messageId), ...extra]);
+    for (const messageId of messageIds) {
+      if (!Number.isInteger(messageId)) continue;
+      await this.api('deleteMessage', { chat_id: this.chatId, message_id: messageId }).catch(error => this.onError(error.message));
+    }
+  }
   get chatId() { return String(this.config.chatId || ''); }
   send(text, extra = {}) { return this.api('sendMessage', { chat_id: this.chatId, text, ...extra }); }
   // The private chat that sent the pairing code becomes the owner; everyone else is ignored.
@@ -198,77 +214,61 @@ export class Telegram {
       .catch(error => this.send(`Could not ${instructions ? 'revise' : 'write'} the draft: ${error.message}`, instructions ? {} : { reply_markup: this.cardButtons(this.store.get(id)) })
         .catch(failure => this.onError(failure.message)));
   }
+  // Every tap answers with { text } (the toast), and optionally used (remove its buttons), edit (a view that
+  // replaces the message) or dismissed (delete that review's messages).
   async handleUpdate(update) {
     if (this.controller.signal.aborted) return;
     if (update.message) return this.handleMessage(update.message);
     const query = update.callback_query;
     if (!query) return;
-    let answer = 'This approval is invalid.';
-    let accepted = false;
-    let dismissed = null;
-    let view = null; // Replaces the tapped message (menu views).
     const owner = this.chatId && query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId;
-    if (owner && /^[ckx]:/.test(query.data || '')) {
-      try { ({ text: answer, used: accepted = false, edit: view = null } = await this.assistant.choice(query.data)); }
-      catch (error) { answer = error.message; }
-    } else if (owner) {
-      const match = /^([adewmr]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
-      if (match) {
-        const [, action, rawId, version, supplied] = match;
-        const id = `${rawId.slice(0, 8)}-${rawId.slice(8, 12)}-${rawId.slice(12, 16)}-${rawId.slice(16, 20)}-${rawId.slice(20)}`;
-        const review = this.store.get(id);
-        if (review && review.version !== Number(version)) answer = 'A newer draft replaced this one.';
-        else if (review && timingSafeEqual(Buffer.from(supplied), Buffer.from(this.signature(review, action)))) {
-          try {
-            if (action === 'a') {
-              this.workflow.approve(id, review.version, review.draftHash);
-              accepted = true;
-              answer = 'Approved. The agent will verify and send this exact draft.';
-            } else if (action === 'w') {
-              if (review.status !== 'awaiting_approval') conflict('Review was already handled');
-              if (review.draft) conflict('The message is already written.');
-              this.revise(id, review.version, '');
-              accepted = true;
-              answer = 'Writing the message…';
-            } else if ('emr'.includes(action)) {
-              if (review.status !== 'awaiting_approval') conflict('Review was already handled');
-              const [ask, placeholder] = {
-                e: ['✏️ What should change?', 'e.g. shorter, mention move-in 1 March'],
-                m: ['📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', 'Your message'],
-                r: ['🧠 What should I always do differently? I save it to your writing style (/prompt) and rewrite this draft with it.', 'e.g. always mention my cat'],
-              }[action];
-              // Threaded under the review it edits, so the listing need not be repeated.
-              const prompt = await this.send(ask, { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
-                reply_markup: { force_reply: true, input_field_placeholder: placeholder } });
-              this.editPrompts.set(prompt.message_id, { id, version: review.version, mode: { e: 'ai', m: 'manual', r: 'remember' }[action] });
-              this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
-              answer = 'Reply to the prompt with your changes.';
-            } else {
-              // Dismissed elsewhere (e.g. Clear all) still leaves its messages behind; tapping removes them.
-              const already = review.status === 'dismissed';
-              if (!already) this.workflow.dismiss(id, review.version);
-              accepted = true;
-              dismissed = review;
-              answer = already ? 'Already dismissed. Removing it.' : 'Dismissed. No message will be sent.';
-            }
-          } catch (error) { answer = error.code === 'CONFLICT' ? error.message : 'The action failed; check the agent logs.'; }
-        }
-      }
-    }
-    await this.api('answerCallbackQuery', { callback_query_id: query.id, text: answer });
-    if (dismissed) {
-      const messageIds = new Set((dismissed.telegramMessages || []).filter(message => message.chatId === this.chatId).map(message => message.messageId));
-      // Older reviews have no saved IDs; remove the tapped listing message too.
-      messageIds.add(query.message.message_id);
-      for (const messageId of messageIds) {
-        if (!Number.isInteger(messageId)) continue;
-        await this.api('deleteMessage', { chat_id: this.chatId, message_id: messageId }).catch(error => this.onError(error.message));
-      }
-      return;
-    }
+    const tap = !owner ? INVALID
+      : /^[ckx]:/.test(query.data || '') ? await this.assistant.choice(query.data).catch(error => ({ text: error.message }))
+      : await this.reviewTap(query);
+    await this.api('answerCallbackQuery', { callback_query_id: query.id, text: tap.text });
+    const tapped = { chat_id: this.chatId, message_id: query.message?.message_id };
+    // Older reviews have no saved IDs; remove the tapped listing message too.
+    if (tap.dismissed) return this.withdraw(tap.dismissed, [tapped.message_id]);
+    if (tap.edit) await this.api('editMessageText', { ...tapped, text: tap.edit.text, ...tap.edit.extra }).catch(() => {});
     // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones.
-    if (view) await this.api('editMessageText', { chat_id: this.chatId, message_id: query.message.message_id, text: view.text, ...view.extra }).catch(() => {});
-    else if (accepted) await this.api('editMessageReplyMarkup', { chat_id: this.chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    else if (tap.used) await this.api('editMessageReplyMarkup', { ...tapped, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+  }
+  // A review button: <action>:<review ID without dashes>:<version>:<signature>, see callback().
+  async reviewTap(query) {
+    const match = /^([adewmr]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
+    const review = match && this.store.get(expandId(match[2]));
+    if (!review) return INVALID;
+    const [, action, , version, signature] = match;
+    if (review.version !== Number(version)) return { text: 'A newer draft replaced this one.' };
+    if (!timingSafeEqual(Buffer.from(signature), Buffer.from(this.signature(review, action)))) return INVALID;
+    try { return await this.reviewAction(action, review, query.message.message_id); }
+    catch (error) { return { text: error.code === 'CONFLICT' ? error.message : 'The action failed; check the agent logs.' }; }
+  }
+  async reviewAction(action, review, messageId) {
+    const { id, version } = review;
+    if (action === 'a') {
+      this.workflow.approve(id, version, review.draftHash);
+      return { text: 'Approved. The agent will verify and send this exact draft.', used: true };
+    }
+    if (action === 'd') {
+      // Dismissed elsewhere (e.g. Clear all) still leaves its messages behind; tapping removes them.
+      if (review.status === 'dismissed') return { text: 'Already dismissed. Removing it.', dismissed: review };
+      this.workflow.dismiss(id, version);
+      return { text: 'Dismissed. No message will be sent.', dismissed: review };
+    }
+    if (review.status !== 'awaiting_approval') conflict('Review was already handled');
+    if (action === 'w') {
+      if (review.draft) conflict('The message is already written.');
+      this.revise(id, version, '');
+      return { text: 'Writing the message…', used: true };
+    }
+    // An edit: the owner's reply to this prompt, threaded under the review, so the listing need not be repeated.
+    const { ask, placeholder, mode } = EDITS[action];
+    const prompt = await this.send(ask, { reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+      reply_markup: { force_reply: true, input_field_placeholder: placeholder } });
+    this.editPrompts.set(prompt.message_id, { id, version, mode });
+    this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
+    return { text: 'Reply to the prompt with your changes.' };
   }
   saveOffset(offset) {
     const temp = `${this.offsetFile}.tmp`;

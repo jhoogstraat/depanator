@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { compactId } from './review.js';
 
 // The Telegram menu (☰ next to the message field). Hidden but still working: /start, /setup, /interval.
 export const COMMANDS = [
@@ -65,7 +66,7 @@ export function waitingView(reviews) {
   const lines = shown.map((review, index) => `${index + 1}. ${link(review)}\n      ${esc(review.snapshot.price ?? '?')} € · ${esc(review.snapshot.rooms ?? '?')} Zi. · ${esc(review.snapshot.area ?? '?')} m²`);
   const more = reviews.length > shown.length ? `\n\n…and ${reviews.length - shown.length} older.` : '';
   return html(`<b>📬 Waiting for you</b>\n\n${lines.join('\n')}${more}\n\nTap a number to show that listing again with its buttons.`, [
-    ...rows(shown.map((review, index) => ({ text: String(index + 1), callback_data: `x:show:${review.id.replaceAll('-', '')}` })), 5),
+    ...rows(shown.map((review, index) => ({ text: String(index + 1), callback_data: `x:show:${compactId(review.id)}` })), 5),
     [{ text: `🧹 Clear all ${reviews.length}`, callback_data: 'x:clear' }],
   ]);
 }

@@ -16,8 +16,9 @@ const ADVICE = {
 // Everything about a review is durable in the store. Process-local state is only scheduling and health.
 export class Workflow {
   // notify delivers a draft for approval, report tells the user a send outcome, alert raises an operator problem.
-  constructor({ store, adapter, evaluate, notify, report = async () => {}, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {} }) {
-    Object.assign(this, { store, adapter, evaluate, notify, report, config, onEvent, beforeWork, alert });
+  // withdraw removes the Telegram messages of a listing that went offline.
+  constructor({ store, adapter, evaluate, notify, report = async () => {}, withdraw = async () => {}, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {} }) {
+    Object.assign(this, { store, adapter, evaluate, notify, report, withdraw, config, onEvent, beforeWork, alert });
     this.controller = new AbortController(); // Aborted once closed.
     this.queue = Promise.resolve(); // Polls and sends run one at a time.
     this.runningTick = null;
@@ -26,6 +27,7 @@ export class Workflow {
     this.failures = { IS24: 0, LLM: 0 }; // Consecutive outage streaks.
     this.backoff = { skip: 0, blocked: false }; // Polls to skip; sends pause while IS24 blocks us.
     this.lastPollAt = null; // The last search that completed.
+    this.cleanedOn = null; // The German date of the last morning cleanup.
   }
   get closed() { return this.controller.signal.aborted; }
   bindings() { return { accountBinding: bindingFor(this.config), configHash: configHashFor(this.config) }; }
@@ -62,18 +64,29 @@ export class Workflow {
     this.reportOutcomes();
     if (this.runningTick) return this.runningTick;
     this.runningTick = this.run(async () => {
-      let result;
-      let pollError;
-      // Paused or night: no search, but approved applications are still sent.
-      if (this.config.paused === true) result = { paused: true };
-      else if (isQuiet(this.config.quietHours)) result = { quiet: true };
-      else if (this.backoff.skip > 0) { this.backoff.skip--; result = { skipped: true }; }
-      else try { result = await this.pollInternal(); this.lastPollAt = Date.now(); } catch (error) { pollError = error; }
-      await this.sendInternal();
-      if (pollError) throw pollError;
-      return result;
+      // Approved applications go out even when there was no search or the search failed.
+      try { return await this.check(); }
+      finally { await this.sendInternal(); }
     }).finally(() => { this.runningTick = null; });
     return this.runningTick;
+  }
+
+  // One check: why it does not search, or what it found.
+  async check() {
+    if (this.config.paused === true) return { paused: true };
+    if (isQuiet(this.config.quietHours)) return { quiet: true };
+    if (this.backoff.skip > 0) { this.backoff.skip--; return { skipped: true }; }
+    await this.morningCleanup();
+    const result = await this.pollInternal();
+    this.lastPollAt = Date.now();
+    return result;
+  }
+  // Once per German calendar day, on the first check after the night pause.
+  async morningCleanup() {
+    const today = new Date().toLocaleDateString('sv', { timeZone: 'Europe/Berlin' });
+    if (this.cleanedOn === today) return;
+    this.cleanedOn = today;
+    await this.pruneGone();
   }
 
   // User decisions from Telegram.
@@ -106,9 +119,9 @@ export class Workflow {
   }
   async is24Failure(error) {
     await this.failure('IS24', error);
-    // Skip 0, 1, 3, 7... polls, capped near one hour.
-    const interval = this.config.pollIntervalMs ?? 600_000;
-    this.backoff = { skip: Math.min(2 ** (this.failures.IS24 - 1), Math.max(1, Math.floor(MAX_BACKOFF_MS / interval))) - 1, blocked: error.code === 'BLOCKED' };
+    // The pause doubles with every failure (skip 0, 1, 3, 7... polls), capped near one hour.
+    const maxPolls = Math.max(1, Math.floor(MAX_BACKOFF_MS / (this.config.pollIntervalMs ?? 600_000)));
+    this.backoff = { skip: Math.min(2 ** (this.failures.IS24 - 1), maxPolls) - 1, blocked: error.code === 'BLOCKED' };
   }
 
   async pollInternal() {
@@ -172,6 +185,17 @@ export class Workflow {
         batch.stop = true;
         if (!batch.llmFailed) { batch.llmFailed = true; await this.failure('LLM', error); }
       }
+    }
+  }
+  // After the night pause: yesterday's undecided listings that IS24 took offline are dismissed and removed from the chat.
+  async pruneGone() {
+    const since = Date.now() - 86_400_000;
+    for (const review of this.store.list('awaiting_approval').filter(review => review.createdAt >= since)) {
+      this.assertRunning();
+      try { await this.adapter.expose(review.exposeId); continue; }
+      catch (error) { if (error.code !== 'LISTING_GONE') { this.emit({ type: 'prune_error', detail: error.message }); return; } } // Retry tomorrow.
+      const dismissed = this.tryDispatch(review.id, { type: 'dismiss', version: review.version, detail: 'Listing no longer available' });
+      if (dismissed) await this.withdraw(dismissed).catch(error => this.emit({ type: 'notification_error', id: review.id, detail: error.message }));
     }
   }
   // False if writing failed; then the listing waits for the user like any other.

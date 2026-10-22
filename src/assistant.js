@@ -1,8 +1,69 @@
 import { FIELDS, isQuiet } from './settings.js';
+import { expandId } from './review.js';
 import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView, aboutView } from './menu.js';
 
-const stale = { text: 'These buttons are outdated; open the menu again.' };
+const STALE = { text: 'These buttons are outdated; open the menu again.' };
+const BUSY = 'One moment, I am still on the previous step.';
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+// The menu's buttons (x:<name>:<arguments>, written by menu.js), run with the Assistant as `this`.
+const ACTIONS = {
+  async status() { return { text: 'Updated.', edit: await this.statusView() }; },
+  async pause() { return { text: this.togglePause() ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() }; },
+  criteria() { return this.sendView(criteriaView(this.settings.config.preferences)); },
+  about() { return this.sendView(aboutView(this.persona())); },
+  sent() { return this.sendView(sentView(this.store.list())); },
+  // mode 'edit': replace the tapped message (Cancel on the clear confirmation).
+  waiting(mode) {
+    const view = waitingView(this.store.list('awaiting_approval'));
+    return mode === 'edit' ? { text: '', edit: view } : this.sendView(view);
+  },
+  // Without count: ask to confirm. With it: dismiss exactly the listings that were waiting when confirmed.
+  clear(count) {
+    const waiting = this.store.list('awaiting_approval');
+    if (!waiting.length) return { text: 'Nothing is waiting.', edit: waitingView(waiting) };
+    if (!count) return { text: '', edit: clearView(waiting.length) };
+    if (Number(count) !== waiting.length) return { text: 'The list changed; check it again.', edit: waitingView(waiting) };
+    let cleared = 0;
+    for (const review of waiting) { try { this.workflow.dismiss(review.id, review.version); cleared++; } catch (error) { if (error.code !== 'CONFLICT') throw error; } }
+    return { text: `Cleared ${cleared}.`, edit: { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, extra: {} } };
+  },
+  // Shows a waiting listing again with its buttons.
+  async show(compact) {
+    const review = /^[a-f0-9]{32}$/.test(compact || '') && this.store.get(expandId(compact));
+    if (review?.status !== 'awaiting_approval') return { text: 'This listing is no longer waiting.' };
+    await this.redeliver(review);
+    return { text: '' };
+  },
+  // /model step 1: a model was picked, now its thinking level.
+  m(index, mark) {
+    const model = this.pickedModel(index, mark);
+    if (!model) return STALE;
+    const { llm } = this.settings.config;
+    return { text: '', edit: thinkingView(model, Number(index), llm.model, llm.thinking) };
+  },
+  // /model step 2: model and thinking level are saved together.
+  t(index, level, mark) {
+    const model = this.pickedModel(index, mark);
+    if (!model?.thinking.includes(level)) return STALE;
+    this.settings.set('model', model.id);
+    this.settings.set('thinking', level === model.defaultThinking ? '' : level);
+    return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${level}. Applies to the next listing.`, extra: {} } };
+  },
+  // Add a criterion: the next typed message is the new line.
+  async ca() {
+    this.asking = 'criteria+';
+    return this.sendView({ text: '➕ Send one more criterion, for example "No ground floor" or "At most 3rd floor without a lift".' });
+  },
+  // Delete a criterion; the last one stays.
+  cd(index, mark) {
+    const lines = criteriaLines(this.settings.config.preferences);
+    if (lines.length < 2 || !lines[Number(index)] || fingerprint(lines[Number(index)]) !== mark) return STALE;
+    lines.splice(Number(index), 1);
+    this.settings.set('preferences', lines.join('\n'));
+    return { text: 'Removed.', edit: criteriaView(this.settings.config.preferences) };
+  },
+};
 
 // The chat side of configuration: guides the owner through setup and changes settings later.
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
@@ -78,33 +139,32 @@ export class Assistant {
     this.asking = null;
     return this.saved(key);
   }
-  // Button taps: c:<key>:<index|-> answers a question, k:<key> asks to change a setting, x:<action> is a
-  // menu action. Returns the toast, whether the tap was used up (then its buttons are removed), and
-  // optionally `edit`: a view that replaces the tapped message.
+  // Button taps: c:<key>:<index|-|s> answers a question (a choice, Skip, or the field's shortcut),
+  // k:<key> asks to change a setting, x:<action> is a menu action. Returns the toast, whether the tap was
+  // used up (then its buttons are removed), and optionally `edit`: a view that replaces the tapped message.
   async choice(data) {
     const [kind, key, index, mark] = data.split(':');
     if (kind === 'x') return this.action(...data.split(':').slice(1));
+    const field = this.settings.field(key);
     if (kind === 'k') {
-      if (!this.settings.field(key)) return { text: 'Unknown setting.' };
+      if (!field) return { text: 'Unknown setting.' };
       if (key === 'model' || key === 'thinking') { await this.modelMenu(); return { text: '' }; }
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
     }
-    const shortcut = index === 's' && this.settings.field(key)?.shortcut;
-    if (shortcut) {
-      for (const [setting, value] of Object.entries(shortcut[1])) this.settings.set(setting, value);
-      if (this.asking === key) this.asking = null;
-      await this.saved(key);
-      return { text: 'Saved.', used: true };
-    }
-    const choices = this.settings.choices(key);
-    const choice = choices[Number(index)];
-    const value = index === '-' && this.settings.field(key)?.optional ? '' : choice && mark === fingerprint(choice[1]) ? choice[0] : undefined;
-    if (!this.settings.field(key) || value === undefined) return { text: 'These buttons are outdated; open the menu again.' };
-    this.settings.set(key, value);
+    const values = field && this.answer(field, index, mark);
+    if (!values) return STALE;
+    for (const [setting, value] of Object.entries(values)) this.settings.set(setting, value);
     if (this.asking === key) this.asking = null;
     await this.saved(key);
     return { text: 'Saved.', used: true };
+  }
+  // The { setting: value } a question's button stands for; null if the button is outdated.
+  answer(field, index, mark) {
+    if (index === 's') return field.shortcut?.[1] ?? null;
+    if (index === '-') return field.optional ? { [field.key]: '' } : null;
+    const choice = this.settings.choices(field.key)[Number(index)];
+    return choice && mark === fingerprint(choice[1]) ? { [field.key]: choice[0] } : null;
   }
   show(view) { return this.send(view.text, view.extra); }
   // 🧠 Remember on a draft: one more line of writing style, used for every later draft.
@@ -114,37 +174,27 @@ export class Assistant {
     this.settings.set('style', style);
   }
   async command(name) {
-    if (name === '/start' || name === '/setup') {
-      if (this.settings.complete()) return this.send(`Setup is complete. ${MENU_HINT}`);
-      return this.continue();
-    }
+    if (name === '/start' || name === '/setup') return this.settings.complete() ? this.send(`Setup is complete. ${MENU_HINT}`) : this.continue();
+    // Reconnecting works during setup too: setup may be waiting for it.
     if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
-    if (name === '/status') return this.show(await this.statusView());
-    if (name === '/pause') {
-      const paused = this.settings.set('paused', !this.settings.config.paused);
-      return this.send(paused ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again, every ' + this.settings.display('pollIntervalMs') + '.');
-    }
-    if (name === '/criteria') return this.show(criteriaView(this.settings.config.preferences));
-    if (name === '/prompt') {
-      const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
-      return this.show(promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] }));
-    }
-    if (name === '/model') return this.modelMenu();
-    if (name === '/interval') return this.ask('pollIntervalMs');
-    if (name === '/autosend') return this.ask('autoSend');
-    if (name === '/connect') {
-      if (this.track(() => this.connectIS24(), '/connect')) return;
-      return this.send('One moment, I am still on the previous step.');
-    }
-    if (name === '/immomio') {
-      if (this.track(() => this.connectImmomio(), '/immomio')) return;
-      return this.send('One moment, I am still on the previous step.');
-    }
-    if (name === '/login') {
-      if (this.track(() => this.chatgptLogin(), '/login')) return;
-      return this.send('One moment, I am still on the previous step.');
-    }
-    return this.send(`I do not know ${name}. ${MENU_HINT}`);
+    const longStep = { '/connect': () => this.connectIS24(), '/immomio': () => this.connectImmomio(), '/login': () => this.chatgptLogin() }[name];
+    if (longStep) return this.track(longStep, name) ? undefined : this.send(BUSY);
+    const commands = {
+      '/status': async () => this.show(await this.statusView()),
+      '/pause': () => this.send(this.togglePause() ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : `▶️ Searching again, every ${this.settings.display('pollIntervalMs')}.`),
+      '/criteria': () => this.show(criteriaView(this.settings.config.preferences)),
+      '/prompt': () => this.show(this.promptView()),
+      '/model': () => this.modelMenu(),
+      '/interval': () => this.ask('pollIntervalMs'),
+      '/autosend': () => this.ask('autoSend'),
+    };
+    return Object.hasOwn(commands, name) ? commands[name]() : this.send(`I do not know ${name}. ${MENU_HINT}`);
+  }
+  // Returns whether searching is now paused.
+  togglePause() { return this.settings.set('paused', !this.settings.config.paused); }
+  promptView() {
+    const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
+    return promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] });
   }
   // [[key, label, display]] of every personal detail.
   persona() { return FIELDS.filter(field => field.key.startsWith('persona.')).map(field => [field.key, field.label, this.settings.display(field.key)]); }
@@ -168,62 +218,20 @@ export class Assistant {
     try { list = await this.models(); } catch (error) { await this.send(`⚠️ I could not read your plan's models (${error.message}).`); return this.ask('model'); }
     return this.show(modelView(list, this.settings.config.llm.model, this.settings.config.llm.thinking));
   }
-  // Menu buttons (x:<name>:<args>), see menu.js.
-  async action(name, a, b, c) {
-    const { config } = this.settings;
+  // Menu buttons: x:<name>:<arguments>, see ACTIONS.
+  async action(name, ...args) {
     if (!this.settings.complete()) return { text: 'Finish the setup first.' };
-    if (name === 'status') return { text: 'Updated.', edit: await this.statusView() };
-    if (name === 'pause') {
-      const paused = this.settings.set('paused', !config.paused);
-      return { text: paused ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() };
-    }
-    if (name === 'criteria') { await this.show(criteriaView(config.preferences)); return { text: '' }; }
-    if (name === 'about') { await this.show(aboutView(this.persona())); return { text: '' }; }
-    if (name === 'waiting') {
-      const view = waitingView(this.store.list('awaiting_approval'));
-      if (a === 'edit') return { text: '', edit: view };
-      await this.show(view);
-      return { text: '' };
-    }
-    if (name === 'clear') {
-      const waiting = this.store.list('awaiting_approval');
-      if (!waiting.length) return { text: 'Nothing is waiting.', edit: waitingView(waiting) };
-      if (!a) return { text: '', edit: clearView(waiting.length) };
-      // Only the listings that were waiting when you confirmed; a listing that arrived since stays.
-      if (Number(a) !== waiting.length) return { text: 'The list changed; check it again.', edit: waitingView(waiting) };
-      let cleared = 0;
-      for (const review of waiting) { try { this.workflow.dismiss(review.id, review.version); cleared++; } catch (error) { if (error.code !== 'CONFLICT') throw error; } }
-      return { text: `Cleared ${cleared}.`, edit: { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, extra: {} } };
-    }
-    if (name === 'sent') { await this.show(sentView(this.store.list())); return { text: '' }; }
-    if (name === 'show') {
-      const review = /^[a-f0-9]{32}$/.test(a || '') && this.store.get(a.replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'));
-      if (review?.status !== 'awaiting_approval') return { text: 'This listing is no longer waiting.' };
-      await this.redeliver(review);
-      return { text: '' };
-    }
-    if (name === 'm' || name === 't') {
-      const model = this.modelCache?.list[Number(a)];
-      if (!model || fingerprint(model.id) !== (name === 'm' ? b : c)) return stale;
-      if (name === 'm') return { text: '', edit: thinkingView(model, Number(a), config.llm.model, config.llm.thinking) };
-      if (!model.thinking.includes(b)) return stale;
-      this.settings.set('model', model.id);
-      this.settings.set('thinking', b === model.defaultThinking ? '' : b);
-      return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${b}. Applies to the next listing.`, extra: {} } };
-    }
-    if (name === 'ca') {
-      this.asking = 'criteria+';
-      await this.send('➕ Send one more criterion, for example "No ground floor" or "At most 3rd floor without a lift".');
-      return { text: '' };
-    }
-    if (name === 'cd') {
-      const lines = criteriaLines(config.preferences);
-      if (lines.length < 2 || !lines[Number(a)] || fingerprint(lines[Number(a)]) !== b) return stale;
-      lines.splice(Number(a), 1);
-      this.settings.set('preferences', lines.join('\n'));
-      return { text: 'Removed.', edit: criteriaView(config.preferences) };
-    }
-    return stale;
+    return Object.hasOwn(ACTIONS, name) ? ACTIONS[name].apply(this, args) : STALE;
+  }
+  // Shows a view as a new message; the tapped one stays.
+  async sendView(view) {
+    await this.show(view);
+    return { text: '' };
+  }
+  // The model a model-menu button names, if the cached list still has it at that index.
+  pickedModel(index, mark) {
+    const model = this.modelCache?.list[Number(index)];
+    return model && fingerprint(model.id) === mark ? model : null;
   }
   async chatgptLogin() {
     await this.send('First, connect your ChatGPT subscription. It reviews listings and writes your applications.');
