@@ -62,6 +62,9 @@ test('listing details come from the app API and keep warm and cold rent apart', 
   assert.deepEqual(readExpose(expose(), 'calculatedtotalrent'), { title: 'Erstbezug: Studio mit Terrasse', price: 890, area: 33.13, rooms: 1,
     address: 'Pasewalker Straße 96, 13127 Französisch Buchholz, Berlin', description: 'Objektbeschreibung\nRuhig zur Gartenseite.', amenities: ['Balkon/Terrasse: ja', 'Etage: 0 von 4'] });
   assert.equal(readExpose(expose(), 'rentpermonth').price, 680);
+  const hidden = expose();
+  Object.assign(hidden.sections[2], { addressLine1: '13127 Französisch Buchholz, Berlin', addressLine2: 'Die vollständige Adresse der Immobilie erhältst du vom Anbieter.' });
+  assert.equal(readExpose(hidden, 'rentpermonth').address, '13127 Französisch Buchholz, Berlin', 'drops the "ask the landlord" note');
   const changed = expose();
   changed.sections[0].attributes.pop();
   assert.throws(() => readExpose(changed, 'calculatedtotalrent'), /no price/, 'never falls back to cold rent');

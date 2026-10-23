@@ -57,7 +57,8 @@ export function readExpose(expose, priceType) {
     price: parseNumber(price),
     area: parseNumber(find(top, name => name === 'Wohnfläche') ?? find(listed, name => name.startsWith('Wohnfläche'))),
     rooms: parseNumber(find(top, name => name === 'Zimmer') ?? find(listed, name => name.startsWith('Zimmer'))),
-    address: [map.addressLine1, map.addressLine2].filter(Boolean).join(', '),
+    // Without a street IS24 adds "Die vollständige Adresse … erhältst du vom Anbieter." as a line; keep only the district.
+    address: [map.addressLine1, map.addressLine2].filter(line => line && !/vollständige Adresse/i.test(line)).join(', '),
     description: of('TEXT_AREA').filter(section => section.text).map(section => `${section.title || ''}\n${section.text}`.trim()).join('\n\n'),
     amenities: [...new Set(listed.filter(attribute => attribute.label).map(attribute => attribute.type === 'CHECK' ? `${label(attribute)}: ja` : attribute.text ? `${label(attribute)}: ${attribute.text}` : '').filter(Boolean))].sort(),
   };
