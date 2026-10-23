@@ -45,8 +45,9 @@ test('model decisions are validated before anything is stored or sent', () => {
   const write = { write: true };
   assert.deepEqual(validateEvaluation(evaluation, write), evaluation);
   assert.deepEqual(validateEvaluation({ ...evaluation, draft: '' }), { ...evaluation, draft: '' }, 'screening writes no draft');
-  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, reasons: [] }, { ...evaluation, decision: 'dismiss', confident: false }, { ...evaluation, draft: 'x'.repeat(5001) }, { ...evaluation, confident: 'yes' }]) assert.throws(() => validateEvaluation(result, write), /invalid/);
-  for (const result of [evaluation, { decision: 'dismiss', reasons: ['No'], draft: '', confident: true }]) assert.throws(() => validateEvaluation(result), /invalid/);
+  assert.deepEqual(validateEvaluation({ ...evaluation, reasons: [] }, write).reasons, [], 'a draft needs no reasons');
+  for (const result of [null, { ...evaluation, unexpected: true }, { ...evaluation, draft: '' }, { ...evaluation, decision: 'dismiss', confident: false }, { ...evaluation, draft: 'x'.repeat(5001) }, { ...evaluation, confident: 'yes' }]) assert.throws(() => validateEvaluation(result, write), /invalid/);
+  for (const result of [evaluation, { ...evaluation, draft: '', reasons: [] }, { decision: 'dismiss', reasons: ['No'], draft: '', confident: true }]) assert.throws(() => validateEvaluation(result), /invalid/);
 });
 
 test('Telegram approves exact review only for configured private actor and rejects replay/tampering', async (t) => {
