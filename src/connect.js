@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 // Telegram Mini App auth: Telegram signs initData with the bot token, so a valid signature for the
 // owner's user ID proves the request comes from the owner's own Telegram app. Fresh for one hour.
-export function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
+function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
   const params = new URLSearchParams(String(initData || ''));
   const hash = params.get('hash');
   if (!hash || !ownerId) return false;

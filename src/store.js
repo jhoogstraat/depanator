@@ -20,7 +20,7 @@ const MIGRATIONS = [
   // Settings made in the Telegram chat.
   'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);',
 ];
-export const SCHEMA_VERSION = MIGRATIONS.length;
+const SCHEMA_VERSION = MIGRATIONS.length;
 
 // Durable reviews. Every status change goes through dispatch(), which applies the review.js state
 // machine atomically. Telegram delivery metadata does not change review state.

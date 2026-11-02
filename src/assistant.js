@@ -1,16 +1,22 @@
 import { FIELDS, isQuiet } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, criteriaLines, criteriaView, promptView, aboutView } from './menu.js';
+import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, promptView, aboutView, settingsView } from './menu.js';
 
-const STALE = { text: 'These buttons are outdated; open the menu again.' };
+const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
+const RECONNECT = { '/connect': 'connectIS24', '/immomio': 'connectImmomio', '/login': 'chatgptLogin' };
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 // The menu's buttons (x:<name>:<arguments>, written by menu.js), run with the Assistant as `this`.
 const ACTIONS = {
-  async status() { return { text: 'Updated.', edit: await this.statusView() }; },
   async pause() { return { text: this.togglePause() ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() }; },
-  criteria() { return this.sendView(criteriaView(this.settings.config.preferences)); },
+  requirements() { return this.sendView(requirementsView(this.settings.config.preferences)); },
+  settings() { return this.sendView(this.settingsView()); },
+  prompt() { return this.sendView(this.promptView()); },
+  reconnect(command) {
+    if (!Object.hasOwn(RECONNECT, command)) return STALE;
+    return { text: this.reconnect(command) ? '' : BUSY };
+  },
   about() { return this.sendView(aboutView(this.persona())); },
   sent() { return this.sendView(sentView(this.store.list())); },
   // mode 'edit': replace the tapped message (Cancel on the clear confirmation).
@@ -50,18 +56,18 @@ const ACTIONS = {
     this.settings.set('thinking', level === model.defaultThinking ? '' : level);
     return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${level}. Applies to the next listing.`, extra: {} } };
   },
-  // Add a criterion: the next typed message is the new line.
-  async ca() {
-    this.asking = 'criteria+';
-    return this.sendView({ text: '➕ Send one more criterion, for example "No ground floor" or "At most 3rd floor without a lift".' });
+  // Add a requirement: the next typed message is the new line.
+  async ra() {
+    this.asking = 'requirement+';
+    return this.sendView({ text: '➕ Send one more requirement, for example "No ground floor" or "At most 3rd floor without a lift".' });
   },
-  // Delete a criterion; the last one stays.
-  cd(index, mark) {
-    const lines = criteriaLines(this.settings.config.preferences);
+  // Delete a requirement; the last one stays.
+  rd(index, mark) {
+    const lines = requirementLines(this.settings.config.preferences);
     if (lines.length < 2 || !lines[Number(index)] || fingerprint(lines[Number(index)]) !== mark) return STALE;
     lines.splice(Number(index), 1);
     this.settings.set('preferences', lines.join('\n'));
-    return { text: 'Removed.', edit: criteriaView(this.settings.config.preferences) };
+    return { text: 'Removed.', edit: requirementsView(this.settings.config.preferences) };
   },
 };
 
@@ -76,7 +82,7 @@ export class Assistant {
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
   }
-  // Keep typed prompts through a deployment/restart, including an unfinished criterion addition.
+  // Keep typed prompts through a deployment/restart, including an unfinished requirement addition.
   get asking() { return this.store.settings().pendingQuestion ?? null; }
   set asking(value) { this.store.saveSetting('pendingQuestion', value); }
   // Ask the next setup question, start a long step, or announce that setup is done.
@@ -87,7 +93,7 @@ export class Assistant {
     if (!field) {
       if (this.ready) return;
       this.ready = true;
-      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, /autosend lets me send clear matches myself.\n\n${MENU_HINT}`);
+      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, auto-send in /settings lets me send clear matches myself.\n\n${MENU_HINT}`);
       return this.onReady();
     }
     if (field.key === 'is24') return this.track(() => this.connectIS24());
@@ -126,14 +132,14 @@ export class Assistant {
   // A typed message that is not a command or a draft edit.
   async text(message) {
     if (this.busy) return this.send('One moment, I am still on the previous step.');
-    if (this.asking === 'criteria+') {
+    if (this.asking === 'requirement+') {
       this.asking = null;
-      try { this.settings.set('preferences', [...criteriaLines(this.settings.config.preferences), message.trim()].join('\n')); } catch (error) { return this.send(error.message); }
-      return this.show(criteriaView(this.settings.config.preferences));
+      try { this.settings.set('preferences', [...requirementLines(this.settings.config.preferences), message.trim()].join('\n')); } catch (error) { return this.send(error.message); }
+      return this.show(requirementsView(this.settings.config.preferences));
     }
     const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
     if (!key || !this.settings.field(key) || this.settings.choices(key).length) {
-      return this.ready ? this.send(`To change something, use the menu. ${MENU_HINT}`) : this.continue();
+      return this.ready ? this.show(this.settingsView()) : this.continue();
     }
     try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
     this.asking = null;
@@ -170,19 +176,19 @@ export class Assistant {
   // 🧠 Remember on a draft: one more line of writing style, used for every later draft.
   remember(instruction) {
     const style = [this.settings.config.style, instruction.trim()].filter(Boolean).join('\n');
-    if (style.length > 1000) throw new Error('Your writing style is full (1000 characters). Shorten it in /prompt first.');
+    if (style.length > 1000) throw new Error('Your writing style is full (1000 characters). Shorten it in /settings first.');
     this.settings.set('style', style);
   }
   async command(name) {
     if (name === '/start' || name === '/setup') return this.settings.complete() ? this.send(`Setup is complete. ${MENU_HINT}`) : this.continue();
     // Reconnecting works during setup too: setup may be waiting for it.
     if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
-    const longStep = { '/connect': () => this.connectIS24(), '/immomio': () => this.connectImmomio(), '/login': () => this.chatgptLogin() }[name];
-    if (longStep) return this.track(longStep, name) ? undefined : this.send(BUSY);
+    if (Object.hasOwn(RECONNECT, name)) return this.reconnect(name) ? undefined : this.send(BUSY);
     const commands = {
       '/status': async () => this.show(await this.statusView()),
       '/pause': () => this.send(this.togglePause() ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : `▶️ Searching again, every ${this.settings.display('pollIntervalMs')}.`),
-      '/criteria': () => this.show(criteriaView(this.settings.config.preferences)),
+      '/settings': () => this.show(this.settingsView()),
+      '/search': () => this.show(requirementsView(this.settings.config.preferences)),
       '/prompt': () => this.show(this.promptView()),
       '/model': () => this.modelMenu(),
       '/interval': () => this.ask('pollIntervalMs'),
@@ -190,8 +196,11 @@ export class Assistant {
     };
     return Object.hasOwn(commands, name) ? commands[name]() : this.send(`I do not know ${name}. ${MENU_HINT}`);
   }
+  // Starts a reconnect from a command or a /settings button; false if a long step is running.
+  reconnect(name) { return this.track(() => this[RECONNECT[name]](), name); }
   // Returns whether searching is now paused.
   togglePause() { return this.settings.set('paused', !this.settings.config.paused); }
+  settingsView() { return settingsView({ interval: this.settings.display('pollIntervalMs'), autoSend: this.settings.config.autoSend }); }
   promptView() {
     const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
     return promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] });

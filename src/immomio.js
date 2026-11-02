@@ -3,7 +3,7 @@ import { IS24Session, loginRequired } from './is24-auth.js';
 
 // Immomio: some landlords take applications only there and link the apply page in the IS24 description.
 // Applying uses the tenant app's GraphQL API with the account's Immomio profile; no message is written.
-export const IMMOMIO_APP = 'https://tenant.immomio.com';
+const IMMOMIO_APP = 'https://tenant.immomio.com';
 const GRAPHQL = 'https://gql-ps.immomio.com/tenant/graphql';
 // The tenant app's Keycloak login (realm and client from its public `sso` query).
 const SSO = 'https://sso.immomio.com/auth/realms/immomio/protocol/openid-connect';
@@ -27,7 +27,7 @@ const unescape = value => value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, c
   ? String.fromCodePoint(code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : Number(code.slice(1))) : entities[code.toLowerCase()] ?? all);
 const attribute = (tag, name) => { const match = new RegExp(`\\b${name}="([^"]*)"`, 'i').exec(tag); return match ? unescape(match[1]) : null; };
 // The Keycloak page's form that asks for the email, the password or a one-time code.
-export function loginForm(html) {
+function loginForm(html) {
   for (const [, open, body] of String(html).matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi)) {
     const inputs = [...body.matchAll(/<input\b[^>]*>/gi)].map(([tag]) => ({ name: attribute(tag, 'name'), type: (attribute(tag, 'type') || 'text').toLowerCase(), value: attribute(tag, 'value') || '' }));
     const names = new Set(inputs.map(input => input.name));
@@ -50,7 +50,7 @@ async function token(fetchImpl, params) {
 
 // Email and password (+ a one-time code from askCode(question)) on Keycloak's login form → OAuth code with PKCE → tokens.
 // ponytail: scrapes Keycloak's standard login form; a custom theme or extra required step fails with a clear message.
-export async function keycloakLogin({ email, password, askCode, fetchImpl = fetch }) {
+async function keycloakLogin({ email, password, askCode, fetchImpl = fetch }) {
   const cookies = new Map();
   const remember = res => { for (const cookie of res.headers.getSetCookie?.() ?? []) { const [pair] = cookie.split(';'); const at = pair.indexOf('='); if (at > 0) cookies.set(pair.slice(0, at).trim(), pair.slice(at + 1)); } };
   const request = async (url, init = {}) => {

@@ -25,7 +25,7 @@ Everything is configured by chatting with your Telegram bot. Outside the chat yo
    - **ImmoScout24:** tap **🔗 Connect ImmoScout24** and enter your IS24 email and password (and a security code, if IS24 asks). They go straight to IS24's login service, the same one the IS24 app uses, and are never stored; the agent keeps only IS24's renewable login key (`is24-session.json` in the data directory). Only your Telegram account can open the page.
    - **Search:** set your filters on immobilienscout24.de and paste the results page address. Only apartment rentals are supported; a filter that cannot be applied exactly is rejected rather than silently widening the search.
    - **What you look for**, your **salutation**, **name**, optional contact details (phone, address), and optionally what landlords should know about you (household, job, income, move-in date, pets, documents). Applications state only what you write, plus your ImmoScout24 tenant profile if you choose to attach it.
-   - **How often to check**. You approve every application at first; once you trust the drafts, `/autosend` sends clear matches without asking.
+   - **How often to check**. You approve every application at first; once you trust the drafts, auto-send in `/settings` sends clear matches without asking.
 
 The answers are stored in the data directory and survive restarts; an interrupted setup continues where it stopped. Afterwards:
 
@@ -33,23 +33,18 @@ The bot's menu (☰ next to the message field):
 
 | Command | |
 | --- | --- |
-| `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: ⏸ Pause / ▶️ Resume, 📬 Waiting (show a listing again), 📨 Sent, and 🔍 Search, ⏱ interval and 🌙 Night pause to change those |
-| `/pause` | Pause or resume searching. While paused, waiting drafts and approved sends still work |
-| `/criteria` | What a listing must have. ChatGPT skips clear mismatches; add, remove or rewrite criteria |
-| `/prompt` | Everything ChatGPT gets for each listing (writing style, criteria, your details); set your writing style |
-| `/model` | Pick a ChatGPT model from your plan, then its thinking level |
-| `/autosend` | Send clear matches without asking you first |
-| `/connect` | Reconnect your ImmoScout24 account (also asked automatically when IS24 ends the login) |
-| `/immomio` | Connect Immomio, for listings that take applications there |
-| `/login` | Reconnect your ChatGPT subscription |
+| `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: ⏸ Pause / ▶️ Resume (waiting drafts and approved sends still work while paused), 📬 Waiting (show a listing again), 📨 Sent, ⚙️ Settings |
+| `/settings` | Everything you can change, as buttons: 🔍 Search (your IS24 search link and what a listing must meet, such as "balcony" or "no swap"; ChatGPT skips clear mismatches), 👤 About you, ✍️ Writing style, 📝 What ChatGPT gets, ⏱ interval, 🌙 Night pause, 🧠 Model, 📤 Auto-send, and 🔗 reconnecting ImmoScout24, Immomio or ChatGPT |
+
+These also work when typed, as shortcuts: `/search`, `/pause`, `/prompt`, `/model`, `/interval`, `/autosend`, `/connect`, `/immomio`, `/login`. A typed message the bot cannot act on opens `/settings`.
 
 ### Being early
 
-Each check reads the first page of results, sorted newest first (the 20 newest listings), so it is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. At night (22:00–07:00 German time by default; change it with 🌙 Night on `/status`) the agent does not search, since hardly anyone publishes listings then. The first check after starting, resuming, or changing the search only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
+Each check reads the first page of results, sorted newest first (the 20 newest listings), so it is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. At night (22:00–07:00 German time by default; change it with 🌙 Night pause in `/settings`) the agent does not search, since hardly anyone publishes listings then. The first check after starting, resuming, or changing the search only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
 
 ### Reviews
 
-Each new match arrives as one compact card: photo, title, rent/size/rooms, collapsed details, links, and **✍️ Write message / ✖️ Dismiss**. ChatGPT writes the application only when you tap ✍️ Write message; the draft arrives as a short reply under the card with **Send / Dismiss** and three ways to change it: **✏️ Improve** (reply with what to change, for example "shorter" or "mention I can move in on 1 March"), **📝 Write myself** (reply with the exact message to send), or **🧠 Remember** (reply with an instruction; it is added to your writing style in `/prompt`, so every later draft follows it, and this draft is rewritten with it). A changed draft arrives as a new version and the old buttons stop working. Facts you state in an edit are treated as verified. Each approval authorizes one exact draft for one listing and account; every send outcome (sent, not sent, or uncertain) is reported, also after a restart. Changing your search or contact details invalidates waiting drafts (criteria, writing style and model only affect new drafts); tap ✏️ Edit on one to renew it, or Dismiss it.
+Each new match arrives as one compact card: photo, title, rent/size/rooms, collapsed details, links, and **✍️ Write message / ✖️ Dismiss**. ChatGPT writes the application only when you tap ✍️ Write message; the draft arrives as a short reply under the card with **Send / Dismiss** and three ways to change it: **✏️ Improve** (reply with what to change, for example "shorter" or "mention I can move in on 1 March"), **📝 Write myself** (reply with the exact message to send), or **🧠 Remember** (reply with an instruction; it is added to your writing style in `/settings`, so every later draft follows it, and this draft is rewritten with it). A changed draft arrives as a new version and the old buttons stop working. Facts you state in an edit are treated as verified. Each approval authorizes one exact draft for one listing and account; every send outcome (sent, not sent, or uncertain) is reported, also after a restart. Changing your search or contact details invalidates waiting drafts (requirements, writing style and model only affect new drafts); tap ✏️ Edit on one to renew it, or Dismiss it.
 
 The agent heals itself before asking for help. Search outages and IS24 blocks trigger exponential backoff (up to an hour); sends pause while IS24 blocks access. ChatGPT outages pause analysis without using up a listing's retries. Telegram alerts you only when a component fails three times in a row, when it recovers, or when a listing is given up after five failed analyses.
 

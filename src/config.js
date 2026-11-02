@@ -1,7 +1,7 @@
 import { readFileSync, mkdirSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-export function readSecret(env, name) {
+function readSecret(env, name) {
   const file = env[`${name}_FILE`];
   if (file && env[name]) throw new Error(`Set only ${name} or ${name}_FILE`);
   if (!file) return env[name] || '';
