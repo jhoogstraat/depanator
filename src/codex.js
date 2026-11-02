@@ -6,13 +6,14 @@ import { tmpdir } from 'node:os';
 import { SCHEMA, INSTRUCTIONS, reviewInput, unavailable } from './llm.js';
 
 const require = createRequire(import.meta.url);
-export function codexExecutable() {
+function codexExecutable() {
+  if (process.env.DEPANATOR_CODEX_BIN) return process.env.DEPANATOR_CODEX_BIN; // The end-to-end tests' stand-in for ChatGPT.
   const target = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-${process.platform === 'darwin' ? 'apple-darwin' : 'unknown-linux-musl'}`;
   const root = dirname(require.resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`));
   return join(root, 'vendor', target, 'bin', 'codex');
 }
 
-export function codexEnvironment(config, home) {
+function codexEnvironment(config, home) {
   mkdirSync(config.llm.codexHome, { recursive: true, mode: 0o700 });
   chmodSync(config.llm.codexHome, 0o700);
   // No Telegram credentials or inherited MCP env.
@@ -21,7 +22,7 @@ export function codexEnvironment(config, home) {
 
 // The pinned CLI's static catalog prevents model metadata from enabling patch,
 // shell, image, or experimental tools. Feature flags also disable integrations.
-export function codexArguments(config, directory) {
+function codexArguments(config, directory) {
   const { model, thinking } = config.llm;
   writeFileSync(join(directory, 'catalog.json'), JSON.stringify({ models: [{
     slug: model, display_name: model, description: null, priority: 0, base_instructions: INSTRUCTIONS,

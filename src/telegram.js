@@ -11,7 +11,7 @@ const INVALID = { text: 'This approval is invalid.' };
 const EDITS = {
   e: { mode: 'ai', ask: '✏️ What should change?', placeholder: 'e.g. shorter, mention move-in 1 March' },
   m: { mode: 'manual', ask: '📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', placeholder: 'Your message' },
-  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to your writing style (/prompt) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
+  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to your writing style (/settings) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
 };
 
 function chunks(text, limit = LIMIT) {
@@ -28,7 +28,7 @@ function chunks(text, limit = LIMIT) {
 
 // Only IS24's own image CDN: listing data must not choose what Telegram fetches. URL parsing
 // percent-encodes the CDN's raw "800x600>" (Telegram rejects it); JPEG previews more reliably than WebP.
-export function previewImage(raw) {
+function previewImage(raw) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' || url.hostname !== 'pictures.immobilienscout24.de') return null;
@@ -205,7 +205,7 @@ export class Telegram {
       try { this.assistant.remember(instructions); } catch (error) { return this.send(error.message); }
     }
     this.editPrompts.delete(promptId);
-    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to your writing style (/prompt). Revising the draft…' : '✍️ Revising the draft…');
+    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to your writing style (/settings). Revising the draft…' : '✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
     this.revise(target.id, target.version, instructions, { manual });
   }

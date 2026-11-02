@@ -34,7 +34,7 @@ async function token(fetchImpl, params) {
 
 // Password (+ a 2FA code from askCode(question)) → Okta session → OAuth code with PKCE → tokens.
 // The password is only sent to IS24's login service; nothing here stores or logs it.
-export async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
+async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
   let state = await call(fetchImpl, `${BASE}/api/v1/authn`, { username: email, password });
   let retry = '';
   for (let steps = 0; state.status !== 'SUCCESS'; steps++) {

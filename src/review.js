@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 // finishes it as unknown_outcome, so an application is never sent twice.
 
 // ponytail: fixed cap; a long non-systemic failure streak can exhaust it. Raise if listings get lost.
-export const MAX_ANALYSIS_ATTEMPTS = 5;
+const MAX_ANALYSIS_ATTEMPTS = 5;
 export const OUTCOMES = ['sent', 'failed', 'unknown_outcome'];
 
 function canonical(value) {
@@ -37,7 +37,7 @@ export function bindingFor(config) {
 }
 export function configHashFor(config) {
   const { searchUrl, accountEmail, persona, immomioEmail } = config;
-  // What the request sends and to whom. Secrets, notification destinations, the criteria and the model
+  // What the request sends and to whom. Secrets, notification destinations, the requirements and the model
   // (they only decide and write drafts, which are approved verbatim) do not authorize or change a message.
   // An unset Immomio account leaves the hash, and so every existing approval, unchanged.
   return hash({ searchUrl, accountEmail, persona, immomioEmail: immomioEmail || undefined });

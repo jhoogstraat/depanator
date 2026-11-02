@@ -1,25 +1,19 @@
 import { createHash } from 'node:crypto';
 import { compactId } from './review.js';
 
-// The Telegram menu (☰ next to the message field). Hidden but still working: /start, /setup, /interval.
+// The Telegram menu (☰ next to the message field): two entry points, everything else is a button in the chat.
+// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /interval, /autosend, /connect, /immomio, /login.
 export const COMMANDS = [
   ['status', 'Overview: search now, waiting and sent'],
-  ['pause', 'Pause or resume searching'],
-  ['criteria', 'What a listing must have'],
-  ['prompt', 'What ChatGPT is told; your writing style'],
-  ['model', 'ChatGPT model and thinking level'],
-  ['autosend', 'Send clear matches without asking'],
-  ['connect', 'Reconnect ImmoScout24'],
-  ['immomio', 'Connect Immomio for listings that apply there'],
-  ['login', 'Reconnect ChatGPT'],
+  ['settings', 'Search, requirements, style, model, connections'],
 ];
-export const MENU_HINT = 'Everything is in the menu: tap ☰ next to the message field.';
+export const MENU_HINT = 'Send /status to see what I am doing, /settings to change anything.';
 
 // Buttons name an option by index plus a short fingerprint, so a stale button never picks a different option.
 export const fingerprint = label => createHash('sha256').update(String(label)).digest('base64url').slice(0, 4);
 export const rows = (buttons, perRow) => Array.from({ length: Math.ceil(buttons.length / perRow) }, (_, index) => buttons.slice(index * perRow, index * perRow + perRow));
 // Every view is HTML; anything not written here (listing titles, your texts) goes through esc().
-export const esc = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
+const esc = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
 const html = (text, buttons) => ({ text, extra: { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: buttons } } });
 // ponytail: German time zone fixed; IS24 is a German site. Make it a setting if that ever changes.
 const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Berlin' }).format(time) : 'not yet';
@@ -54,8 +48,18 @@ export function statusView(s) {
   return html(lines.join('\n'), [
     [s.paused ? { text: '▶️ Resume', callback_data: 'x:pause' } : { text: '⏸ Pause', callback_data: 'x:pause' }],
     [{ text: `📬 Waiting (${n('awaiting_approval')})`, callback_data: 'x:waiting' }, { text: `📨 Sent (${n('sent') + n('unknown_outcome') + n('failed')})`, callback_data: 'x:sent' }],
-    [{ text: '🔍 Search', callback_data: 'k:searchUrl' }, { text: `⏱ ${s.interval}`, callback_data: 'k:pollIntervalMs' }, { text: '🌙 Night', callback_data: 'k:quietHours' }],
-    [{ text: '🔄 Refresh', callback_data: 'x:status' }],
+    [{ text: '⚙️ Settings', callback_data: 'x:settings' }],
+  ]);
+}
+
+// One way to everything you can change; each button opens that setting's own question or view.
+export function settingsView({ interval, autoSend }) {
+  return html('<b>⚙️ Settings</b>\nTap what you want to change.', [
+    [{ text: '🔍 Search', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
+    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '📝 What ChatGPT gets', callback_data: 'x:prompt' }],
+    [{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }, { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
+    [{ text: '🧠 Model', callback_data: 'k:model' }, { text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'k:autoSend' }],
+    [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, { text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }],
   ]);
 }
 
@@ -97,12 +101,13 @@ export function thinkingView(model, modelIndex, current, thinking) {
     rows(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3));
 }
 
-export const criteriaLines = preferences => String(preferences || '').split('\n').map(line => line.trim()).filter(Boolean);
-export function criteriaView(preferences) {
-  const lines = criteriaLines(preferences);
-  return html(`<b>🎯 Criteria</b>\nChatGPT skips listings that clearly miss one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
-    [{ text: '➕ Add', callback_data: 'x:ca' }, { text: '✏️ Rewrite all', callback_data: 'k:preferences' }],
-    ...rows(lines.length > 1 ? lines.map((line, index) => ({ text: `🗑 ${index + 1}`, callback_data: `x:cd:${index}:${fingerprint(line)}` })) : [], 5),
+export const requirementLines = preferences => String(preferences || '').split('\n').map(line => line.trim()).filter(Boolean);
+export function requirementsView(preferences) {
+  const lines = requirementLines(preferences);
+  return html(`<b>🔍 Search requirements</b>\nChatGPT skips listings that clearly break one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
+    [{ text: '➕ Add', callback_data: 'x:ra' }, { text: '✏️ Rewrite all', callback_data: 'k:preferences' }],
+    [{ text: '🔗 IS24 search link', callback_data: 'k:searchUrl' }],
+    ...rows(lines.length > 1 ? lines.map((line, index) => ({ text: `🗑 ${index + 1}`, callback_data: `x:rd:${index}:${fingerprint(line)}` })) : [], 5),
   ]);
 }
 
@@ -114,11 +119,11 @@ export function promptView({ style, preferences, about }) {
   return html([
     '<b>📝 What ChatGPT gets for each new listing</b>',
     '', '<b>✍️ Your writing style</b>', block(style || 'None yet. Tap below to add one, e.g. "Formal, short, mention that I am a non-smoker."'),
-    '', '<b>🎯 Criteria</b>', block(criteriaLines(preferences).join('\n')),
+    '', '<b>🎯 Requirements</b>', block(requirementLines(preferences).join('\n')),
     '', '<b>👤 About you</b>', block(facts || 'Nothing yet.'),
     '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
   ].join('\n'), [
-    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Criteria', callback_data: 'x:criteria' }, { text: '👤 About you', callback_data: 'x:about' }],
+    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Requirements', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
     ...(style ? [[{ text: '🗑 Remove style', callback_data: 'c:style:-' }]] : []),
   ]);
 }

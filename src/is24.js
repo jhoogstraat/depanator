@@ -13,7 +13,7 @@ function coded(error, code) {
   error.code = code;
   return error;
 }
-export function listingUrl(id) {
+function listingUrl(id) {
   if (!/^\d{1,20}$/.test(String(id))) throw new Error('Invalid expose ID');
   return `${ORIGIN}/expose/${id}`;
 }
@@ -27,7 +27,7 @@ export function searchFilters(searchUrl) {
 }
 
 // "1.234,56 €", "33,13 m²", "2,5" → number.
-export function parseNumber(text) {
+function parseNumber(text) {
   const match = String(text ?? '').match(/-?\d[\d.,\s ]*/);
   if (!match) return null;
   let numeric = match[0].replace(/[\s ]/g, '');
@@ -40,7 +40,7 @@ export function parseNumber(text) {
 }
 
 // The listing facts the review sees, from the app's expose JSON (a list of typed sections).
-export function readExpose(expose, priceType) {
+function readExpose(expose, priceType) {
   const sections = expose?.sections || [];
   const of = type => sections.filter(section => section?.type === type);
   const top = of('TOP_ATTRIBUTES').flatMap(section => section.attributes || []);
@@ -78,14 +78,14 @@ const FIELDS = {
 };
 
 // The request body, or a reason why this listing cannot be contacted with the approved data.
-export function contactRequest(expose, persona, message, ssoId) {
+function contactRequest(expose, persona, message, ssoId) {
   const contact = expose?.contact || {};
   if (String(contact.premiumProfileRequiredForContacting) === 'true') return { reason: 'This landlord only accepts requests from IS24 Premium members' };
   for (const [field, state] of Object.entries(contact.contactData?.formFieldConfig || {})) {
     if (state !== 'MANDATORY') continue;
     const [asks = field.replace(/Field$/, ''), value] = FIELDS[field] || [];
     if (!value) return { reason: `This listing requires ${asks}, which I cannot fill in. Apply on IS24 yourself.` };
-    if (!value(persona, message)) return { reason: `This listing requires ${asks}. Add it in /prompt → 👤 About you.` };
+    if (!value(persona, message)) return { reason: `This listing requires ${asks}. Add it in /settings → 👤 About you.` };
   }
   const address = { street: persona.strasse, houseNumber: persona.hausnummer, postcode: persona.plz, city: persona.ort };
   const form = {

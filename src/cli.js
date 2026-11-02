@@ -22,7 +22,7 @@ import { acquireLock } from './lock.js';
 const SKIPPED = { paused: 'Paused', quiet: 'Night pause', skipped: 'Backing off IS24' };
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
 
-export async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
+async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
   const timer = setTimeout(() => {
     console.error('Shutdown deadline reached; any interrupted submission will remain uncertain');
     terminate();

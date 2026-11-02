@@ -13,7 +13,7 @@
   "scripts": {
     "start": "bun src/cli.js start",
     "status": "bun src/cli.js status",
-    "test": "bun test test/*.test.js",
+    "test": "bun test --timeout 30000 test/*.test.js",
     "check": "bun build src/cli.js --target=bun --packages=external --outdir=.depanator/check"
   },
   "dependencies": {

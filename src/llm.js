@@ -13,7 +13,7 @@ export const SCHEMA = {
 
 // write: the draft pass (after the user tapped Write or Edit). Screening only decides and never drafts.
 // Reasons belong to screening: a draft pass may return none, and the screening reasons are kept.
-export function validateEvaluation(result, { write = false } = {}) {
+function validateEvaluation(result, { write = false } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)
     || Object.keys(result).some(key => !['decision', 'reasons', 'draft', 'confident'].includes(key))
     || typeof result.confident !== 'boolean' || (result.decision === 'dismiss' && result.confident)
