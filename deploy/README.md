@@ -36,7 +36,7 @@ For `start`, SIGTERM/SIGINT immediately stop accepting queued work and starting 
 
 A historical backup can predate a successful remote send; the application cannot detect that rollback or undo IS24 messages. **Your restore lifecycle must create `/data/reconciliation-required` after restoring data and before any start/resume.** The marker blocks startup, queued work, and the final submit seam. Keep it present while using `status` to inspect restored history and manually reconciling IS24 account history, stale approvals, and listings that were already contacted. Do not remove the marker merely because the restore succeeded. Remove it only after reconciliation and safe repair of restored state, then start explicitly. No automatic reconciliation or marker removal is provided. Preserve the marker during upgrades/backups until deliberately cleared. Restores must also occur with all data consumers stopped; the marker is not permission to replace a live SQLite database.
 
-Back up the entire stopped data directory: SQLite database and any WAL/SHM files, settings, the IS24 login key (`is24-session.json`), Telegram offset, and the ChatGPT (Codex) login. Treat this backup as sensitive. No host service manager or deployment topology is assumed here.
+Back up the entire stopped data directory: SQLite database and any WAL/SHM files, settings, the IS24 login key (`is24-session.json`), Telegram offset, and the ChatGPT (Codex) login. Treat this backup as sensitive. The `raw/` directory holds IS24 responses that went wrong, unpruned and possibly with landlord contact details; see [docs/raw-responses.md](../docs/raw-responses.md). No host service manager or deployment topology is assumed here.
 
 ## Connecting ImmoScout24
 

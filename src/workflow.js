@@ -169,7 +169,8 @@ export class Workflow {
       this.emit({ type: 'analysis', review: saved });
       // Auto-send: the owner's standing approval for clear matches, written and sent in this same tick. Only for newly
       // published listings: the first check, or one after a search change, would otherwise mass-apply.
-      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true && await this.autoSend(saved, bindings)) return;
+      // A listing with missing facts always waits for the owner, whatever the model thinks.
+      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true && !snapshot.missing && await this.autoSend(saved, bindings)) return;
       if (saved.status === 'awaiting_approval') { batch.tried.add(saved.id); await this.deliver(saved); } // Each listing as soon as it is screened.
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.

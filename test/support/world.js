@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,12 +25,14 @@ export const until = async (what, condition, timeout = 10_000) => {
 export const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const jwt = claims => `x.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.y`;
 const json = (res, body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+const answer = (res, { status = 200, type = 'application/json', body }) => { res.writeHead(status, { 'Content-Type': type }); res.end(body); };
 
 // The same JSON shapes the IS24 app API answers with.
-const searchItem = ({ id, title }) => ({ id, title, address: { line: 'Berlin' }, attributes: [{ value: '900 €' }, { value: '50 m²' }, { value: '2 Zi.' }] });
-const expose = ({ title, description }) => ({
+// rent: null and exposeArea: null are the gaps IS24 really leaves.
+const searchItem = ({ id, title, rent = '900 €', published }) => ({ id, title, published, address: { line: 'Berlin' }, attributes: [rent, '50 m²', '2 Zi.'].filter(Boolean).map(value => ({ value })) });
+const expose = ({ title, description, rent = '900 €', exposeArea = '50 m²' }) => ({
   sections: [
-    { type: 'TOP_ATTRIBUTES', attributes: [{ label: 'Warmmiete', text: '900 €' }, { label: 'Zimmer', text: '2' }, { label: 'Wohnfläche', text: '50 m²' }] },
+    { type: 'TOP_ATTRIBUTES', attributes: [...(rent ? [{ label: 'Warmmiete', text: rent }] : []), { label: 'Zimmer', text: '2' }, ...(exposeArea ? [{ label: 'Wohnfläche', text: exposeArea }] : [])] },
     { type: 'TITLE', title }, { type: 'MAP', addressLine1: 'Teststraße 1', addressLine2: '10115 Berlin' }, { type: 'TEXT_AREA', title: 'Objektbeschreibung', text: description },
   ],
   contact: { premiumProfileRequiredForContacting: 'false', contactData: { formFieldConfig: { firstnameField: 'MANDATORY', lastnameField: 'MANDATORY', emailAddressField: 'MANDATORY' } } },
@@ -43,7 +45,22 @@ export async function createWorld(t) {
   const world = {
     dataDir, listings: [], searches: 0, contacts: [], immomioApplications: [], unexpected: [], telegram: [], holdContact: false, agentLog: '',
     updates: [], nextUpdate: 1, nextMessage: 1,
-    listing(id, title, description) { this.listings.push({ id, title, description }); },
+    // Set to { status, type, body } to make IS24 answer exactly that. unusableResults join every search result page.
+    respond: { search: null, expose: {}, contact: null }, unusableResults: [],
+    listing(id, title, description, facts) {
+      const listing = { id, title, description, ...facts };
+      this.listings.push(listing);
+      return listing;
+    },
+    // The responses the agent saved, see docs/raw-responses.md. A file still being written is picked up next time.
+    kept() {
+      const directory = join(dataDir, 'raw');
+      if (!existsSync(directory) || !statSync(directory).isDirectory()) return [];
+      return readdirSync(directory).sort().flatMap(file => {
+        try { return [{ file, label: file.replace(/-[0-9a-f]{12}\.json$/, ''), mode: statSync(join(directory, file)).mode & 0o777, ...JSON.parse(readFileSync(join(directory, file), 'utf8')) }]; }
+        catch { return []; }
+      });
+    },
     // What the owner receives. The newest message wins, as in the chat.
     messages() { return this.telegram.filter(call => ['sendMessage', 'editMessageText'].includes(call.method)); },
     sees(pattern) { return until(`a message like ${pattern}`, () => this.messages().find(call => pattern.test(call.body.text))); },
@@ -130,12 +147,15 @@ export async function createWorld(t) {
       const shown = /^\/expose\/(\d+)$/.exec(path);
       if (path === '/search/list') {
         world.searches++;
-        return json(res, { resultListItems: world.listings.toReversed().map(searchItem), numberOfPages: 1 });
+        if (world.respond.search) return answer(res, world.respond.search);
+        return json(res, { resultListItems: [...world.listings.toReversed().map(searchItem), ...world.unusableResults], numberOfPages: 1 });
       }
       if (contact) {
         world.contacts.push({ id: contact[1], form: body['expose.contactForm'], authorization: req.headers.authorization });
+        if (world.respond.contact) return answer(res, world.respond.contact);
         return world.holdContact ? undefined : json(res, {}); // Held: the answer never arrives, as in a crash.
       }
+      if (shown && world.respond.expose[shown[1]]) return answer(res, world.respond.expose[shown[1]]);
       const listing = shown && world.listings.find(item => String(item.id) === shown[1]);
       return listing ? json(res, expose(listing)) : json(res, {}, 404);
     },
