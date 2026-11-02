@@ -37,19 +37,17 @@ function previewImage(raw) {
   } catch { return null; }
 }
 
-// The user's interface. Reads reviews to verify signed buttons; every decision goes to the workflow,
-// every configuration message to the assistant. Until paired, only `/start <pairingCode>` is accepted.
-export class Telegram {
-  constructor({ config, store, workflow, assistant = null, pairingCode = null, onPair = () => {}, fetchImpl = fetch, onError = () => {} }) {
-    Object.assign(this, { config, store, workflow, assistant, pairingCode, onPair, fetchImpl, onError });
+// The one connection to Telegram: every person's private chat with the bot arrives here, and route(update)
+// hands each update to that person.
+export class Bot {
+  constructor({ config, fetchImpl = fetch, route = async () => {}, onError = () => {} }) {
+    Object.assign(this, { fetchImpl, route, onError });
     this.token = config.telegramBotToken;
     this.offsetFile = join(config.dataDir, 'telegram-offset.json');
     this.offset = 0;
     try { this.offset = JSON.parse(readFileSync(this.offsetFile, 'utf8')).offset || 0; } catch (error) { if (error.code !== 'ENOENT') throw new Error('Telegram update offset is unreadable'); }
     this.controller = new AbortController();
     this.loop = null;
-    // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Edit again is enough.
-    this.editPrompts = new Map();
   }
   async api(method, body, signal = AbortSignal.timeout(30_000), retried = false) {
     // Never include the token-bearing URL or response body in errors/logs.
@@ -70,6 +68,60 @@ export class Telegram {
     if (!result.ok) throw new Error(`Telegram ${method} was rejected`);
     return result.result;
   }
+  saveOffset(offset) {
+    const temp = `${this.offsetFile}.tmp`;
+    writeFileSync(temp, JSON.stringify({ offset }), { mode: 0o600 });
+    renameSync(temp, this.offsetFile);
+    this.offset = offset;
+  }
+  // Fails fast on a wrong token, or a webhook that would make getUpdates fail forever.
+  async verify() {
+    this.me = await this.api('getMe', {}).catch(error => { throw /HTTP 401|HTTP 404/.test(error.message) ? new Error('Telegram rejected TELEGRAM_BOT_TOKEN; copy the token from @BotFather again') : error; });
+    if ((await this.api('getWebhookInfo', {})).url) throw new Error('This Telegram bot has a webhook set; use a dedicated bot without one (or call deleteWebhook)');
+  }
+  start() {
+    if (this.loop) return this.loop;
+    this.loop = this.pollUpdates();
+    return this.loop;
+  }
+  async pollUpdates() {
+    const signal = this.controller.signal;
+    while (!signal.aborted) {
+      try {
+        const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query', 'message'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
+        for (const update of updates) {
+          if (signal.aborted) break;
+          // A failing update (e.g. a button tapped long ago) must not block every later one.
+          // ponytail: one update at a time for everybody; a slow step delays the others by seconds. Per-chat queues if that shows.
+          try { await this.route(update); } catch (error) { this.onError(error.message); }
+          this.saveOffset(update.update_id + 1);
+        }
+      } catch (error) {
+        if (signal.aborted) break;
+        this.onError(error.message);
+        await new Promise(resolve => {
+          const timer = setTimeout(done, 5000);
+          function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
+          signal.addEventListener('abort', done, { once: true });
+        });
+      }
+    }
+  }
+  async close() { this.controller.abort(); await this.loop; }
+}
+
+// One person's interface. Reads reviews to verify signed buttons; every decision goes to the workflow,
+// every configuration message to the assistant.
+export class Telegram {
+  constructor({ config, store, workflow, assistant = null, bot = null, fetchImpl = fetch, onError = () => {} }) {
+    Object.assign(this, { config, store, workflow, assistant, onError });
+    this.bot = bot ?? new Bot({ config, fetchImpl, onError });
+    this.token = config.telegramBotToken;
+    this.controller = new AbortController();
+    // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Edit again is enough.
+    this.editPrompts = new Map();
+  }
+  api(...args) { return this.bot.api(...args); }
   signature(review, action) {
     return createHmac('sha256', this.token).update(JSON.stringify([this.chatId, review.id, action, review.version, review.draftHash, review.snapshotHash, review.accountBinding, review.configHash])).digest('base64url').slice(0, 16);
   }
@@ -177,20 +229,14 @@ export class Telegram {
   }
   get chatId() { return String(this.config.chatId || ''); }
   send(text, extra = {}) { return this.api('sendMessage', { chat_id: this.chatId, text, ...extra }); }
-  // The private chat that sent the pairing code becomes the owner; everyone else is ignored.
-  async pair(message, text) {
-    const [command, code] = text.split(/\s+/);
-    if (message.chat?.type !== 'private' || String(message.from?.id) !== String(message.chat.id) || command !== '/start') return;
-    if (!this.pairingCode || code !== this.pairingCode) return this.api('sendMessage', { chat_id: message.chat.id, text: 'To connect, send /start followed by the code shown in the agent log, for example: /start 123456' });
-    this.pairingCode = null;
-    this.onPair(String(message.chat.id));
+  // A new person's first message from the bot.
+  async welcome() {
     await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes about five minutes.');
     await this.assistant.continue();
   }
   // Commands and setup answers go to the assistant; replies to an ✏️ Edit prompt revise that draft.
   async handleMessage(message) {
     const text = typeof message.text === 'string' ? message.text.trim() : '';
-    if (!this.chatId) return this.pair(message, text);
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
     if (text.startsWith('/')) return this.assistant.command(text.split(/[\s@]/)[0].toLowerCase());
     const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts.keys()].at(-1);
@@ -270,43 +316,5 @@ export class Telegram {
     this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
     return { text: 'Reply to the prompt with your changes.' };
   }
-  saveOffset(offset) {
-    const temp = `${this.offsetFile}.tmp`;
-    writeFileSync(temp, JSON.stringify({ offset }), { mode: 0o600 });
-    renameSync(temp, this.offsetFile);
-    this.offset = offset;
-  }
-  // Fails fast on a wrong token, or a webhook that would make getUpdates fail forever.
-  async verify() {
-    await this.api('getMe', {}).catch(error => { throw /HTTP 401|HTTP 404/.test(error.message) ? new Error('Telegram rejected TELEGRAM_BOT_TOKEN; copy the token from @BotFather again') : error; });
-    if ((await this.api('getWebhookInfo', {})).url) throw new Error('This Telegram bot has a webhook set; use a dedicated bot without one (or call deleteWebhook)');
-  }
-  start() {
-    if (this.loop) return this.loop;
-    this.loop = this.pollUpdates();
-    return this.loop;
-  }
-  async pollUpdates() {
-    const signal = this.controller.signal;
-    while (!signal.aborted) {
-      try {
-        const updates = await this.api('getUpdates', { offset: this.offset, timeout: 20, allowed_updates: ['callback_query', 'message'] }, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
-        for (const update of updates) {
-          if (signal.aborted) break;
-          // A failing update (e.g. a button tapped long ago) must not block every later one.
-          try { await this.handleUpdate(update); } catch (error) { this.onError(error.message); }
-          this.saveOffset(update.update_id + 1);
-        }
-      } catch (error) {
-        if (signal.aborted) break;
-        this.onError(error.message);
-        await new Promise(resolve => {
-          const timer = setTimeout(done, 5000);
-          function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
-          signal.addEventListener('abort', done, { once: true });
-        });
-      }
-    }
-  }
-  async close() { this.controller.abort(); await this.loop; }
+  close() { this.controller.abort(); }
 }

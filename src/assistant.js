@@ -1,6 +1,6 @@
 import { FIELDS, isQuiet } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, promptView, aboutView, settingsView } from './menu.js';
+import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, promptView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
 const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
@@ -56,6 +56,22 @@ const ACTIONS = {
     this.settings.set('thinking', level === model.defaultThinking ? '' : level);
     return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${level}. Applies to the next listing.`, extra: {} } };
   },
+  users(mode) {
+    if (!this.admin) return STALE;
+    const view = usersView(this.admin.users());
+    return mode === 'edit' ? { text: '', edit: view } : this.sendView(view);
+  },
+  invite() {
+    if (!this.admin) return STALE;
+    return this.sendView({ text: `🔗 Send this link to the person you want to invite. It works once, within 24 hours, and opens their own private chat with me:\n${this.admin.invite()}` });
+  },
+  // Without sure: ask to confirm.
+  async rm(id, sure) {
+    if (!this.admin) return STALE;
+    if (!sure) return { text: '', edit: removeUserView(id) };
+    await this.admin.remove(id);
+    return { text: 'Removed.', edit: usersView(this.admin.users()) };
+  },
   // Add a requirement: the next typed message is the new line.
   async ra() {
     this.asking = 'requirement+';
@@ -71,12 +87,13 @@ const ACTIONS = {
   },
 };
 
-// The chat side of configuration: guides the owner through setup and changes settings later.
+// The chat side of configuration: guides one person through setup and changes settings later.
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
-  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, redeliver, onReady, onError });
+  // admin: { invite(), users(), remove(id) } for the person running the agent, null for everyone else.
+  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
+    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, redeliver, onReady, onError });
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
@@ -155,6 +172,7 @@ export class Assistant {
     if (kind === 'k') {
       if (!field) return { text: 'Unknown setting.' };
       if (key === 'model' || key === 'thinking') { await this.modelMenu(); return { text: '' }; }
+      if (key === 'pollIntervalMs' && !this.admin) return { text: 'The check interval is shared; the admin sets it.' };
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
     }
@@ -191,8 +209,11 @@ export class Assistant {
       '/search': () => this.show(requirementsView(this.settings.config.preferences)),
       '/prompt': () => this.show(this.promptView()),
       '/model': () => this.modelMenu(),
-      '/interval': () => this.ask('pollIntervalMs'),
       '/autosend': () => this.ask('autoSend'),
+      ...(this.admin && {
+        '/interval': () => this.ask('pollIntervalMs'), // Shared: every search runs on the admin's interval.
+        '/users': () => this.show(usersView(this.admin.users())),
+      }),
     };
     return Object.hasOwn(commands, name) ? commands[name]() : this.send(`I do not know ${name}. ${MENU_HINT}`);
   }
@@ -200,7 +221,7 @@ export class Assistant {
   reconnect(name) { return this.track(() => this[RECONNECT[name]](), name); }
   // Returns whether searching is now paused.
   togglePause() { return this.settings.set('paused', !this.settings.config.paused); }
-  settingsView() { return settingsView({ interval: this.settings.display('pollIntervalMs'), autoSend: this.settings.config.autoSend }); }
+  settingsView() { return settingsView({ interval: this.settings.display('pollIntervalMs'), autoSend: this.settings.config.autoSend, admin: Boolean(this.admin) }); }
   promptView() {
     const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
     return promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] });
@@ -215,7 +236,7 @@ export class Assistant {
     const modelDefault = config.llm.thinking ? null : await this.models().then(list => list.find(model => model.id === config.llm.model)?.defaultThinking, () => null);
     return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
       paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
-      quietHours: config.quietHours, quiet: isQuiet(config.quietHours), chatgpt: this.codex.account?.() ?? {} });
+      quietHours: config.quietHours, quiet: isQuiet(config.quietHours), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
   async models() {
@@ -243,6 +264,7 @@ export class Assistant {
     return model && fingerprint(model.id) === mark ? model : null;
   }
   async chatgptLogin() {
+    if (!this.admin) throw new Error('ChatGPT is shared on this agent. If it stops working, the admin can reconnect it with /login.');
     await this.send('First, connect your ChatGPT subscription. It reviews listings and writes your applications.');
     await this.codex.login({ onCode: ({ url, code }) => this.send(`1. Open ${url}\n2. Sign in to ChatGPT\n3. Enter this code: ${code}\n\nThe code expires in 15 minutes. If ChatGPT asks, allow device code login in its security settings.`).catch(error => this.onError(error.message)) });
     this.chatgpt = true;
@@ -252,7 +274,7 @@ export class Assistant {
     const email = await this.immomio.connect();
     await this.send(`✅ Connected to Immomio as ${email}. When a listing's IS24 description links to an Immomio application, I apply there with your Immomio profile once you approve. Keep that profile complete on tenant.immomio.com.`);
   }
-  // Sends the "Connect ImmoScout24" button and waits until the owner connected the account there.
+  // Sends the "Connect ImmoScout24" button and waits until the person connected their account there.
   async connectIS24() {
     const email = await this.is24.connect();
     await this.send(`✅ Connected to ImmoScout24 as ${email}.`);

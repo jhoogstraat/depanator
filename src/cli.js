@@ -4,22 +4,14 @@ import { join } from 'node:path';
 import { randomInt } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { loadRuntime, assertReconciled } from './config.js';
-import { Store } from './store.js';
-import { Settings } from './settings.js';
-import { Workflow } from './workflow.js';
 import { IS24Adapter } from './is24.js';
-import { createEvaluator } from './llm.js';
-import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './codex.js';
-import { Telegram } from './telegram.js';
-import { Assistant } from './assistant.js';
-import { COMMANDS } from './menu.js';
+import { Feeds } from './feed.js';
+import { Bot } from './telegram.js';
 import { BRANDS, ConnectApp } from './connect.js';
-import { IS24Session } from './is24-auth.js';
-import { ImmomioSession } from './immomio.js';
+import { Users, userIds } from './users.js';
+import { COMMANDS } from './menu.js';
 import { acquireLock } from './lock.js';
 
-// Why Workflow.check() did not search.
-const SKIPPED = { paused: 'Paused', quiet: 'Night pause', skipped: 'Backing off IS24' };
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
 
 async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
@@ -35,32 +27,36 @@ export async function main(args = process.argv.slice(2)) {
   if (['help', '--help', '-h'].includes(command)) return console.log(USAGE);
   if (!['start', 'status'].includes(command) || args.length > 1) throw new Error(USAGE);
   const runtime = loadRuntime();
-  const database = join(runtime.dataDir, 'agent.db');
   if (command === 'status') {
-    if (!existsSync(database)) return console.log('No reviews yet.');
-    const db = new DatabaseSync(database, { readOnly: true });
-    try {
-      for (const row of db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all()) {
-        const review = JSON.parse(row.body);
-        console.log(`${review.status.padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
-      }
-    } finally { db.close(); }
+    // A root database: not started since multi-user arrived, so not moved to users/ yet.
+    const databases = [join(runtime.dataDir, 'agent.db'), ...userIds(runtime.dataDir).map(id => join(runtime.dataDir, 'users', id, 'agent.db'))].filter(path => existsSync(path));
+    if (!databases.length) return console.log('No reviews yet.');
+    for (const database of databases) {
+      if (databases.length > 1) console.log(`\n${database}`);
+      const db = new DatabaseSync(database, { readOnly: true });
+      try {
+        for (const row of db.prepare('SELECT body FROM reviews ORDER BY rowid DESC').all()) {
+          const review = JSON.parse(row.body);
+          console.log(`${review.status.padEnd(18)} ${review.exposeId} ${review.snapshot.title}\n  ${review.detail || review.notificationError || review.reasons.join('; ')}`);
+        }
+      } finally { db.close(); }
+    }
     return;
   }
   if (!runtime.telegramBotToken) throw new Error('Set TELEGRAM_BOT_TOKEN to the token of a new bot from @BotFather in Telegram');
   if (!runtime.publicUrl) throw new Error('Set DEPANATOR_PUBLIC_URL to the public HTTPS address of this agent; Telegram opens the ImmoScout24 login there');
   assertReconciled(runtime);
   const unlock = acquireLock(runtime.dataDir);
-  let workflow, telegram, connectApp, timer;
+  let users, bot, connectApp, timer;
   let closing = false, closePromise;
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
     clearTimeout(timer);
-    workflow?.stop();
+    users?.stop();
     closePromise = boundedShutdown(async () => {
       try {
-        const results = await Promise.allSettled([telegram?.close(), connectApp?.close(), workflow?.close()]);
+        const results = await Promise.allSettled([bot?.close(), connectApp?.close(), users?.close()]);
         const failure = results.find(result => result.status === 'rejected');
         if (failure) throw failure.reason;
       } finally { unlock(); }
@@ -71,84 +67,33 @@ export async function main(args = process.argv.slice(2)) {
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
   try {
-    const store = new Store(database);
-    const settings = new Settings(store, runtime);
-    const config = settings.config;
-    const session = new IS24Session(join(runtime.dataDir, 'is24-session.json'));
-    // The account email comes from the connected IS24 session; without one, setup asks to connect.
-    if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
-    const immomioSession = new ImmomioSession(join(runtime.dataDir, 'immomio-session.json'));
-    if (!immomioSession.connected && config.immomioEmail) settings.set('immomioEmail', '');
-    const adapter = new IS24Adapter(config, { session, immomio: immomioSession });
-    const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
-    connectApp = new ConnectApp({ config, session, port: config.port, apps: [immomioApp] });
-    await connectApp.listen();
-    // Sends the connect button (once per request) and resolves with the connected email, saved as `setting`.
-    const connector = (app, setting, name, path) => async intro => {
-      const { fresh, done } = app.request();
-      if (fresh) {
-        console.log(`Waiting for the owner to connect ${name}.`);
-        await telegram.send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 Connect ${name}`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(error => console.error(error.message));
-      }
-      const email = await done;
-      if (email !== config[setting]) settings.set(setting, email);
-      return email;
-    };
-    const connect = connector(connectApp, 'accountEmail', 'ImmoScout24', 'connect');
-    // Optional: only listings that link to Immomio need it.
-    const connectImmomio = connector(immomioApp, 'immomioEmail', 'Immomio', 'immomio');
-    workflow = new Workflow({
-      store, adapter, config, evaluate: createEvaluator(config),
-      notify: review => telegram.notify(review),
-      report: review => telegram.notifyOutcome(review),
-      withdraw: review => telegram.withdraw(review),
-      alert: text => { console.error(text); return telegram.send(text); },
-      beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
-      onEvent(event) {
-        if (event.type === 'submission') console.log(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
-        if (event.type.endsWith('_error')) console.error(`${event.type}: ${event.detail}`);
-      },
-    });
-    const pairingCode = config.chatId ? null : String(randomInt(100000, 1000000));
-    telegram = new Telegram({ config, store, workflow, pairingCode, onPair: chatId => settings.set('chatId', chatId), onError: message => console.error(message) });
-    telegram.assistant = new Assistant({
-      settings, store, send: (text, extra) => telegram.send(text, extra),
-      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
-      is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
-      immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
-      workflow, redeliver: review => telegram.notify(review, { again: true }),
-      onReady: () => tick(), onError: message => console.error(message),
-    });
-    await telegram.verify();
-    await telegram.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
-    // Liveness: "healthy until" (epoch seconds), renewed by every finished tick. A stalled tick lets it lapse.
-    const heartbeat = () => writeFileSync(join(runtime.dataDir, 'heartbeat'), String(Math.ceil((Date.now() + 2 * config.pollIntervalMs + 600_000) / 1000)));
-    // Resolves with the tick's result, or { error } (logged here).
-    const tick = () => {
-      if (!settings.complete()) return heartbeat(); // Nothing to poll until the chat setup is done.
-      return workflow.tick().then(result => {
-        if (closing) return result;
-        const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
-        console.log(skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`);
-        if (result?.warning) console.error(result.warning);
-        return result;
-      }).catch(error => { console.error(`Agent: ${error.message}`); return { error: error.message }; }).finally(() => { if (!closing) heartbeat(); });
-    };
+    bot = new Bot({ config: runtime, route: update => users.route(update), onError: message => console.error(message) });
+    // Searches and listing reads need no IS24 login, so the shared feeds belong to nobody's account.
+    // Half an interval: everyone in a round meets in one result, and the next round (±10%) searches again.
+    const feeds = new Feeds(new IS24Adapter({ dataDir: runtime.dataDir }), { ttlMs: () => users.interval() / 2 });
     // ±10% jitter keeps polls from forming an exact pattern. A changed interval applies immediately.
     const schedule = () => {
       clearTimeout(timer);
-      if (!closing) timer = setTimeout(() => { tick(); schedule(); }, config.pollIntervalMs * (0.9 + Math.random() * 0.2));
+      if (!closing) timer = setTimeout(() => { round(); schedule(); }, users.interval() * (0.9 + Math.random() * 0.2));
     };
-    settings.onChange(key => { if (key === 'pollIntervalMs') schedule(); });
+    users = new Users({ runtime, bot, feeds, onInterval: schedule });
+    users.load();
+    // Only the page itself is served to everybody; signed requests reach that person's own login (forUser).
+    connectApp = new ConnectApp({ config: runtime, port: runtime.port, apps: [new ConnectApp({ config: runtime, brand: BRANDS.immomio })], forUser: id => users.get(id)?.connects });
+    await connectApp.listen();
+    await bot.verify();
+    await bot.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
+    // Liveness: "healthy until" (epoch seconds), renewed by every finished round. A stalled round lets it lapse.
+    const heartbeat = () => writeFileSync(join(runtime.dataDir, 'heartbeat'), String(Math.ceil((Date.now() + 2 * users.interval() + 600_000) / 1000)));
+    const round = () => users.round().finally(() => { if (!closing) heartbeat(); });
     heartbeat();
-    telegram.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
-    if (pairingCode) console.log(`Open your bot in Telegram and send:  /start ${pairingCode}`);
-    else if (!settings.complete()) telegram.assistant.resume().catch(error => console.error(error.message));
+    if (!users.size) users.pairingCode = String(randomInt(100000, 1000000));
+    bot.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
+    if (users.pairingCode) console.log(`Open your bot in Telegram and send:  /start ${users.pairingCode}`);
     console.log('Agent running. Configure and approve everything in your private Telegram chat.');
+    users.resume();
     schedule();
-    tick();
-    // Resume persisted approvals independently of a temporary search outage.
-    if (settings.complete()) workflow.sendApproved().catch(error => { console.error(`Send queue: ${error.message}`); });
+    round();
   } catch (error) { await close(); throw error; }
 }
 

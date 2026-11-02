@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
+import { Feeds, outsideSearch } from './feed.js';
 import { loginRequired } from './is24-auth.js';
 import { applyOnImmomio, immomioClient, immomioPropertyId, immomioUrl, usesImmomio } from './immomio.js';
 
@@ -104,8 +105,9 @@ const cardId = expose => String(expose.id || expose.exposeId || '');
 
 export class IS24Adapter {
   // config is the live settings object: a changed search URL or persona applies to the next task.
-  constructor(config, { session, immomio = null, fetch = globalThis.fetch } = {}) {
-    Object.assign(this, { config, session, immomio, fetch });
+  // feeds: the search shared with everyone else on this agent.
+  constructor(config, { session, immomio = null, fetch = globalThis.fetch, feeds = new Feeds(this) } = {}) {
+    Object.assign(this, { config, session, immomio, fetch, feeds });
   }
   get filters() {
     if (this.filtersFor !== this.config.searchUrl) { this.cachedFilters = searchFilters(this.config.searchUrl); this.filtersFor = this.config.searchUrl; }
@@ -139,9 +141,9 @@ export class IS24Adapter {
     if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) refuse(`IS24 unavailable (HTTP ${response.status})`);
     try { return JSON.parse(text); } catch { refuse('IS24 sent invalid JSON'); }
   }
-  async searchPage(page, signal) {
+  async searchPage(page, signal, filters) {
     signal?.throwIfAborted();
-    const data = await this.api(buildMobileApiUrl(this.filters, { page }).slice(API.length), { method: 'POST', signal,
+    const data = await this.api(buildMobileApiUrl(filters, { page }).slice(API.length), { method: 'POST', signal,
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ supportedResultListTypes: [], userData: {} }) });
     if (!Array.isArray(data?.resultListItems) || !Number.isSafeInteger(data.numberOfPages) || data.numberOfPages < 0) {
       this.keep('search-list', 'Unexpected search response', data);
@@ -152,15 +154,11 @@ export class IS24Adapter {
   // Results are newest first, so paging stops once a page ends with an already known listing: everything
   // older is known too. A routine poll is one request, which keeps short intervals cheap. A known item
   // elsewhere on the page (e.g. promoted to the top) does not stop paging. known(exposeId) -> boolean.
-  // The first successful page after startup, resume or a search change only establishes a baseline.
-  // After that, every previously unseen listing is new, including arrivals after an empty baseline.
-  async search({ signal, known = () => false } = {}) {
-    const searchKey = JSON.stringify([this.config.searchUrl, this.config.searchGeneration ?? 0]);
-    const baseline = this.lastSearchKey !== searchKey;
+  async scan(filters, { signal, known = () => false, maxPages } = {}) {
     const results = [];
     let complete = false;
-    for (let page = 1; page <= this.config.maxPages; page++) {
-      const data = await this.searchPage(page, signal);
+    for (let page = 1; page <= maxPages; page++) {
+      const data = await this.searchPage(page, signal, filters);
       results.push(data);
       const ids = data.resultListItems.map(item => cardId(card(item)));
       if (page >= data.numberOfPages || (ids.length && known(ids.at(-1)))) { complete = true; break; }
@@ -181,12 +179,34 @@ export class IS24Adapter {
       if (gaps.length && !known(id)) this.keep(`search-item-${id}`, `Search result without ${gaps.join(', ')}`, item);
       if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title || `Listing ${id}`,...facts,address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
     }
-    this.lastSearchKey = searchKey; // Failed/invalid searches never consume the warm-up.
-    return {listings:[...listings.values()],complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+    return { listings: [...listings.values()], complete, pages };
   }
+  // The shared feed, narrowed to this person's search.
+  // The first successful result after startup, resume or a search change only establishes a baseline.
+  // After that, every previously unseen listing is new, including arrivals after an empty baseline.
+  async search({ signal } = {}) {
+    signal?.throwIfAborted();
+    const searchKey = JSON.stringify([this.config.searchUrl, this.config.searchGeneration ?? 0]);
+    const baseline = this.lastSearchKey !== searchKey;
+    const filters = this.filters;
+    // Waits for the shared search without tying it to this person's shutdown.
+    let stop = () => {};
+    const aborted = new Promise((_, reject) => {
+      if (!signal) return;
+      stop = () => signal.removeEventListener('abort', cancel);
+      const cancel = () => reject(signal.reason);
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+    const { listings, complete, pages } = await Promise.race([this.feeds.search(filters), aborted]).finally(() => stop());
+    this.lastSearchKey = searchKey; // Failed/invalid searches never consume the warm-up.
+    return {listings:listings.filter(listing => !outsideSearch(filters, listing, { priced: false })),complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+  }
+  // Why a listing with its details is outside this person's search, or ''.
+  outside(listing) { return outsideSearch(this.filters, listing); }
   expose(id) { return this.api(`/expose/${new URL(listingUrl(id)).pathname.split('/').pop()}`); }
-  async details(listing) {
-    const expose = await this.expose(listing.expose_id);
+  // shared: may reuse what another person's screening just read. Never for a send's last check.
+  async details(listing, { shared = false } = {}) {
+    const expose = await (shared ? this.feeds.expose(listing.expose_id) : this.expose(listing.expose_id));
     const detail = readExpose(expose, this.filters.price.type);
     const { expose_id, image_url = '', published, earlyAccess } = listing;
     const gaps = LISTING_FACTS.filter(key => !detail[key]);

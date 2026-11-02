@@ -1,19 +1,22 @@
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// Telegram Mini App auth: Telegram signs initData with the bot token, so a valid signature for the
-// owner's user ID proves the request comes from the owner's own Telegram app. Fresh for one hour.
-function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
+// Telegram Mini App auth: Telegram signs initData with the bot token, so a valid signature proves which
+// user's own Telegram app sent the request. Fresh for one hour. The user's ID, or '' if it proves nothing.
+function verifiedUser(initData, botToken, now = Date.now()) {
   const params = new URLSearchParams(String(initData || ''));
   const hash = params.get('hash');
-  if (!hash || !ownerId) return false;
+  if (!hash) return '';
   params.delete('hash');
   const check = [...params].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, value]) => `${key}=${value}`).join('\n');
   const secret = createHmac('sha256', 'WebAppData').update(botToken).digest();
   const expected = createHmac('sha256', secret).update(check).digest('hex');
-  if (expected.length !== hash.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(hash))) return false;
-  if (!(now / 1000 - Number(params.get('auth_date')) < 3600)) return false;
-  try { return String(JSON.parse(params.get('user')).id) === String(ownerId); } catch { return false; }
+  if (expected.length !== hash.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(hash))) return '';
+  if (!(now / 1000 - Number(params.get('auth_date')) < 3600)) return '';
+  try { return String(JSON.parse(params.get('user')).id ?? ''); } catch { return ''; }
+}
+function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
+  return Boolean(ownerId) && verifiedUser(initData, botToken, now) === String(ownerId);
 }
 
 const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
@@ -25,7 +28,8 @@ const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
 // 2FA code. They go straight to session.login (IS24's own login service) and are never stored or logged.
 // Steps: form → working → (code → working) → done; a failure returns to the form with the reason.
 // What differs per service: the page's name, logo and promises, the page path, and the email to prefill.
-// Other apps (`apps`) are served by this one's server under their own path.
+// Other apps (`apps`) are served by this one's server under their own path. forUser(id) -> that person's
+// apps, which answer their signed requests; the others on the server only serve the page itself.
 export const BRANDS = {
   is24: { name: 'ImmoScout24', path: 'connect', email: config => config.accountEmail,
     logo: '<div class="logo is24"><svg width="42" height="42" viewBox="0 0 42 42" fill="none" stroke="#1a1a1a" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"><path d="M7 20 21 8l14 12"/><path d="M11 17v16h20V17"/><path d="M18 33v-8h6v8"/></svg></div>',
@@ -35,15 +39,18 @@ export const BRANDS = {
     perks: ['Apply on Immomio when an approved listing links there', 'Use your Immomio profile for those applications', 'Never send applications you did not approve'] },
 };
 export class ConnectApp {
-  constructor({ config, session, port = 8080, fetchImpl = fetch, brand = BRANDS.is24, apps = [] }) {
-    Object.assign(this, { config, session, port, fetch: fetchImpl, brand, apps });
+  constructor({ config, session, port = 8080, fetchImpl = fetch, brand = BRANDS.is24, apps = [], forUser = () => null }) {
+    Object.assign(this, { config, session, port, fetch: fetchImpl, brand, apps, forUser });
     this.route = new RegExp(`\\/${brand.path}(\\/state|\\/login|\\/code|\\/avatar)?$`);
     this.page = page(brand);
     this.pending = null;
     this.connected = null; // { email, at } of the last success, so the open page can show it.
   }
   listen() {
-    const app = req => [this, ...this.apps].find(candidate => candidate.route.test(new URL(req.url, 'http://localhost').pathname)) || this;
+    const app = req => {
+      const own = this.forUser(verifiedUser(req.headers['x-init-data'], this.config.telegramBotToken)) || [];
+      return [...own, this, ...this.apps].find(candidate => candidate.route.test(new URL(req.url, 'http://localhost').pathname)) || this;
+    };
     this.server = createServer((req, res) => app(req).handle(req, res).catch(() => { if (!res.headersSent) send(res, 500); }));
     return new Promise(resolve => this.server.listen(this.port, resolve));
   }

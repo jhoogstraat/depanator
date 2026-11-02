@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createWorld, SEARCH_URL, STRANGER, until, wait } from './support/world.js';
+import { createWorld, FRIEND, OWNER, SEARCH_URL, STRANGER, until, wait } from './support/world.js';
 
 const IMMOMIO_ID = '12345678-1234-1234-1234-123456789abc';
 
@@ -273,4 +273,116 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   writeFileSync(join(world.dataDir, 'raw'), '');
   await rejectedSend(703, 'Ohne Ablage');
   world.never(/Check your IS24 account/);
+});
+
+test('two people on one bot: private by invite, one shared search, separate chats, accounts and listings', async t => {
+  const world = await createWorld(t);
+  world.seed();
+  await world.start();
+  await until('the first search', () => world.searches > 0);
+  assert.ok(existsSync(join(world.dataDir, 'users', String(OWNER), 'agent.db')) && !existsSync(join(world.dataDir, 'agent.db')), 'a single-owner directory moved to its owner');
+
+  // The bot stays private.
+  world.say('/start', STRANGER);
+  world.say('hello', STRANGER);
+  world.say('/settings');
+  await world.sees(/Tap what you want to change/);
+  await world.tap('👥 People');
+  await world.sees(/People on this agent/);
+  assert.deepEqual(world.chat(STRANGER), [], 'strangers get no answer');
+  await world.tap('➕ Invite');
+  const code = (await world.seesIn(OWNER, /opens their own private chat/)).match(/t\.me\/e2e_bot\?start=(\S+)/)[1];
+  world.updates.push({ update_id: world.nextUpdate++, message: { message_id: world.nextMessage++, text: `/start ${code}`, chat: { id: -9, type: 'group' }, from: { id: STRANGER } } });
+  await wait(100);
+  assert.deepEqual(world.chat(-9), [], 'an invite does not work in a group');
+
+  // Someone invited joins and sets up their own search in their own chat.
+  world.say(`/start ${code}`, FRIEND);
+  await world.seesIn(FRIEND, /Hi! I am your apartment agent/);
+  world.say(`/start ${code}`, STRANGER);
+  await world.seesIn(STRANGER, /not valid any more/);
+  await world.seesIn(FRIEND, /Connect your ImmoScout24 account/);
+  const state = from => fetch(`http://127.0.0.1:${world.port}/connect/state`, { headers: { 'x-init-data': world.signed(from) } });
+  assert.equal((await (await state(FRIEND)).json()).step, 'form', 'their login is waiting');
+  assert.equal((await (await state(OWNER)).json()).step, 'idle', 'it is not someone else\'s');
+  assert.equal((await state(STRANGER)).status, 403, 'a valid signature from a stranger gets nothing');
+  await world.connect('🔗 Connect ImmoScout24', 'connect', 'friend@example.com', 'correct', FRIEND);
+  const answers = [
+    [/Open immobilienscout24\.de/, 'say', SEARCH_URL.replace('price=-1500', 'price=-800&numberofrooms=2-')],
+    [/Describe what you are looking for/, 'say', 'No cellar'],
+    [/How should landlords address you/, 'tap', 'Herr'],
+    [/Your first name/, 'say', 'Robin'],
+    [/Your last name/, 'say', 'Roe'],
+    [/Your phone number/, 'tap', 'Skip'],
+    [/Your current street/, 'tap', 'Skip'],
+    [/Your house number/, 'tap', 'Skip'],
+    [/Your postcode/, 'tap', 'Skip'],
+    [/Your current city/, 'tap', 'Skip'],
+    [/What should landlords know/, 'say', 'Nichtraucher.'],
+    [/also include your IS24 Selbstauskunft/, 'tap', 'Message only'],
+  ];
+  for (const [question, how, answer] of answers) { await world.seesIn(FRIEND, question); await (how === 'say' ? world.say(answer, FRIEND) : world.tap(answer, FRIEND)); }
+  await world.seesIn(FRIEND, /All set/);
+  world.say('/settings', FRIEND);
+  await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
+  const labels = world.labels();
+  assert.ok(labels.includes('📝 What ChatGPT gets'), 'these are the settings');
+  assert.ok(!labels.includes('👥 People') && !labels.includes('🔗 ChatGPT') && !labels.some(label => label.startsWith('⏱')), 'the shared interval, login and people stay with the admin');
+  await world.tap('🌙 Night pause', FRIEND);
+  await world.seesIn(FRIEND, /When should I not search/);
+  await world.tap('Search around the clock', FRIEND);
+  await until('their first check', () => world.agentLog.includes(`[${FRIEND}] Poll complete`));
+
+  // One listing for each kind of match. Between them they prove the search itself never narrowed.
+  world.listing(300, 'Passt beiden', 'Hell.', { rent: '700 €' });
+  world.listing(301, 'Zu teuer für Robin', 'Ruhig.');
+  world.listing(302, 'Zu klein für Robin', 'Klein.', { rent: '700 €', rooms: '1' });
+  world.listing(303, 'Ohne Warmmiete', 'Unklar beschrieben.', { rent: null });
+  world.listing(304, 'Danach', 'Hell.', { rent: '700 €' });
+  for (const title of ['Passt beiden', 'Zu teuer für Robin', 'Zu klein für Robin', 'Danach']) await world.seesIn(OWNER, new RegExp(title));
+  await world.seesIn(FRIEND, /Passt beiden/);
+  await world.seesIn(FRIEND, /Ohne Warmmiete/); // A fact the listing does not state is not a miss.
+  await world.seesIn(FRIEND, /Danach/);
+  await wait(300);
+  const robin = world.chat(FRIEND).join('\n');
+  assert.ok(!/Zu teuer für Robin|Zu klein für Robin/.test(robin), 'only their own matches reach them');
+  assert.ok(!/alex@example|Alex/.test(robin), 'nothing of the other person reaches them');
+  assert.equal(world.codexCalls().filter(({ input }) => input.preferences === 'No cellar' && /Zu (teuer|klein)/.test(input.listing.title)).length, 0, 'outside the hard filters, no ChatGPT call');
+  assert.ok(world.searchUrls.every(url => url === world.searchUrls[0] && !/[?&](price|numberofrooms)=/.test(url)), 'one broad query for both');
+  assert.deepEqual([world.reads[300], world.reads[304]], [1, 1], 'each listing is read once for both');
+  world.never(/IS24 failed/); // A listing without a warm rent is that listing's problem, not an outage.
+  assert.ok(world.kept().some(({ label }) => label === 'search-item-303'), 'the shared search saves what went wrong, too');
+
+  const polls = () => world.agentLog.match(/Poll complete/g)?.length ?? 0;
+  const before = [polls(), world.searches];
+  await until('some more rounds', () => polls() >= before[0] + 20);
+  assert.ok(world.searches - before[1] <= (polls() - before[0]) * 0.75, 'two people do not mean two searches a round');
+
+  // Each applies from their own account, with their own details.
+  await world.tap('✍️ Write message', FRIEND);
+  await world.seesIn(FRIEND, /Guten Tag, ich bin Robin\.$/);
+  await world.tap('✅ Send', FRIEND);
+  await world.seesIn(FRIEND, /✅ Message sent/);
+  assert.deepEqual(world.contacts.map(({ authorization, form }) => [authorization, form.firstname, form.emailAddress]), [['Bearer connected-token', 'Robin', 'friend@example.com']]);
+  assert.ok(!world.chat(OWNER).some(text => /Guten Tag, ich bin Robin|Message sent/.test(text)), 'their draft and outcome stay in their chat');
+
+  // Removing someone ends it for them, for good, and keeps their folder.
+  world.say('/users');
+  await world.sees(/🗑|People on this agent/);
+  await until('the remove button', () => world.labels().some(label => label.startsWith('🗑')));
+  await world.tap(world.labels().find(label => label.startsWith('🗑')));
+  await world.tap('🗑 Yes, remove');
+  await world.seesIn(FRIEND, /access to this apartment agent has ended/);
+  const sent = world.chat(FRIEND).length;
+  world.say('/status', FRIEND);
+  await wait(200);
+  assert.equal(world.chat(FRIEND).length, sent, 'ignored like any stranger');
+  await until('the kept folder', () => readdirSync(join(world.dataDir, 'users')).some(name => name.startsWith(`removed-${FRIEND}-`)));
+
+  await world.kill();
+  await world.start();
+  world.say('/status', FRIEND);
+  world.say('/status');
+  await until('a new status', () => world.chat(OWNER).filter(text => /🟢 Searching/.test(text)).length > 0);
+  assert.equal(world.chat(FRIEND).length, sent, 'still removed after a restart');
 });

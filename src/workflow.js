@@ -127,7 +127,7 @@ export class Workflow {
   async pollInternal() {
     let search;
     try {
-      search = await this.adapter.search({ signal: this.controller.signal, known: exposeId => this.store.has(exposeId) });
+      search = await this.adapter.search({ signal: this.controller.signal });
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
@@ -156,14 +156,16 @@ export class Workflow {
     if (review.status !== 'discovered') return; // A crash used up its final attempt.
     let stage = 'IS24';
     try {
-      const snapshot = await this.adapter.details(review.snapshot);
+      const snapshot = await this.adapter.details(review.snapshot, { shared: true });
       this.assertRunning();
       if (String(snapshot.expose_id) !== review.exposeId) throw new Error('Listing identity changed during enrichment');
       stage = 'LLM';
       const bindings = this.bindings();
-      const result = await this.evaluate(snapshot, { signal: this.controller.signal });
+      // The exact rent is known only now. Outside the person's search means no ChatGPT call.
+      const outside = this.adapter.outside?.(snapshot);
+      const result = outside ? { decision: 'dismiss', reasons: [outside], draft: '', confident: false } : await this.evaluate(snapshot, { signal: this.controller.signal });
       this.assertRunning();
-      await this.recovered('LLM');
+      if (!outside) await this.recovered('LLM');
       if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
       this.emit({ type: 'analysis', review: saved });

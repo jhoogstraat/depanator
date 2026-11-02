@@ -38,9 +38,19 @@ The bot's menu (☰ next to the message field):
 
 These also work when typed, as shortcuts: `/search`, `/pause`, `/prompt`, `/model`, `/interval`, `/autosend`, `/connect`, `/immomio`, `/login`. A typed message the bot cannot act on opens `/settings`.
 
+Only the admin (the first person to pair) has ⏱ interval, 🔗 ChatGPT and 👥 People, which invites and removes people.
+
 ### Being early
 
-Each check reads the first page of results, sorted newest first (the 20 newest listings), so it is a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. At night (22:00–07:00 German time by default; change it with 🌙 Night pause in `/settings`) the agent does not search, since hardly anyone publishes listings then. The first check after starting, resuming, or changing the search only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
+Each check reads the first page of results, sorted newest first (the 20 newest listings), and more only if all 20 are new, so it is usually a single request and short intervals stay cheap. Checks are spread by ±10% so they do not form an exact pattern. At night (22:00–07:00 German time by default; change it with 🌙 Night on `/status`) the agent does not search, since hardly anyone publishes listings then. The first check after starting, resuming, or changing the search only notes the listings already online, without reviewing or messaging them; you hear about listings published after that. With **auto-send** on, a newly published listing that clearly meets every requirement is sent in the same check, usually a minute or two after it is found; you get the listing and the sent message afterwards. Anything uncertain still waits for your tap. Listings marked 🔒 Suchen+ can only be contacted with that IS24 subscription.
+
+### Several people
+
+One agent serves several people through one bot. Each person has a private chat with the bot, their own search, requirements, details, IS24 and Immomio accounts, approvals and waiting list. Nobody sees anyone else's listings or messages. The bot stays private: the first person pairs with the code from the log and becomes the admin, and everyone else needs an invite link from 👥 People in `/settings`, which works once within 24 hours. Anyone else is ignored. 👥 People also removes someone; their folder stays on the server.
+
+All of them use the admin's ChatGPT subscription and check interval, and everyone shares its usage limits. Keep in mind that a subscription is meant for one person; check OpenAI's terms before sharing yours. Applications always go out from each person's own IS24 account.
+
+Everyone with the same area shares one IS24 search, however many people that is, and each listing is read once. Rent, rooms and area from your search URL are matched on the agent, then ChatGPT applies your requirements. Every other filter in the URL stays in the search itself, so a person with, say, a balcony filter or a single district gets a search of their own. To keep IS24 traffic low, use the whole city and put the rest in your requirements.
 
 ### Reviews
 

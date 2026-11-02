@@ -62,8 +62,8 @@ export const FIELDS = [
   { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
 ];
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
-// Set by pairing and by connecting IS24 or Immomio, never typed.
-const INTERNAL = ['chatId', 'accountEmail', 'immomioEmail'];
+// Set by pairing or an invite and by connecting IS24 or Immomio, never typed.
+const INTERNAL = ['chatId', 'admin', 'accountEmail', 'immomioEmail'];
 
 // A typed or tapped answer as the value to store. '' skips an optional field.
 function parse(field, raw) {
@@ -102,7 +102,10 @@ export class Settings {
   set(key, raw) {
     const field = FIELD[key];
     if (!field && !INTERNAL.includes(key)) throw new Error(`Unknown setting ${key}`);
-    const value = field ? parse(field, raw) : raw;
+    return this.assign(key, field ? parse(field, raw) : raw);
+  }
+  // A value from the agent itself, not the chat.
+  assign(key, value) {
     // A pause/resume or changed search starts a new observation window, even between polls.
     if (['paused', 'searchUrl'].includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
     this.store.saveSetting(key, value);
@@ -115,9 +118,8 @@ export class Settings {
     const value = key => this.values[key] ?? FIELD[key]?.default;
     Object.assign(this.config, {
       chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', immomioEmail: this.values.immomioEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
-      pollIntervalMs: value('pollIntervalMs'), maxPages: 1, autoSend: value('autoSend'), paused: value('paused'), quietHours: value('quietHours'), style: value('style') ?? '',
+      pollIntervalMs: value('pollIntervalMs'), autoSend: value('autoSend'), paused: value('paused'), quietHours: value('quietHours'), style: value('style') ?? '',
     });
-    // maxPages: one page (the 20 newest) per check; more new listings between two checks do not happen.
     this.config.llm.model = value('model');
     this.config.llm.thinking = value('thinking');
     const persona = this.config.persona;

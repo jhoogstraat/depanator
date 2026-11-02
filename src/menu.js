@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { compactId } from './review.js';
 
 // The Telegram menu (☰ next to the message field): two entry points, everything else is a button in the chat.
-// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /interval, /autosend, /connect, /immomio, /login.
+// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /interval, /autosend, /connect, /immomio, /login. Admin only: /users, /interval.
 export const COMMANDS = [
   ['status', 'Overview: search now, waiting and sent'],
   ['settings', 'Search, requirements, style, model, connections'],
@@ -53,14 +53,27 @@ export function statusView(s) {
 }
 
 // One way to everything you can change; each button opens that setting's own question or view.
-export function settingsView({ interval, autoSend }) {
+// admin: the shared check interval and ChatGPT login, and who is on this agent.
+export function settingsView({ interval, autoSend, admin }) {
   return html('<b>⚙️ Settings</b>\nTap what you want to change.', [
     [{ text: '🔍 Search', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
     [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '📝 What ChatGPT gets', callback_data: 'x:prompt' }],
-    [{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }, { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
+    [...(admin ? [{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }] : []), { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
     [{ text: '🧠 Model', callback_data: 'k:model' }, { text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'k:autoSend' }],
-    [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, { text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }],
+    [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, ...(admin ? [{ text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }] : [])],
+    ...(admin ? [[{ text: '👥 People', callback_data: 'x:users' }]] : []),
   ]);
+}
+
+// users: [{ id, email, ready, admin }]. Each button removes that person after a confirmation.
+export function usersView(users) {
+  const lines = users.map(user => `${user.admin ? '👑' : user.ready ? '✅' : '⏳'} ${esc(user.email || 'IS24 not connected')} · <code>${esc(user.id)}</code>`);
+  return html(`<b>👥 People on this agent</b>\n\n${lines.join('\n')}\n\n✅ set up · ⏳ still in setup · 👑 admin`,
+    [[{ text: '➕ Invite', callback_data: 'x:invite' }], ...users.filter(user => !user.admin).map(user => [{ text: `🗑 ${user.email || user.id}`, callback_data: `x:rm:${user.id}` }])]);
+}
+export function removeUserView(id) {
+  return html(`<b>Remove <code>${esc(id)}</code>?</b>\nThey stop getting listings and the bot ignores them. Their data stays on the server, in a folder named removed-${esc(id)}-….`,
+    [[{ text: '🗑 Yes, remove', callback_data: `x:rm:${id}:yes` }], [{ text: 'Cancel', callback_data: 'x:users:edit' }]]);
 }
 
 // Newest first; each number re-sends that listing with its buttons.

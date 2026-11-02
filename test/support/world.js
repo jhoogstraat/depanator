@@ -9,6 +9,7 @@ import { Store } from '../../src/store.js';
 
 export const OWNER = 42;
 export const STRANGER = 777;
+export const FRIEND = 55;
 export const SEARCH_URL = 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500';
 const TOKEN = 'e2e-bot-token';
 const POLL_MS = 100; // Below the chat's choices, so tests need no fake clock.
@@ -29,10 +30,10 @@ const answer = (res, { status = 200, type = 'application/json', body }) => { res
 
 // The same JSON shapes the IS24 app API answers with.
 // rent: null and exposeArea: null are the gaps IS24 really leaves.
-const searchItem = ({ id, title, rent = '900 €', published }) => ({ id, title, published, address: { line: 'Berlin' }, attributes: [rent, '50 m²', '2 Zi.'].filter(Boolean).map(value => ({ value })) });
-const expose = ({ title, description, rent = '900 €', exposeArea = '50 m²' }) => ({
+const searchItem = ({ id, title, rent = '900 €', rooms = '2', published }) => ({ id, title, published, address: { line: 'Berlin' }, attributes: [rent, '50 m²', `${rooms} Zi.`].filter(Boolean).map(value => ({ value })) });
+const expose = ({ title, description, rent = '900 €', rooms = '2', exposeArea = '50 m²' }) => ({
   sections: [
-    { type: 'TOP_ATTRIBUTES', attributes: [...(rent ? [{ label: 'Warmmiete', text: rent }] : []), { label: 'Zimmer', text: '2' }, ...(exposeArea ? [{ label: 'Wohnfläche', text: exposeArea }] : [])] },
+    { type: 'TOP_ATTRIBUTES', attributes: [...(rent ? [{ label: 'Warmmiete', text: rent }] : []), { label: 'Zimmer', text: rooms }, ...(exposeArea ? [{ label: 'Wohnfläche', text: exposeArea }] : [])] },
     { type: 'TITLE', title }, { type: 'MAP', addressLine1: 'Teststraße 1', addressLine2: '10115 Berlin' }, { type: 'TEXT_AREA', title: 'Objektbeschreibung', text: description },
   ],
   contact: { premiumProfileRequiredForContacting: 'false', contactData: { formFieldConfig: { firstnameField: 'MANDATORY', lastnameField: 'MANDATORY', emailAddressField: 'MANDATORY' } } },
@@ -43,7 +44,7 @@ const expose = ({ title, description, rent = '900 €', exposeArea = '50 m²' })
 export async function createWorld(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-e2e-'));
   const world = {
-    dataDir, listings: [], searches: 0, contacts: [], immomioApplications: [], unexpected: [], telegram: [], holdContact: false, agentLog: '',
+    dataDir, listings: [], searches: 0, searchUrls: [], reads: {}, contacts: [], immomioApplications: [], unexpected: [], telegram: [], holdContact: false, agentLog: '',
     updates: [], nextUpdate: 1, nextMessage: 1,
     // Set to { status, type, body } to make IS24 answer exactly that. unusableResults join every search result page.
     respond: { search: null, expose: {}, contact: null }, unusableResults: [],
@@ -65,9 +66,14 @@ export async function createWorld(t) {
     messages() { return this.telegram.filter(call => ['sendMessage', 'editMessageText'].includes(call.method)); },
     sees(pattern) { return until(`a message like ${pattern}`, () => this.messages().find(call => pattern.test(call.body.text))); },
     never(pattern) { assert.ok(!this.messages().some(call => pattern.test(call.body.text)), `unexpected message like ${pattern}`); },
+    // One person's chat.
+    chat(id) { return this.messages().filter(call => String(call.body.chat_id) === String(id)).map(call => call.body.text); },
+    seesIn(id, pattern) { return until(`a message like ${pattern} for ${id}`, () => this.chat(id).find(text => pattern.test(text))); },
     labels() { return this.messages().findLast(call => call.body.reply_markup?.inline_keyboard?.length)?.body.reply_markup.inline_keyboard.flat().map(button => button.text) ?? []; },
-    button(label) {
-      for (const call of this.messages().toReversed()) {
+    // Their own chat first; a stranger tapping an owner's button finds it in the owner's.
+    button(label, from) {
+      const own = call => String(call.body.chat_id) === String(from);
+      for (const call of [...this.messages().filter(own).toReversed(), ...this.messages().toReversed()]) {
         const button = call.body.reply_markup?.inline_keyboard?.flat().find(entry => entry.text === label);
         if (button) return { ...button, messageId: call.body.message_id ?? call.result?.message_id };
       }
@@ -80,15 +86,18 @@ export async function createWorld(t) {
       this.updates.push({ update_id: this.nextUpdate++, callback_query: { id, data: callback_data, from: { id: from }, message: { message_id: messageId, chat: { id: from, type: 'private' } } } });
       return (await until(`the answer to tap ${callback_data}`, () => this.telegram.find(call => call.method === 'answerCallbackQuery' && call.body.callback_query_id === id))).body.text;
     },
-    tap(label, from) { return this.press(this.button(label), from); },
+    tap(label, from) { return this.press(this.button(label, from), from); },
     // What the Telegram app does when the owner opens a Connect button.
-    async connect(label, path, email, password) {
-      const { web_app } = await until(`the ${label} button`, () => this.messages().flatMap(call => call.body.reply_markup?.inline_keyboard?.flat() ?? []).find(button => button.text === label));
-      assert.equal(new URL(web_app.url).pathname, `/${path}`);
-      const fields = { auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id: OWNER }) };
+    signed(from) {
+      const fields = { auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id: from }) };
       const check = Object.keys(fields).sort().map(key => `${key}=${fields[key]}`).join('\n');
       const hash = createHmac('sha256', createHmac('sha256', 'WebAppData').update(TOKEN).digest()).update(check).digest('hex');
-      const response = await fetch(`http://127.0.0.1:${this.port}/${path}/login`, { method: 'POST', headers: { 'x-init-data': new URLSearchParams({ ...fields, hash }).toString() }, body: JSON.stringify({ email, password }) });
+      return new URLSearchParams({ ...fields, hash }).toString();
+    },
+    async connect(label, path, email, password, from = OWNER) {
+      const { web_app } = await until(`the ${label} button`, () => this.messages().filter(call => String(call.body.chat_id) === String(from)).flatMap(call => call.body.reply_markup?.inline_keyboard?.flat() ?? []).find(button => button.text === label));
+      assert.equal(new URL(web_app.url).pathname, `/${path}`);
+      const response = await fetch(`http://127.0.0.1:${this.port}/${path}/login`, { method: 'POST', headers: { 'x-init-data': this.signed(from) }, body: JSON.stringify({ email, password }) });
       assert.equal(response.status, 204);
     },
     codexCalls() {
@@ -119,6 +128,7 @@ export async function createWorld(t) {
       await new Promise(resolve => free.close(resolve));
       this.agent = spawn(process.execPath, ['--preload', join(ROOT, 'test/support/intercept.js'), join(ROOT, 'src/cli.js'), 'start'], { cwd: dataDir,
         env: { PATH: process.env.PATH, HOME: dataDir, TELEGRAM_BOT_TOKEN: TOKEN, DEPANATOR_DATA_DIR: dataDir, DEPANATOR_PUBLIC_URL: 'https://agent.example', DEPANATOR_PORT: String(this.port), DEPANATOR_CODEX_BIN: FAKE_CODEX, E2E_WORLD_URL: `http://127.0.0.1:${server.address().port}` } });
+      this.agentLog = ''; // A restart waits for this run's own output.
       const collect = chunk => { this.agentLog += chunk; };
       this.agent.stdout.on('data', collect);
       this.agent.stderr.on('data', collect);
@@ -136,17 +146,18 @@ export async function createWorld(t) {
         return world.updates.length ? send() : setTimeout(send, 20);
       }
       const call = { method, body, result: true };
-      if (method === 'getMe') call.result = { id: 1, first_name: 'E2E' };
+      if (method === 'getMe') call.result = { id: 1, first_name: 'E2E', username: 'e2e_bot' };
       if (method === 'getWebhookInfo') call.result = { url: '' };
       if (method === 'sendMessage') call.result = { message_id: world.nextMessage++ };
       world.telegram.push(call);
       json(res, { ok: true, result: call.result });
     },
-    'api.mobile.immobilienscout24.de'(req, res, body, path) {
+    'api.mobile.immobilienscout24.de'(req, res, body, path, url) {
       const contact = /^\/expose\/(\d+)\/contact$/.exec(path);
       const shown = /^\/expose\/(\d+)$/.exec(path);
       if (path === '/search/list') {
         world.searches++;
+        world.searchUrls.push(url.search);
         if (world.respond.search) return answer(res, world.respond.search);
         return json(res, { resultListItems: [...world.listings.toReversed().map(searchItem), ...world.unusableResults], numberOfPages: 1 });
       }
@@ -155,15 +166,19 @@ export async function createWorld(t) {
         if (world.respond.contact) return answer(res, world.respond.contact);
         return world.holdContact ? undefined : json(res, {}); // Held: the answer never arrives, as in a crash.
       }
+      if (shown) world.reads[shown[1]] = (world.reads[shown[1]] ?? 0) + 1;
       if (shown && world.respond.expose[shown[1]]) return answer(res, world.respond.expose[shown[1]]);
       const listing = shown && world.listings.find(item => String(item.id) === shown[1]);
       return listing ? json(res, expose(listing)) : json(res, {}, 404);
     },
     'login.immobilienscout24.de'(req, res, body, path, url) {
-      if (path === '/api/v1/authn') return body.password === 'correct' ? json(res, { status: 'SUCCESS', sessionToken: 'session' }) : json(res, {}, 401);
+      if (path === '/api/v1/authn') {
+        world.lastLogin = body.username;
+        return body.password === 'correct' ? json(res, { status: 'SUCCESS', sessionToken: 'session' }) : json(res, {}, 401);
+      }
       if (path.endsWith('/v1/authorize')) { res.writeHead(302, { Location: `immobilienscout24.de:/loginCallback?code=code&state=${url.searchParams.get('state')}` }); return res.end(); }
       if (path.endsWith('/v1/token')) return json(res, { access_token: 'connected-token', refresh_token: 'refresh', id_token: jwt({ ssoId: 'sso-1' }), expires_in: 3600 });
-      if (path.endsWith('/v1/userinfo')) return json(res, { email: 'alex@example.com' });
+      if (path.endsWith('/v1/userinfo')) return json(res, { email: world.lastLogin });
       json(res, {}, 404);
     },
     'sso.immomio.com'(req, res, body, path, url) {
