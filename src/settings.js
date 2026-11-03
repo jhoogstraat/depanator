@@ -1,4 +1,4 @@
-import { searchFilters } from './is24.js';
+import { parseRange } from './url-translator.js';
 
 const MINUTE = 60_000;
 function line(max) {
@@ -22,6 +22,14 @@ function pattern(regex, hint) {
     return result;
   };
 }
+// A range as IS24 writes it ("800-1500", "-1500", "2-"). single(text): the range a lone number means.
+function range(single, hint) {
+  return value => {
+    const text = String(value).trim().replace(',', '.');
+    const stated = /^[\d.]+$/.test(text) ? single(text) : text;
+    try { parseRange(stated, ''); return stated; } catch { throw new Error(hint); }
+  };
+}
 // Night pause "from-to" in German time (from > to wraps past midnight); '' = around the clock.
 // ponytail: German time zone fixed; IS24 is a German site.
 export function isQuiet(quietHours, now = Date.now()) {
@@ -35,7 +43,9 @@ export function isQuiet(quietHours, now = Date.now()) {
 // Every setting the chat can change, in guided-setup order. `setup: false` settings have a default and
 // are changed from /settings. Persona values fill the IS24 contact request; the LLM may use only them.
 export const FIELDS = [
-  { key: 'searchUrl', label: 'Search', ask: 'Open immobilienscout24.de, search for apartments to rent with all your filters, and paste the address of the results page here.', parse: value => { const url = String(value).trim(); searchFilters(url); return url; } },
+  { key: 'rent', label: 'Rent', ask: 'Highest warm rent in €? Send a number, or a range such as 800-1500.', parse: range(text => `-${text}`, 'Please send a rent like 1500 or 800-1500.'), optional: true },
+  { key: 'rooms', label: 'Rooms', ask: 'How many rooms at least? Send a number, or a range such as 2-3.', parse: range(text => `${text}-`, 'Please send rooms like 2 or 2-3.'), optional: true },
+  { key: 'area', label: 'Living space', ask: 'How much living space at least, in m²? Send a number, or a range such as 50-80.', parse: range(text => `${text}-`, 'Please send a living space like 50 or 50-80.'), optional: true },
   { key: 'preferences', label: 'Requirements', ask: 'Describe what you are looking for and what is a must. Listings that clearly do not fit are dismissed without asking you. Example: "Quiet, balcony, max. 2nd floor without lift, no swap flats."', parse: text(2000) },
   { key: 'persona.anrede', label: 'Salutation', ask: 'How should landlords address you?', choices: [['FEMALE', 'Frau'], ['MALE', 'Herr'], ['NO_SALUTATION', 'No salutation']] },
   { key: 'persona.vorname', label: 'First name', ask: 'Your first name, as it should appear in applications?', parse: line(60) },
@@ -64,6 +74,8 @@ export const FIELDS = [
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
 // Set by pairing or an invite and by connecting IS24 or Immomio, never typed.
 const INTERNAL = ['chatId', 'admin', 'accountEmail', 'immomioEmail'];
+// A change means listings outside the old search can look new, so it starts a new observation window.
+const NEW_WINDOW = ['paused', 'searches', 'rent', 'rooms', 'area'];
 
 // A typed or tapped answer as the value to store. '' skips an optional field.
 function parse(field, raw) {
@@ -86,9 +98,11 @@ export class Settings {
   field(key) { return FIELD[key]; }
   // [value, label] pairs for button answers; empty for typed answers.
   choices(key) { return FIELD[key].choices || []; }
-  // The next unanswered setup step: the pseudo-step `is24` (connect the account), then a field.
+  // The next unanswered setup step: the pseudo-steps `is24` (connect the account) and `searches` (pick from
+  // the admin's list; everyone comes back here if their last one is removed), then a field.
   next() {
     if (!this.values.accountEmail) return { key: 'is24' };
+    if (!this.values.searches?.length) return { key: 'searches' };
     return FIELDS.find(field => field.setup !== false && this.values[field.key] === undefined) || null;
   }
   complete() { return Boolean(this.values.chatId) && !this.next(); }
@@ -106,8 +120,7 @@ export class Settings {
   }
   // A value from the agent itself, not the chat.
   assign(key, value) {
-    // A pause/resume or changed search starts a new observation window, even between polls.
-    if (['paused', 'searchUrl'].includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
+    if (NEW_WINDOW.includes(key) && this.values[key] !== value) this.config.searchGeneration = (this.config.searchGeneration ?? 0) + 1;
     this.store.saveSetting(key, value);
     this.values[key] = value;
     this.apply();
@@ -116,8 +129,10 @@ export class Settings {
   }
   apply() {
     const value = key => this.values[key] ?? FIELD[key]?.default;
+    const limit = key => value(key) ? parseRange(value(key), key) : { min: null, max: null };
     Object.assign(this.config, {
-      chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', immomioEmail: this.values.immomioEmail ?? '', searchUrl: value('searchUrl') ?? '', preferences: value('preferences') ?? '',
+      chatId: this.values.chatId ?? '', accountEmail: this.values.accountEmail ?? '', immomioEmail: this.values.immomioEmail ?? '', preferences: value('preferences') ?? '',
+      searches: this.values.searches ?? [], limits: { price: limit('rent'), rooms: limit('rooms'), livingSpace: limit('area') },
       pollIntervalMs: value('pollIntervalMs'), autoSend: value('autoSend'), paused: value('paused'), quietHours: value('quietHours'), style: value('style') ?? '',
     });
     this.config.llm.model = value('model');

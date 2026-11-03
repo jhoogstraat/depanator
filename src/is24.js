@@ -46,17 +46,15 @@ function parseNumber(text) {
 
 // The listing facts the review sees, from the app's expose JSON (a list of typed sections).
 // A fact IS24 leaves out stays empty: the listing is still worth showing.
-function readExpose(expose, priceType) {
+function readExpose(expose) {
   const sections = Array.isArray(expose?.sections) ? expose.sections : [];
   const of = type => sections.filter(section => section?.type === type);
   const top = of('TOP_ATTRIBUTES').flatMap(section => section.attributes || []);
   const listed = of('ATTRIBUTE_LIST').flatMap(section => section.attributes || []);
   const label = attribute => String(attribute?.label || '').replace(/:\s*$/, '');
   const find = (attributes, test) => attributes.find(attribute => test(label(attribute)))?.text;
-  // Never substitute cold rent for a warm/total-rent search, or vice versa.
-  const price = priceType === 'calculatedtotalrent'
-    ? find(top, name => name === 'Warmmiete') ?? find(listed, name => name === 'Gesamtmiete')
-    : find(top, name => name.startsWith('Kaltmiete')) ?? find(listed, name => name.startsWith('Kaltmiete'));
+  // Rent limits are warm rent; cold rent is never substituted.
+  const price = find(top, name => name === 'Warmmiete') ?? find(listed, name => name === 'Gesamtmiete');
   const map = of('MAP')[0] || {};
   return {
     title: String(of('TITLE')[0]?.title || '').trim(),
@@ -105,13 +103,9 @@ const cardId = expose => String(expose.id || expose.exposeId || '');
 
 export class IS24Adapter {
   // config is the live settings object: a changed search URL or persona applies to the next task.
-  // feeds: the search shared with everyone else on this agent.
-  constructor(config, { session, immomio = null, fetch = globalThis.fetch, feeds = new Feeds(this) } = {}) {
-    Object.assign(this, { config, session, immomio, fetch, feeds });
-  }
-  get filters() {
-    if (this.filtersFor !== this.config.searchUrl) { this.cachedFilters = searchFilters(this.config.searchUrl); this.filtersFor = this.config.searchUrl; }
-    return this.cachedFilters;
+  // feeds: the searches shared with everyone else on this agent. catalog() -> the admin's [{ name, url }].
+  constructor(config, { session, immomio = null, fetch = globalThis.fetch, feeds = new Feeds(this), catalog = () => [] } = {}) {
+    Object.assign(this, { config, session, immomio, fetch, feeds, catalog });
   }
   // Responses that went wrong, stored once each in <data>/raw; see docs/raw-responses.md.
   // Never throws: failing to store one must not change what happens to the request.
@@ -181,14 +175,14 @@ export class IS24Adapter {
     }
     return { listings: [...listings.values()], complete, pages };
   }
-  // The shared feed, narrowed to this person's search.
-  // The first successful result after startup, resume or a search change only establishes a baseline.
+  // The shared searches this person picked, narrowed to their limits.
+  // The first successful result after startup, resume or a change of searches or limits only establishes a baseline.
   // After that, every previously unseen listing is new, including arrivals after an empty baseline.
   async search({ signal } = {}) {
     signal?.throwIfAborted();
-    const searchKey = JSON.stringify([this.config.searchUrl, this.config.searchGeneration ?? 0]);
-    const baseline = this.lastSearchKey !== searchKey;
-    const filters = this.filters;
+    const generation = this.config.searchGeneration ?? 0;
+    const baseline = this.lastGeneration !== generation;
+    const picked = this.catalog().filter(search => this.config.searches.includes(search.name));
     // Waits for the shared search without tying it to this person's shutdown.
     let stop = () => {};
     const aborted = new Promise((_, reject) => {
@@ -197,17 +191,27 @@ export class IS24Adapter {
       const cancel = () => reject(signal.reason);
       signal.addEventListener('abort', cancel, { once: true });
     });
-    const { listings, complete, pages } = await Promise.race([this.feeds.search(filters), aborted]).finally(() => stop());
-    this.lastSearchKey = searchKey; // Failed/invalid searches never consume the warm-up.
-    return {listings:listings.filter(listing => !outsideSearch(filters, listing, { priced: false })),complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+    const found = new Map(); // A listing in two searches counts once.
+    let complete = true, pages = 0;
+    try {
+      // One at a time: a block from IS24 ends the check here instead of drawing more requests.
+      for (const { url } of picked) {
+        const result = await Promise.race([this.feeds.search(searchFilters(url)), aborted]);
+        for (const listing of result.listings) found.set(listing.expose_id, listing);
+        complete &&= result.complete;
+        pages += result.pages;
+      }
+    } finally { stop(); }
+    this.lastGeneration = generation; // Failed/invalid searches never consume the warm-up.
+    return {listings:[...found.values()].filter(listing => !outsideSearch(this.config.limits, listing, { priced: false })),complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
   }
-  // Why a listing with its details is outside this person's search, or ''.
-  outside(listing) { return outsideSearch(this.filters, listing); }
+  // Why a listing with its details is outside this person's limits, or ''.
+  outside(listing) { return outsideSearch(this.config.limits, listing); }
   expose(id) { return this.api(`/expose/${new URL(listingUrl(id)).pathname.split('/').pop()}`); }
   // shared: may reuse what another person's screening just read. Never for a send's last check.
   async details(listing, { shared = false } = {}) {
     const expose = await (shared ? this.feeds.expose(listing.expose_id) : this.expose(listing.expose_id));
-    const detail = readExpose(expose, this.filters.price.type);
+    const detail = readExpose(expose);
     const { expose_id, image_url = '', published, earlyAccess } = listing;
     const gaps = LISTING_FACTS.filter(key => !detail[key]);
     if (gaps.length) this.keep(`expose-${expose_id}`, `Listing without ${gaps.join(', ')}`, expose);

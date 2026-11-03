@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Store } from './store.js';
 import { Settings } from './settings.js';
 import { Workflow } from './workflow.js';
-import { IS24Adapter } from './is24.js';
+import { IS24Adapter, searchFilters } from './is24.js';
 import { createEvaluator } from './llm.js';
 import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './codex.js';
 import { Telegram } from './telegram.js';
@@ -56,8 +56,36 @@ function migrate(dataDir, firstId) {
   }
 }
 
+const sameSearch = (a, b) => JSON.stringify(searchFilters(a)) === JSON.stringify(searchFilters(b));
+// People used to paste their own search URL. Its rent, rooms and area become their limits and the rest joins the
+// admin's list, so people who differed only in those three share one search as before.
+function adoptSearchUrls(dataDir) {
+  const stores = userIds(dataDir).map(id => new Store(join(dataDir, 'users', id, 'agent.db')));
+  const limit = ({ min, max }) => min === null && max === null ? '' : `${min ?? ''}-${max ?? ''}`;
+  try {
+    const admin = stores.find(store => store.settings().admin);
+    for (const store of admin ? stores : []) {
+      const { searchUrl } = store.settings();
+      if (!searchUrl) continue;
+      let filters;
+      try { filters = searchFilters(searchUrl); } catch { store.deleteSetting('searchUrl'); continue; } // They pick again in the chat.
+      const url = new URL(/^https?:\/\//i.test(searchUrl) ? searchUrl : `https://${searchUrl}`);
+      for (const key of [...url.searchParams.keys()]) if (/^(price|pricetype|numberofrooms|livingspace)$/i.test(key)) url.searchParams.delete(key);
+      url.pathname = url.pathname.replace(/wohnung-bis-\d+-euro-warm$/, 'wohnung-mieten');
+      const catalog = admin.settings().catalog ?? [];
+      const search = catalog.find(entry => sameSearch(entry.url, url.href)) ?? { name: `Search ${catalog.length + 1}`, url: url.href };
+      if (!catalog.includes(search)) admin.saveSetting('catalog', [...catalog, search]);
+      store.saveSetting('rent', limit(filters.price));
+      store.saveSetting('rooms', limit(filters.rooms));
+      store.saveSetting('area', limit(filters.livingSpace));
+      store.saveSetting('searches', [search.name]);
+      store.deleteSetting('searchUrl');
+    }
+  } finally { for (const store of stores) store.close(); }
+}
+
 // Everyone on this agent: one private chat with the bot and one folder per person (users/<chat id>/).
-// Shared: the bot, the IS24 feeds and the ChatGPT login. Nobody's store, sessions or chat reach another's.
+// Shared: the bot, the admin's list of IS24 searches and their feeds, and the ChatGPT login. Nobody's store, sessions or chat reach another's.
 export class Users {
   // onInterval: the admin changed the shared check interval.
   constructor({ runtime, bot, feeds, onInterval = () => {}, log = console }) {
@@ -71,6 +99,7 @@ export class Users {
   get admin() { return [...this.users.values()].find(user => user.settings.values.admin); }
   load() {
     migrate(this.runtime.dataDir);
+    adoptSearchUrls(this.runtime.dataDir);
     for (const id of userIds(this.runtime.dataDir)) this.open(id);
   }
   // One person's agent. initial: settings of someone new.
@@ -89,7 +118,7 @@ export class Users {
     if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
     const immomioSession = new ImmomioSession(join(folder, SESSIONS[1]));
     if (!immomioSession.connected && config.immomioEmail) settings.set('immomioEmail', '');
-    const adapter = new IS24Adapter(config, { session, immomio: immomioSession, feeds });
+    const adapter = new IS24Adapter(config, { session, immomio: immomioSession, feeds, catalog: () => this.catalog });
     const is24App = new ConnectApp({ config, session });
     const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
     let telegram;
@@ -137,7 +166,8 @@ export class Users {
       is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
       immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
-      admin: isAdmin ? { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target) } : null,
+      catalog: () => this.catalog,
+      admin: isAdmin ? { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url), removeSearch: name => this.removeSearch(name) } : null,
       onReady: () => tick(), onError: error,
     });
     if (isAdmin) settings.onChange(key => { if (key === 'pollIntervalMs') this.shareInterval(); });
@@ -173,6 +203,29 @@ export class Users {
       else user.telegram.assistant.resume().catch(error => this.log.error(`[${user.id}] ${error.message}`));
     }
   }
+  // The searches IS24 is asked for: the admin's list, kept in their store. [{ name, url }]
+  get catalog() { return this.admin?.store.settings().catalog ?? []; }
+  addSearch(name, url) {
+    const { href } = new URL(url);
+    searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
+    const { catalog } = this;
+    if (catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
+    const twin = catalog.find(search => sameSearch(search.url, href));
+    if (twin) throw new Error(`${twin.name} is already this search.`);
+    this.admin.store.saveSetting('catalog', [...catalog, { name, url: href }]);
+  }
+  // Whoever had picked it hears so; someone with nothing left gets the list again.
+  async removeSearch(name) {
+    const { catalog } = this;
+    if (catalog.length < 2) throw new Error('This is the last search. Add another one first.');
+    this.admin.store.saveSetting('catalog', catalog.filter(search => search.name !== name));
+    for (const user of this.users.values()) {
+      const { searches } = user.settings.config;
+      if (!searches.includes(name)) continue;
+      user.settings.assign('searches', searches.filter(picked => picked !== name));
+      await user.telegram.send(`🔎 The search ${name} is no longer available.`).then(() => user.telegram.assistant.continue()).catch(error => this.log.error(`[${user.id}] ${error.message}`));
+    }
+  }
   invite() {
     const code = randomBytes(16).toString('base64url');
     const { store } = this.admin;
@@ -191,7 +244,7 @@ export class Users {
     return true;
   }
   list() {
-    return [...this.users.values()].map(({ id, settings }) => ({ id, email: settings.config.accountEmail, ready: settings.complete(), admin: settings.values.admin === true }));
+    return [...this.users.values()].map(({ id, settings }) => ({ id, email: settings.config.accountEmail, ready: settings.complete(), admin: settings.values.admin === true, searches: settings.config.searches }));
   }
   async remove(id) {
     const user = this.get(id);
@@ -222,6 +275,7 @@ export class Users {
       if (!this.pairingCode || code !== this.pairingCode) return reply('To connect, send /start followed by the code shown in the agent log, for example: /start 123456');
       this.pairingCode = null;
       migrate(this.runtime.dataDir, id); // Settings stored before anyone paired are theirs.
+      adoptSearchUrls(this.runtime.dataDir);
       const user = this.open(id, { admin: true });
       this.onInterval(); // The schedule ran on the default until now.
       return user.telegram.welcome();

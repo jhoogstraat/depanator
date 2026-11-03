@@ -195,7 +195,7 @@ export class Workflow {
     const since = Date.now() - 86_400_000;
     for (const review of this.store.list('awaiting_approval').filter(review => review.createdAt >= since)) {
       this.assertRunning();
-      try { await this.adapter.expose(review.exposeId); continue; }
+      try { await this.adapter.feeds.expose(review.exposeId); continue; }
       catch (error) { if (error.code !== 'LISTING_GONE') { this.emit({ type: 'prune_error', detail: error.message }); return; } } // Retry tomorrow.
       const dismissed = this.tryDispatch(review.id, { type: 'dismiss', version: review.version, detail: 'Listing no longer available' });
       if (dismissed) await this.withdraw(dismissed).catch(error => this.emit({ type: 'notification_error', id: review.id, detail: error.message }));

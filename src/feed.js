@@ -1,19 +1,15 @@
-// One IS24 search per distinct query, however many people use it. Rent, rooms and area are matched here,
-// so they leave the query. Everything else stays in it: address text cannot prove a district and the
-// result list has no equipment data, and a filter must never be silently dropped. People who differ only
-// in rent, rooms or area share a feed; a different area or equipment filter costs one more request per check.
-const PAGES = 3; // A poll stops at the first known listing, so this is only reached after a restart or a busy spell.
+// One IS24 search per distinct query on the admin's list, however many people picked it. Searches run only when
+// someone's check asks for them, so one that nobody active picked costs nothing. Each person's rent, rooms and
+// area are matched here, on the shared results, and never reach IS24.
+const PAGES = 3; // A poll stops at the first known listing, so this is only reached in a busy spell.
 const EXPOSE_MS = 600_000;
 
-export function feedFilters(filters) {
-  const open = { min: null, max: null };
-  return { ...filters, price: { ...open, type: 'calculatedtotalrent' }, rooms: open, livingSpace: open };
-}
-
 // Why a listing is outside the person's search, or ''. A fact the listing does not state is not a miss.
-// priced: false for result-list items, whose unlabeled price may be warm or cold; details have the right one.
+// Limits are warm rent. priced: false for result-list items, whose unlabeled price may be warm or cold, so it
+// only proves a rent too high (warm is never below cold). That still saves reading the listing.
 export function outsideSearch(filters, listing, { priced = true } = {}) {
-  const checks = [['Rent', filters.price, priced ? listing.price : 0, ' €'], ['Rooms', filters.rooms, listing.rooms, ''], ['Area', filters.livingSpace, listing.area, ' m²']];
+  const rent = priced ? filters.price : { min: null, max: filters.price.max };
+  const checks = [['Rent', rent, listing.price, ' €'], ['Rooms', filters.rooms, listing.rooms, ''], ['Area', filters.livingSpace, listing.area, ' m²']];
   for (const [label, { min, max }, value, unit] of checks) {
     if (!value) continue;
     if (min !== null && value < min) return `${label} ${value}${unit} is below your search minimum of ${min}${unit}`;
@@ -30,17 +26,19 @@ export class Feeds {
     this.exposes = new Map();
   }
   search(filters) {
-    const query = feedFilters(filters);
-    const key = JSON.stringify(query);
+    const key = JSON.stringify(filters);
     const feed = this.feeds.get(key) ?? { seen: new Set(), at: -Infinity, result: null };
     this.feeds.set(key, feed);
     if (this.now() - feed.at < this.ttlMs()) return feed.result;
     feed.at = this.now();
-    // ponytail: `seen` is per process, so the first poll after a restart reads all PAGES. Someone back from a
-    // longer night pause than the others sees only what the last polls returned.
-    feed.result = this.adapter.scan(query, { maxPages: PAGES, known: id => feed.seen.has(id) }).then(result => {
+    // A feed's first poll is everyone's baseline (a restart, or a search just picked), and the next poll stops at
+    // what this one saw, so older pages would never matter: one request is enough.
+    // ponytail: `seen` is per process. Someone back from a longer night pause than the others sees only what the
+    // last polls returned.
+    const first = !feed.seen.size;
+    feed.result = this.adapter.scan(filters, { maxPages: first ? 1 : PAGES, known: id => feed.seen.has(id) }).then(result => {
       for (const listing of result.listings) feed.seen.add(listing.expose_id);
-      return result;
+      return { ...result, complete: first || result.complete };
     });
     return feed.result;
   }

@@ -66,7 +66,7 @@ const EQUIPMENT_CHECKBOXES = new Set([
   'balcony', 'garden', 'parking', 'cellar', 'elevator', 'barrier-free',
 ]);
 
-function parseRange(raw, label) {
+export function parseRange(raw, label) {
   const value = String(raw ?? '').trim();
   if (/^\d+(?:\.\d+)?$/.test(value)) return { min: Number(value), max: Number(value) };
   const m = value.match(/^(\d+(?:\.\d+)?)?-(\d+(?:\.\d+)?)?$/);

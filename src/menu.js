@@ -115,13 +115,32 @@ export function thinkingView(model, modelIndex, current, thinking) {
 }
 
 export const requirementLines = preferences => String(preferences || '').split('\n').map(line => line.trim()).filter(Boolean);
-export function requirementsView(preferences) {
+const span = ({ min, max }, unit) => min === null && max === null ? 'any' : min === null ? `up to ${max}${unit}` : max === null ? `from ${min}${unit}` : `${min}–${max}${unit}`;
+// searches: the names you picked. limits: { price, rooms, livingSpace }, see Settings.
+export function requirementsView(preferences, { searches, limits }) {
   const lines = requirementLines(preferences);
-  return html(`<b>🔍 Search requirements</b>\nChatGPT skips listings that clearly break one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
+  const hard = [`🔎 Searches: ${esc(searches.join(', '))}`, `💶 Warm rent: ${span(limits.price, ' €')}`, `🚪 Rooms: ${span(limits.rooms, '')}`, `📐 Living space: ${span(limits.livingSpace, ' m²')}`];
+  return html(`<b>🔍 Search</b>\n${hard.join('\n')}\n\n<b>Requirements</b>\nChatGPT skips listings that clearly break one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
+    [{ text: '🔎 Searches', callback_data: 'x:searches' }, { text: '💶 Rent', callback_data: 'k:rent' }, { text: '🚪 Rooms', callback_data: 'k:rooms' }, { text: '📐 Space', callback_data: 'k:area' }],
     [{ text: '➕ Add', callback_data: 'x:ra' }, { text: '✏️ Rewrite all', callback_data: 'k:preferences' }],
-    [{ text: '🔗 IS24 search link', callback_data: 'k:searchUrl' }],
     ...rows(lines.length > 1 ? lines.map((line, index) => ({ text: `🗑 ${index + 1}`, callback_data: `x:rd:${index}:${fingerprint(line)}` })) : [], 5),
   ]);
+}
+
+// catalog: the admin's [{ name, url }]. selected: the names this person picked. Only the admin adds and removes.
+export function searchesView({ catalog, selected, admin }) {
+  const links = admin ? catalog.map(({ name, url }) => `<a href="${esc(new URL(url).href)}">${esc(name)}</a>`).join('\n') : '';
+  const empty = admin ? 'None yet. Tap ➕ Add for the first one.' : 'None yet. The admin adds them.';
+  return html(`<b>🔎 Which searches do you want listings from?</b>\nTap to pick. Your rent, rooms, living space and requirements are applied to each.\n\n${links || (catalog.length ? '' : empty)}`.trim(), [
+    ...catalog.map(({ name }, index) => [{ text: `${selected.includes(name) ? '✅' : '⬜'} ${name}`, callback_data: `x:st:${index}:${fingerprint(name)}` },
+      ...(admin ? [{ text: '🗑', callback_data: `x:sr:${index}:${fingerprint(name)}` }] : [])]),
+    ...(admin ? [[{ text: '➕ Add', callback_data: 'x:sa' }]] : []),
+    [{ text: 'Done', callback_data: 'x:sd' }],
+  ]);
+}
+export function removeSearchView({ name }, index, using) {
+  return html(`<b>Remove ${esc(name)}?</b>\n${using === 1 ? '1 person uses it and will be told.' : using ? `${using} people use it and will be told.` : 'Nobody uses it.'}`,
+    [[{ text: '🗑 Yes, remove', callback_data: `x:sr:${index}:${fingerprint(name)}:yes` }], [{ text: 'Cancel', callback_data: 'x:searches:edit' }]]);
 }
 
 // What ChatGPT gets with each listing that you control (the fixed safety rules are not shown).

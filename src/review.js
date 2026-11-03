@@ -36,11 +36,11 @@ export function bindingFor(config) {
   return hash({ accountEmail: config.accountEmail.toLowerCase().trim() });
 }
 export function configHashFor(config) {
-  const { searchUrl, accountEmail, persona, immomioEmail } = config;
+  const { accountEmail, persona, immomioEmail } = config;
   // What the request sends and to whom. Secrets, notification destinations, the requirements and the model
   // (they only decide and write drafts, which are approved verbatim) do not authorize or change a message.
   // An unset Immomio account leaves the hash, and so every existing approval, unchanged.
-  return hash({ searchUrl, accountEmail, persona, immomioEmail: immomioEmail || undefined });
+  return hash({ accountEmail, persona, immomioEmail: immomioEmail || undefined });
 }
 
 // Telegram's 64-byte button data carries review IDs (UUIDs) without dashes.

@@ -20,7 +20,21 @@ test('first run: from pairing through setup to one approved application', async 
   await world.connect('🔗 Connect ImmoScout24', 'connect', 'Alex@Example.com', 'correct');
   await world.sees(/Connected to ImmoScout24 as alex@example\.com/);
   for (const [question, answer] of [
-    [/Open immobilienscout24\.de/, () => world.say(SEARCH_URL)],
+    [/Which searches/, () => world.tap('➕ Add')],
+    [/send a name and the address/, async () => {
+      world.say('no link');
+      await world.sees(/Please send a name/);
+      world.say('Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-kaufen');
+      await world.sees(/Only apartment rental searches/);
+      world.say(`Berlin ${SEARCH_URL}`);
+      await until('the new search', () => world.labels().includes('⬜ Berlin'));
+      assert.match(await world.tap('Done'), /at least one/);
+      await world.tap('⬜ Berlin');
+      await world.tap('Done');
+    }],
+    [/Highest warm rent/, () => world.say('1500')],
+    [/How many rooms/, () => world.tap('Skip')],
+    [/How much living space/, () => world.tap('Skip')],
     [/Describe what you are looking for/, () => world.say('No swap')],
     [/How should landlords address you/, () => world.tap('Frau')],
     [/Your first name/, () => world.say('Alex')],
@@ -72,7 +86,7 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await world.tap('⚙️ Settings');
   await world.sees(/Tap what you want to change/);
   await world.tap('🔍 Search');
-  await world.sees(/Search requirements/);
+  await world.sees(/<b>Requirements<\/b>/);
   await world.tap('➕ Add');
   await world.sees(/Send one more requirement/);
   world.say('No ground floor');
@@ -275,6 +289,53 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   world.never(/Check your IS24 account/);
 });
 
+test('the admin\'s list: a search runs only once someone picked it, and a listing in two searches counts once', async t => {
+  const world = await createWorld(t);
+  world.seed();
+  await world.start();
+  await until('the first search', () => world.searches > 0);
+  assert.ok(world.searchUrls.every(url => !/[?&]price=/.test(url) && !/pricetype=rentpermonth/.test(url)), 'an old personal search joined the list without its rent');
+  const hamburg = url => url.includes('hamburg');
+
+  world.say('/search');
+  await world.sees(/💶 Warm rent: up to 1500 €/); // ...and the rent became a limit.
+  await world.tap('🔎 Searches');
+  await world.sees(/Which searches/);
+  await world.tap('➕ Add');
+  await world.sees(/send a name and the address/);
+  world.say('Hamburg https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/wohnung-mieten');
+  await until('the new search', () => world.labels().includes('⬜ Hamburg'));
+  const before = world.searches;
+  await until('more checks', () => world.searches > before + 3);
+  assert.ok(!world.searchUrls.some(hamburg), 'nobody picked it, so IS24 never hears about it');
+
+  await world.tap('⬜ Hamburg');
+  await until('both searches', () => world.searchUrls.some(hamburg));
+  const counted = world.searches;
+  await until('both searches again', () => world.searches > counted + 2);
+
+  world.listing(800, 'In beiden', 'Hell.'); // The fake answers every search with every listing.
+  world.listing(801, 'Viel zu teuer', 'Hell.', { rent: '1.600 €' });
+  await world.sees(/^In beiden\n/);
+  await wait(300);
+  assert.equal(world.reads[800], 1);
+  assert.equal(world.messages().filter(call => /^In beiden\n/.test(call.body.text)).length, 1);
+  assert.equal(world.reads[801], undefined, 'a list price above the limit saves reading the listing');
+
+  // Removing one tells whoever picked it, and the other keeps running. The last one stays.
+  await world.tap('🗑');
+  await world.sees(/Remove Search 1\?/);
+  await world.tap('🗑 Yes, remove');
+  await world.sees(/The search Search 1 is no longer available/);
+  await until('the shorter list', () => !world.labels().includes('✅ Search 1') && world.labels().includes('✅ Hamburg'));
+  await world.tap('🗑');
+  await world.sees(/Remove Hamburg\?/);
+  assert.match(await world.tap('🗑 Yes, remove'), /last search/);
+  const left = world.searchUrls.length;
+  await until('more checks', () => world.searchUrls.length > left + 2);
+  assert.ok(world.searchUrls.slice(left).every(hamburg), 'only what is left is searched');
+});
+
 test('two people on one bot: private by invite, one shared search, separate chats, accounts and listings', async t => {
   const world = await createWorld(t);
   world.seed();
@@ -308,7 +369,11 @@ test('two people on one bot: private by invite, one shared search, separate chat
   assert.equal((await state(STRANGER)).status, 403, 'a valid signature from a stranger gets nothing');
   await world.connect('🔗 Connect ImmoScout24', 'connect', 'friend@example.com', 'correct', FRIEND);
   const answers = [
-    [/Open immobilienscout24\.de/, 'say', SEARCH_URL.replace('price=-1500', 'price=-800&numberofrooms=2-')],
+    [/Which searches/, 'tap', '⬜ Search 1'],
+    [/Which searches/, 'tap', 'Done'],
+    [/Highest warm rent/, 'say', '800'],
+    [/How many rooms/, 'say', '2'],
+    [/How much living space/, 'tap', 'Skip'],
     [/Describe what you are looking for/, 'say', 'No cellar'],
     [/How should landlords address you/, 'tap', 'Herr'],
     [/Your first name/, 'say', 'Robin'],
@@ -321,6 +386,9 @@ test('two people on one bot: private by invite, one shared search, separate chat
     [/What should landlords know/, 'say', 'Nichtraucher.'],
     [/also include your IS24 Selbstauskunft/, 'tap', 'Message only'],
   ];
+  await world.seesIn(FRIEND, /Which searches/);
+  assert.ok(!world.labels().includes('➕ Add'), 'only the admin adds searches');
+  assert.match(await world.press({ callback_data: 'x:sa' }, FRIEND), /outdated/);
   for (const [question, how, answer] of answers) { await world.seesIn(FRIEND, question); await (how === 'say' ? world.say(answer, FRIEND) : world.tap(answer, FRIEND)); }
   await world.seesIn(FRIEND, /All set/);
   world.say('/settings', FRIEND);
@@ -371,6 +439,7 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await world.sees(/🗑|People on this agent/);
   await until('the remove button', () => world.labels().some(label => label.startsWith('🗑')));
   await world.tap(world.labels().find(label => label.startsWith('🗑')));
+  await world.sees(/<b>Remove <code>/);
   await world.tap('🗑 Yes, remove');
   await world.seesIn(FRIEND, /access to this apartment agent has ended/);
   const sent = world.chat(FRIEND).length;
