@@ -197,7 +197,7 @@ export class Telegram {
     }
     for (const [part, type, extra] of tail) append(part, type, extra);
     const image = previewImage(listing.image_url);
-    const buttons = immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a'], ['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
+    const buttons = immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a']], [['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
     await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || (review.draft && !immomio) ? {} : { reply_markup: buttons } });
     if (again && review.draft && !heading && !immomio) await this.notifyDraft(review);
   }
@@ -206,7 +206,7 @@ export class Telegram {
     const heading = `✉️ ${review.snapshot.title}`;
     const card = (review.telegramMessages || []).find(message => message.chatId === this.chatId)?.messageId;
     await this.formatted(`${heading}\n${review.draft}`, [{ type: 'bold', offset: 0, length: heading.length }, { type: 'blockquote', offset: heading.length + 1, length: review.draft.length }], {
-      reviewId: review.id, replyTo: card, last: { reply_markup: this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Improve', 'e'], ['📝 Write myself', 'm'], ['🧠 Remember', 'r']]]) },
+      reviewId: review.id, replyTo: card, last: { reply_markup: this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Improve', 'e'], ['📝 Write myself', 'm']], [['🧠 Remember', 'r']]]) },
     });
   }
   async notifyOutcome(review) {

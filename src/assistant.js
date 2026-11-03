@@ -1,6 +1,6 @@
 import { FIELDS, isQuiet } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, fingerprint, rows, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, searchesView, removeSearchView, promptView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
+import { MENU_HINT, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, searchesView, removeSearchView, promptView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
 const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
@@ -175,7 +175,7 @@ export class Assistant {
     const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : []),
       ...(field.shortcut ? [{ text: field.shortcut[0], callback_data: `c:${key}:s` }] : [])];
     const current = this.settings.values[key] !== undefined ? `\n\nCurrently: ${this.settings.display(key)}` : '';
-    await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: rows(buttons, choices.length > 4 || choices.some(([, label]) => label.length > 14) ? 1 : 3) } } : {});
+    await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: fit(buttons) } } : {});
   }
   async saved(key) {
     if (this.ready && this.settings.complete()) return this.send(`Saved: ${this.settings.field(key)?.label ?? key} = ${this.settings.display(key)}`);

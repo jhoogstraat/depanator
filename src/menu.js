@@ -12,6 +12,16 @@ export const MENU_HINT = 'Send /status to see what I am doing, /settings to chan
 // Buttons name an option by index plus a short fingerprint, so a stale button never picks a different option.
 export const fingerprint = label => createHash('sha256').update(String(label)).digest('base64url').slice(0, 4);
 export const rows = (buttons, perRow) => Array.from({ length: Math.ceil(buttons.length / perRow) }, (_, index) => buttons.slice(index * perRow, index * perRow + perRow));
+// Telegram cuts a label that is wider than its share of the row. An emoji counts double.
+// ponytail: 32 characters across a small phone, measured by eye; adjust if labels still get cut.
+export const ROW_WIDTH = 32;
+export const width = text => [...new Intl.Segmenter().segment(text)].reduce((sum, { segment }) => sum + (/\p{Extended_Pictographic}/u.test(segment) ? 2 : 1), 0);
+// As many buttons per row (up to `most`) as fit without cutting any label.
+export function fit(buttons, most = 3) {
+  let perRow = most;
+  while (perRow > 1 && buttons.some(button => width(button.text) > ROW_WIDTH / perRow)) perRow--;
+  return rows(buttons, perRow);
+}
 // Every view is HTML; anything not written here (listing titles, your texts) goes through esc().
 const esc = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
 const html = (text, buttons) => ({ text, extra: { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: buttons } } });
@@ -57,11 +67,11 @@ export function statusView(s) {
 export function settingsView({ interval, autoSend, admin }) {
   return html('<b>⚙️ Settings</b>\nTap what you want to change.', [
     [{ text: '🔍 Search', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
-    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '📝 What ChatGPT gets', callback_data: 'x:prompt' }],
-    [...(admin ? [{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }] : []), { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
-    [{ text: '🧠 Model', callback_data: 'k:model' }, { text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'k:autoSend' }],
-    [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, ...(admin ? [{ text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }] : [])],
-    ...(admin ? [[{ text: '👥 People', callback_data: 'x:users' }]] : []),
+    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '📝 Prompt', callback_data: 'x:prompt' }],
+    [{ text: '🧠 Model', callback_data: 'k:model' }, { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
+    [{ text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'k:autoSend' }],
+    ...rows([{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, ...(admin ? [{ text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }] : [])], 2),
+    ...(admin ? [[{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }, { text: '👥 People', callback_data: 'x:users' }]] : []),
   ]);
 }
 
@@ -104,14 +114,15 @@ export function sentView(reviews) {
 // models: [{ id, name, thinking: [levels], defaultThinking }]. Step 1 of 2: the model.
 export function modelView(models, current, thinking) {
   return html(`<b>🤖 ChatGPT model</b>\nNow: ${esc(current)} · thinking ${esc(thinking || 'default')}\n\n1️⃣ Pick a model, then 2️⃣ how hard it should think.`,
-    rows(models.map((model, index) => ({ text: `${model.id === current ? '✓ ' : ''}${model.name}`, callback_data: `x:m:${index}:${fingerprint(model.id)}` })), 2));
+    fit(models.map((model, index) => ({ text: `${model.id === current ? '✓ ' : ''}${model.name}`, callback_data: `x:m:${index}:${fingerprint(model.id)}` })), 2));
 }
 // Step 2 of 2: a thinking level the chosen model supports.
 export function thinkingView(model, modelIndex, current, thinking) {
   const active = model.id === current ? thinking || model.defaultThinking : null;
-  const label = level => `${level === active ? '✓ ' : ''}${level}${level === model.defaultThinking ? ' (default)' : ''}`;
-  return html(`<b>🧠 Thinking for ${esc(model.name)}</b>\nMore thinking: better judgement and drafts, but slower and more of your plan's usage.`,
-    rows(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3));
+  const label = level => `${level === active ? '✓ ' : ''}${level}`;
+  const fallback = model.defaultThinking ? `\nIts default: ${esc(model.defaultThinking)}.` : '';
+  return html(`<b>🧠 Thinking for ${esc(model.name)}</b>\nMore thinking: better judgement and drafts, but slower and more of your plan's usage.${fallback}`,
+    fit(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3));
 }
 
 export const requirementLines = preferences => String(preferences || '').split('\n').map(line => line.trim()).filter(Boolean);
@@ -121,7 +132,8 @@ export function requirementsView(preferences, { searches, limits }) {
   const lines = requirementLines(preferences);
   const hard = [`🔎 Searches: ${esc(searches.join(', '))}`, `💶 Warm rent: ${span(limits.price, ' €')}`, `🚪 Rooms: ${span(limits.rooms, '')}`, `📐 Living space: ${span(limits.livingSpace, ' m²')}`];
   return html(`<b>🔍 Search</b>\n${hard.join('\n')}\n\n<b>Requirements</b>\nChatGPT skips listings that clearly break one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
-    [{ text: '🔎 Searches', callback_data: 'x:searches' }, { text: '💶 Rent', callback_data: 'k:rent' }, { text: '🚪 Rooms', callback_data: 'k:rooms' }, { text: '📐 Space', callback_data: 'k:area' }],
+    [{ text: '🔎 Searches', callback_data: 'x:searches' }, { text: '💶 Rent', callback_data: 'k:rent' }],
+    [{ text: '🚪 Rooms', callback_data: 'k:rooms' }, { text: '📐 Space', callback_data: 'k:area' }],
     [{ text: '➕ Add', callback_data: 'x:ra' }, { text: '✏️ Rewrite all', callback_data: 'k:preferences' }],
     ...rows(lines.length > 1 ? lines.map((line, index) => ({ text: `🗑 ${index + 1}`, callback_data: `x:rd:${index}:${fingerprint(line)}` })) : [], 5),
   ]);
@@ -155,12 +167,12 @@ export function promptView({ style, preferences, about }) {
     '', '<b>👤 About you</b>', block(facts || 'Nothing yet.'),
     '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
   ].join('\n'), [
-    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Requirements', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
-    ...(style ? [[{ text: '🗑 Remove style', callback_data: 'c:style:-' }]] : []),
+    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Requirements', callback_data: 'x:requirements' }],
+    [{ text: '👤 About you', callback_data: 'x:about' }, ...(style ? [{ text: '🗑 Remove style', callback_data: 'c:style:-' }] : [])],
   ]);
 }
 // fields: [[key, label, display]]; each button changes that detail.
 export function aboutView(fields) {
   return html(`<b>👤 About you</b>\nApplications state only these facts. Tap one to change it.\n\n${fields.map(([, label, value]) => `${esc(label)}: ${esc(value)}`).join('\n')}`,
-    rows(fields.map(([key, label]) => ({ text: label, callback_data: `k:${key}` })), 2));
+    fit(fields.map(([key, label]) => ({ text: label, callback_data: `k:${key}` })), 2));
 }

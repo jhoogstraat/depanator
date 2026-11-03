@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ROW_WIDTH, width } from '../../src/menu.js';
 import { Store } from '../../src/store.js';
 
 export const OWNER = 42;
@@ -217,6 +218,9 @@ export async function createWorld(t) {
     await new Promise(resolve => server.close(resolve));
     rmSync(dataDir, { recursive: true, force: true });
     assert.deepEqual(world.unexpected, [], 'the agent called a service the world does not fake');
+    const cut = world.telegram.flatMap(call => call.body?.reply_markup?.inline_keyboard ?? [])
+      .flatMap(row => row.filter(button => width(button.text) > ROW_WIDTH / row.length).map(button => `${button.text} (${row.length} in its row)`));
+    assert.deepEqual(cut, [], 'buttons too wide for a phone');
   });
   return world;
 }

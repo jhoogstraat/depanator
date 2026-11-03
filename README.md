@@ -35,7 +35,7 @@ The bot's menu (☰ next to the message field):
 | Command | |
 | --- | --- |
 | `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: ⏸ Pause / ▶️ Resume (waiting drafts and approved sends still work while paused), 📬 Waiting (show a listing again), 📨 Sent, ⚙️ Settings |
-| `/settings` | Everything you can change, as buttons: 🔍 Search (your 🔎 searches, your rent, rooms and living space, and what a listing must meet, such as "balcony" or "no swap"; ChatGPT skips clear mismatches), 👤 About you, ✍️ Writing style, 📝 What ChatGPT gets, ⏱ interval, 🌙 Night pause, 🧠 Model, 📤 Auto-send, and 🔗 reconnecting ImmoScout24, Immomio or ChatGPT |
+| `/settings` | Everything you can change, as buttons: 🔍 Search (your 🔎 searches, your rent, rooms and living space, and what a listing must meet, such as "balcony" or "no swap"; ChatGPT skips clear mismatches), 👤 About you, ✍️ Writing style, 📝 Prompt (what ChatGPT gets), ⏱ interval, 🌙 Night pause, 🧠 Model, 📤 Auto-send, and 🔗 reconnecting ImmoScout24, Immomio or ChatGPT |
 
 These also work when typed, as shortcuts: `/search`, `/pause`, `/prompt`, `/model`, `/interval`, `/autosend`, `/connect`, `/immomio`, `/login`. A typed message the bot cannot act on opens `/settings`.
 

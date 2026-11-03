@@ -394,7 +394,7 @@ test('two people on one bot: private by invite, one shared search, separate chat
   world.say('/settings', FRIEND);
   await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
   const labels = world.labels();
-  assert.ok(labels.includes('📝 What ChatGPT gets'), 'these are the settings');
+  assert.ok(labels.includes('📝 Prompt'), 'these are the settings');
   assert.ok(!labels.includes('👥 People') && !labels.includes('🔗 ChatGPT') && !labels.some(label => label.startsWith('⏱')), 'the shared interval, login and people stay with the admin');
   await world.tap('🌙 Night pause', FRIEND);
   await world.seesIn(FRIEND, /When should I not search/);
