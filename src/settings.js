@@ -30,15 +30,20 @@ function range(single, hint) {
     try { parseRange(stated, ''); return stated; } catch { throw new Error(hint); }
   };
 }
+// Every time the agent shows or schedules by. ponytail: German time fixed; IS24 is a German site. Make it a setting if that ever changes.
+export const TIME_ZONE = 'Europe/Berlin';
 // Night pause "from-to" in German time (from > to wraps past midnight); '' = around the clock.
-// ponytail: German time zone fixed; IS24 is a German site.
 export function isQuiet(quietHours, now = Date.now()) {
   const match = /^(\d{1,2})-(\d{1,2})$/.exec(quietHours || '');
   if (!match) return false;
   const [from, to] = [Number(match[1]), Number(match[2])];
-  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/Berlin' }).formatToParts(now).find(part => part.type === 'hour').value);
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: TIME_ZONE }).formatToParts(now).find(part => part.type === 'hour').value);
   return from > to ? hour >= from || hour < to : hour >= from && hour < to;
 }
+
+// The searches of the admin's list that a person picked, and whether every one of them is in its night pause.
+export const pickedSearches = (catalog, names) => catalog.filter(search => names.includes(search.name));
+export const allQuiet = (searches, now = Date.now()) => searches.length > 0 && searches.every(search => isQuiet(search.quietHours, now));
 
 // "Musterstraße 12a" as IS24 wants it: street and house number apart.
 function streetAndNumber(value) {

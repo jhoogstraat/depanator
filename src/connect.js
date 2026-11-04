@@ -23,6 +23,12 @@ export const send = (res, status, type = 'text/plain', body = '', headers = {}) 
   res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(body);
 };
+// A request's JSON body as { input }, or { status } to refuse it with: 413 above `limit` characters, 400 if not JSON.
+export async function readJson(req, limit) {
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > limit) return { status: 413 }; }
+  try { return { input: JSON.parse(body) }; } catch { return { status: 400 }; }
+}
 
 // "Connect with ImmoScout24": a Telegram Mini App where the owner enters the IS24 email, password and any
 // 2FA code. They go straight to session.login (IS24's own login service) and are never stored or logged.
@@ -39,8 +45,9 @@ export const BRANDS = {
     perks: ['Apply on Immomio when an approved listing links there', 'Use your Immomio profile for those applications', 'Never send applications you did not approve'] },
 };
 export class ConnectApp {
-  constructor({ config, session, port = 8080, fetchImpl = fetch, brand = BRANDS.is24, apps = [], forUser = () => null }) {
-    Object.assign(this, { config, session, port, fetch: fetchImpl, brand, apps, forUser });
+  // bot: the Bot (telegram.js) whose name and photo the page shows.
+  constructor({ config, session, bot = null, port = 8080, brand = BRANDS.is24, apps = [], forUser = () => null }) {
+    Object.assign(this, { config, session, bot, port, brand, apps, forUser });
     this.route = new RegExp(`\\/${brand.path}(\\/state|\\/login|\\/code|\\/avatar)?$`);
     this.page = page(brand);
     this.pending = null;
@@ -93,29 +100,8 @@ export class ConnectApp {
     if (this.connected && Date.now() - this.connected.at < 600_000) return { step: 'done', message: this.connected.email, version: 0 };
     return { step: 'idle', message: '', version: 0 };
   }
-  async telegram(method, body = {}) {
-    const res = await this.fetch(`https://api.telegram.org/bot${this.config.telegramBotToken}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.description);
-    return data.result;
-  }
-  // The bot's name and profile photo, shown on the consent screen next to ImmoScout24.
-  bot() {
-    this.botInfo ??= (async () => {
-      const me = await this.telegram('getMe');
-      let photo = null;
-      try {
-        const sizes = (await this.telegram('getUserProfilePhotos', { user_id: me.id, limit: 1 })).photos[0];
-        if (sizes) {
-          const file = await this.telegram('getFile', { file_id: sizes[Math.min(1, sizes.length - 1)].file_id });
-          const res = await this.fetch(`https://api.telegram.org/file/bot${this.config.telegramBotToken}/${file.file_path}`);
-          if (res.ok) photo = Buffer.from(await res.arrayBuffer());
-        }
-      } catch { /* No photo: the page shows a placeholder. */ }
-      return { name: me.first_name || me.username || 'Your agent', photo };
-    })().catch(error => { this.botInfo = null; throw error; });
-    return this.botInfo;
-  }
+  // The bot's name and photo for the consent screen next to the service (Bot.profile).
+  profile() { return this.bot ? this.bot.profile() : Promise.reject(new Error('No Telegram bot')); }
   async handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     // Suffix match: a reverse proxy may serve this under a path prefix. Below, every app's path reads /connect.
@@ -123,7 +109,7 @@ export class ConnectApp {
     const path = match && `/connect${match[1] || ''}`;
     if (req.method === 'GET' && path === '/connect') return send(res, 200, 'text/html; charset=utf-8', this.page);
     if (req.method === 'GET' && path === '/connect/avatar') {
-      const { photo } = await this.bot().catch(() => ({}));
+      const { photo } = await this.profile().catch(() => ({}));
       return photo ? send(res, 200, 'image/jpeg', photo, { 'Cache-Control': 'max-age=3600' }) : send(res, 404);
     }
     if (!path || path === '/connect') return send(res, 404);
@@ -134,14 +120,12 @@ export class ConnectApp {
       if (pending && pending.version <= Number(url.searchParams.get('after') || 0)) {
         await new Promise(resolve => { const timer = setTimeout(resolve, 10_000); pending.waiters.add(() => { clearTimeout(timer); resolve(); }); });
       }
-      const name = await this.bot().then(bot => bot.name, () => 'Your agent');
+      const name = await this.profile().then(profile => profile.name, () => 'Your agent');
       return send(res, 200, 'application/json', JSON.stringify({ ...(pending && pending !== this.pending ? { step: pending.step, message: pending.message, version: pending.version } : this.state()), bot: name, email: this.brand.email(this.config) || '' }));
     }
     if (req.method !== 'POST') return send(res, 405);
-    let body = '';
-    for await (const chunk of req) { body += chunk; if (body.length > 2048) return send(res, 413); }
-    let input;
-    try { input = JSON.parse(body); } catch { return send(res, 400); }
+    const { input, status } = await readJson(req, 2048);
+    if (status) return send(res, status);
     const pending = this.pending;
     if (!pending) return send(res, 409);
     if (path === '/connect/login' && pending.step === 'form' && typeof input.email === 'string' && typeof input.password === 'string') {

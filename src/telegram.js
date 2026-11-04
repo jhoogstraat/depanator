@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { compactId, conflict, expandId } from './review.js';
 import { usesImmomio } from './immomio.js';
+import { TIME_ZONE } from './settings.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
 const INVALID = { text: 'This approval is invalid.' };
@@ -14,12 +15,22 @@ const EDITS = {
   r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to the agent\'s writing style (/settings) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
 };
 
+// What a sent application tells the user, by outcome status and site.
+const OUTCOME = {
+  sent: site => site === 'IS24' ? { heading: '✅ Message sent', text: 'IS24 accepted your request.' } : { heading: '✅ Applied on Immomio', text: '' },
+  unknown_outcome: site => ({ heading: `⚠️ Check your ${site} account`,
+    text: `Submission outcome is uncertain. Check your ${site === 'IS24' ? 'IS24 messages' : 'Immomio applications'} before taking any further action. The agent will not retry.` }),
+  failed: () => ({ heading: '❌ Message not sent', text: 'The message was not sent. No automatic retry will occur.' }),
+};
+const PUBLISHED = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: TIME_ZONE });
+
+// A cut at `end` that keeps a UTF-16 surrogate pair together.
+const safeEnd = (text, end) => end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) ? end - 1 : end;
+
 function chunks(text, limit = LIMIT) {
   const result = [];
   while (text.length) {
-    let end = Math.min(limit, text.length);
-    // Keep UTF-16 surrogate pairs together when splitting long drafts.
-    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+    const end = safeEnd(text, Math.min(limit, text.length));
     result.push(text.slice(0, end));
     text = text.slice(end);
   }
@@ -35,6 +46,42 @@ function previewImage(raw) {
     url.pathname = url.pathname.replace('/format/webp/', '/format/jpg/');
     return url.href;
   } catch { return null; }
+}
+
+// A listing as one message, with native entities: an optional outcome heading and note, its facts and links,
+// as much of the description as fits, and under draftLabel the draft. URLs are built here, never taken from listing data.
+function listingMessage(review, { heading, note, draftLabel }) {
+  const listing = review.snapshot;
+  let text = '';
+  const entities = [];
+  const append = (part, type, extra = {}) => {
+    if (type) entities.push({ type, offset: text.length, length: part.length, ...extra });
+    text += part;
+  };
+  if (heading) { append(heading, 'bold'); append(`\n${note}\n\n`); }
+  const address = String(listing.address || '').replace(/\s*\([^)]*\)/g, '').trim();
+  append(String(listing.title), 'bold');
+  append(`\n📍 ${address || 'Address unavailable'}\n💶 `); append(`${listing.price ?? '?'} €`, 'bold');
+  const facts = [`📐 ${listing.area ?? '?'} m²`, `🚪 ${listing.rooms ?? '?'} Zi.`,
+    listing.published && `🕒 ${PUBLISHED.format(new Date()).replace(',', '')}`,
+    listing.earlyAccess && '🔒 Suchen+'].filter(Boolean);
+  append(` · ${facts.join(' · ')}\n`);
+  const query = encodeURIComponent(address);
+  const links = [
+    /^\d+$/.test(review.exposeId) && ['Listing', `https://www.immobilienscout24.de/expose/${review.exposeId}`],
+    address && ['Google Maps', `https://www.google.com/maps/search/?api=1&query=${query}`],
+    address && ['Apple Maps', `https://maps.apple.com/?q=${query}`],
+  ].filter(Boolean);
+  const tail = [...links.flatMap(([label, url], index) => [...(index ? [[' · ']] : []), [label, 'text_link', { url }]]),
+    ...(draftLabel ? [[`\n\n${draftLabel}\n`, 'bold'], [review.draft, 'blockquote']] : [])];
+  const details = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n');
+  const room = LIMIT - text.length - tail.reduce((sum, [part]) => sum + part.length, 0) - 2;
+  if (details && room > 100) {
+    const cut = safeEnd(details, Math.min(details.length, room - 1));
+    append(cut < details.length ? `${details.slice(0, cut)}…` : details, 'expandable_blockquote'); append('\n');
+  }
+  for (const [part, type, extra] of tail) append(part, type, extra);
+  return { text, entities };
 }
 
 // The one connection to Telegram: every person's private chat with the bot arrives here, and route(update)
@@ -67,6 +114,23 @@ export class Bot {
     const result = await response.json();
     if (!result.ok) throw new Error(`Telegram ${method} was rejected`);
     return result.result;
+  }
+  // The bot's name and profile photo, for the Mini App pages. Read once; a failure is tried again next time.
+  profile() {
+    this.profileInfo ??= (async () => {
+      const me = this.me ?? await this.api('getMe', {});
+      let photo = null;
+      try {
+        const sizes = (await this.api('getUserProfilePhotos', { user_id: me.id, limit: 1 })).photos[0];
+        if (sizes) {
+          const file = await this.api('getFile', { file_id: sizes[Math.min(1, sizes.length - 1)].file_id });
+          const response = await this.fetchImpl(`https://api.telegram.org/file/bot${this.token}/${file.file_path}`, { signal: AbortSignal.timeout(30_000) });
+          if (response.ok) photo = Buffer.from(await response.arrayBuffer());
+        }
+      } catch { /* No photo: the page shows a placeholder. */ }
+      return { name: me.first_name || me.username || 'Your agent', photo };
+    })().catch(error => { this.profileInfo = null; throw error; });
+    return this.profileInfo;
   }
   saveOffset(offset) {
     const temp = `${this.offsetFile}.tmp`;
@@ -162,44 +226,15 @@ export class Telegram {
   // heading/note: an outcome shown above the listing and its message instead of buttons (auto-sent reviews).
   // An Immomio listing has no message: its card shows the application it approves and is decided right there.
   async notify(review, { heading = '', note = '', again = false } = {}) {
-    const listing = review.snapshot;
-    const immomio = usesImmomio(listing, this.config);
-    if (review.draft && !heading && !again && !immomio) return this.notifyDraft(review);
-    let text = '';
-    const entities = [];
-    const append = (part, type, extra = {}) => {
-      if (type) entities.push({ type, offset: text.length, length: part.length, ...extra });
-      text += part;
-    };
-    if (heading) { append(heading, 'bold'); append(`\n${note}\n\n`); }
-    const address = String(listing.address || '').replace(/\s*\([^)]*\)/g, '').trim();
-    append(String(listing.title), 'bold');
-    append(`\n📍 ${address || 'Address unavailable'}\n💶 `); append(`${listing.price ?? '?'} €`, 'bold');
-    const facts = [`📐 ${listing.area ?? '?'} m²`, `🚪 ${listing.rooms ?? '?'} Zi.`,
-      listing.published && `🕒 ${new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' }).format(new Date()).replace(',', '')}`,
-      listing.earlyAccess && '🔒 Suchen+'].filter(Boolean);
-    append(` · ${facts.join(' · ')}\n`);
-    // URLs are built here, never taken from listing data.
-    const query = encodeURIComponent(address);
-    const links = [
-      /^\d+$/.test(review.exposeId) && ['Listing', `https://www.immobilienscout24.de/expose/${review.exposeId}`],
-      address && ['Google Maps', `https://www.google.com/maps/search/?api=1&query=${query}`],
-      address && ['Apple Maps', `https://maps.apple.com/?q=${query}`],
-    ].filter(Boolean);
-    const tail = [...links.flatMap(([label, url], index) => [...(index ? [[' · ']] : []), [label, 'text_link', { url }]]),
-      ...((heading || immomio) && review.draft ? [[immomio ? '\n\n🏢 Immomio application\n' : '\n\n✉️ Message\n', 'bold'], [review.draft, 'blockquote']] : [])];
-    const details = [listing.description, ...(listing.amenities || []).map(item => `• ${item}`)].filter(Boolean).join('\n');
-    const room = LIMIT - text.length - tail.reduce((sum, [part]) => sum + part.length, 0) - 2;
-    if (details && room > 100) {
-      let cut = Math.min(details.length, room - 1);
-      if (cut < details.length && /[\uD800-\uDBFF]/.test(details[cut - 1])) cut--;
-      append(cut < details.length ? `${details.slice(0, cut)}…` : details, 'expandable_blockquote'); append('\n');
-    }
-    for (const [part, type, extra] of tail) append(part, type, extra);
-    const image = previewImage(listing.image_url);
-    const buttons = immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a']], [['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
-    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || (review.draft && !immomio) ? {} : { reply_markup: buttons } });
-    if (again && review.draft && !heading && !immomio) await this.notifyDraft(review);
+    const immomio = usesImmomio(review.snapshot, this.config);
+    const card = !heading && !immomio; // The draft, once written, is a separate reply under this card.
+    if (card && review.draft && !again) return this.notifyDraft(review);
+    const draftLabel = !card && review.draft ? (immomio ? '🏢 Immomio application' : '✉️ Message') : '';
+    const { text, entities } = listingMessage(review, { heading, note, draftLabel });
+    const buttons = heading || (card && review.draft) ? null
+      : immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a']], [['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
+    await this.formatted(text, entities, { image: previewImage(review.snapshot.image_url), reviewId: heading ? null : review.id, last: buttons ? { reply_markup: buttons } : {} });
+    if (card && again && review.draft) await this.notifyDraft(review);
   }
   // Only a draft near the 5000-character cap splits; the draft is never shortened and the buttons sit on the final part.
   async notifyDraft(review) {
@@ -211,10 +246,7 @@ export class Telegram {
   }
   async notifyOutcome(review) {
     const site = usesImmomio(review.snapshot, this.config) ? 'Immomio' : 'IS24';
-    const text = review.status === 'sent' ? (site === 'IS24' ? 'IS24 accepted your request.' : '')
-      : review.status === 'unknown_outcome' ? `Submission outcome is uncertain. Check your ${site === 'IS24' ? 'IS24 messages' : 'Immomio applications'} before taking any further action. The agent will not retry.`
-      : 'The message was not sent. No automatic retry will occur.';
-    const heading = review.status === 'sent' ? (site === 'IS24' ? '✅ Message sent' : '✅ Applied on Immomio') : review.status === 'unknown_outcome' ? `⚠️ Check your ${site} account` : '❌ Message not sent';
+    const { heading, text } = (OUTCOME[review.status] ?? OUTCOME.failed)(site);
     // You never saw an auto-sent listing, so it comes with the full listing and the message.
     if (review.approvedBy === 'auto') return this.notify(review, { heading: `${heading} (auto-send)`, note: `${text}${review.detail ? `\n${review.detail}` : ''}` });
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
@@ -239,11 +271,11 @@ export class Telegram {
     const text = typeof message.text === 'string' ? message.text.trim() : '';
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
     if (text.startsWith('/')) return this.assistant.command(text.split(/[\s@]/)[0].toLowerCase());
+    if (!text) return;
     const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts.keys()].at(-1);
     const target = this.editPrompts.get(promptId);
-    const instructions = text;
-    if (!target) return instructions ? this.assistant.text(instructions) : undefined;
-    if (!instructions) return;
+    if (!target) return this.assistant.text(text);
+    const instructions = text; // A reply to an edit prompt: how to change that draft.
     const manual = target.mode === 'manual';
     if (!manual && instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
     // 🧠 Remember: kept in your writing style, so every later draft follows it too.

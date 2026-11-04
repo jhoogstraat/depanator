@@ -2,8 +2,6 @@
 // Fails closed: any parameter, value or path it cannot translate exactly is rejected,
 // because a dropped filter silently widens the search.
 
-const MOBILE_API_BASE = 'https://api.mobile.immobilienscout24.de/search/list';
-
 // Type slugs that are apartment rentals (value = new-build only). Swap flats (wohnung-mieten-tausch)
 // have no mobile API filter, so they are rejected rather than widened to all rentals.
 const RENT_TYPE_SLUGS = {
@@ -59,6 +57,14 @@ const EQUIPMENT = {
   cellar: 'cellar', onlywithbasement: 'cellar',
 };
 
+// Comma-separated list filters: the canonical field each fills, and the value it maps a lowercased web value to
+// (undefined: unknown, so rejected).
+const LIST_FILTERS = {
+  heatingtypes: ['heatingTypes', value => HEATING_TYPES.has(value) ? value : undefined],
+  equipment: ['equipment', value => EQUIPMENT[value]],
+  apartmenttypes: ['apartmentTypes', value => APARTMENT_TYPES.has(value) ? value : undefined],
+};
+
 // Checkbox params that must go into equipment= (standalone booleans 412).
 const EQUIPMENT_CHECKBOXES = new Set([
   'onlywithbalcony', 'onlywithgarden', 'onlywithparking', 'onlywithkitchen', 'onlywithelevator',
@@ -95,7 +101,8 @@ function splitValues(value) {
   return String(value || '').split(',').map(v => v.trim()).filter(Boolean);
 }
 
-function parse(webUrl) {
+// An IS24 apartment-rental search URL as its canonical filters; throws the reason it cannot be translated exactly.
+export function parseSearchUrl(webUrl) {
   const input = String(webUrl || '').trim();
   if (!input) throw new Error('Invalid URL');
   const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
@@ -144,14 +151,11 @@ function parse(webUrl) {
     else if (key === 'numberofrooms') canonical.rooms = parseRange(value, 'number of rooms');
     else if (key === 'livingspace') canonical.livingSpace = parseRange(value, 'living space');
     else if (key === 'pricetype') canonical.price.type = value;
-    else if (key === 'heatingtypes') {
+    else if (Object.hasOwn(LIST_FILTERS, key)) {
+      const [field, accept] = LIST_FILTERS[key];
       for (const v of splitValues(value)) {
-        if (HEATING_TYPES.has(v.toLowerCase())) canonical.heatingTypes.push(v.toLowerCase());
-        else rejected.push(`${rawKey}=${v}`);
-      }
-    } else if (key === 'equipment') {
-      for (const v of splitValues(value)) {
-        if (EQUIPMENT[v.toLowerCase()]) canonical.equipment.push(EQUIPMENT[v.toLowerCase()]);
+        const accepted = accept(v.toLowerCase());
+        if (accepted) canonical[field].push(accepted);
         else rejected.push(`${rawKey}=${v}`);
       }
     } else if (EQUIPMENT_CHECKBOXES.has(key) || key === 'newbuilding') {
@@ -159,13 +163,7 @@ function parse(webUrl) {
       if (!['true', '1'].includes(value)) rejected.push(`${rawKey}=${value}`);
       else if (key === 'newbuilding') canonical.newBuildingOnly = true;
       else canonical.equipment.push(EQUIPMENT[key]);
-    } else if (key === 'apartmenttypes') {
-      for (const v of splitValues(value)) {
-        if (APARTMENT_TYPES.has(v.toLowerCase())) canonical.apartmentTypes.push(v.toLowerCase());
-        else rejected.push(`${rawKey}=${v}`);
-      }
-    }
-    else if (key === 'exclusioncriteria') {
+    } else if (key === 'exclusioncriteria') {
       canonical.directParams.push({ key, value: splitValues(value).map(v => v.toLowerCase() === 'swapflat' ? 'swap_flat' : v).join(',') });
     } else if (DIRECT_PARAMS.has(key)) canonical.directParams.push({ key, value });
     else if (key === 'geocoordinates') {
@@ -183,17 +181,8 @@ function parse(webUrl) {
   return canonical;
 }
 
-/** Validate an IS24 apartment-rental search URL. Returns {ok, error, canonical}. */
-export function validateSearchUrl(webUrl) {
-  try {
-    return { ok: true, error: null, canonical: parse(webUrl) };
-  } catch (err) {
-    return { ok: false, error: err.message, canonical: null };
-  }
-}
-
-/** Build a mobile API list URL from a validated canonical search. */
-export function buildMobileApiUrl(canonical, { page = 1 } = {}) {
+// The mobile API's result-list path and query for a canonical search.
+export function searchListPath(canonical, { page = 1 } = {}) {
   const params = new URLSearchParams();
   if (canonical.center) {
     // Radius needs geocoordinates; geocodes are ignored when both are present.
@@ -218,5 +207,5 @@ export function buildMobileApiUrl(canonical, { page = 1 } = {}) {
   params.set('sorting', '-firstactivation');
   params.set('pagenumber', String(page));
   params.set('pagesize', '20');
-  return `${MOBILE_API_BASE}?${params.toString()}`;
+  return `/search/list?${params.toString()}`;
 }

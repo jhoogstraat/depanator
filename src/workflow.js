@@ -1,13 +1,12 @@
 import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.js';
 import { assertReconciled } from './config.js';
+import { TIME_ZONE } from './settings.js';
+import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
 
-// Self-healing (backoff, retry) runs first; the user hears only about streaks it cannot fix.
-const ALERT_AFTER = 3;
-const MAX_BACKOFF_MS = 3_600_000;
 // At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
 const ADVICE = {
-  IS24: 'I keep retrying with longer pauses. If it continues, IS24 may be blocking this connection.',
+  IS24: IS24_ADVICE,
   LLM: 'Analysis is paused and retries every check. Check your ChatGPT plan, or send /login to reconnect it.',
 };
 
@@ -30,9 +29,12 @@ export class Workflow {
   }
   get closed() { return this.controller.signal.aborted; }
   bindings() { return { accountBinding: bindingFor(this.config), configHash: configHashFor(this.config) }; }
+  // The account or configuration changed since `bindings` were taken, e.g. while ChatGPT was working.
+  changedSince(bindings) { return hash(bindings) !== hash(this.bindings()); }
+  closedError() { return new Error('Workflow is closed'); }
   emit(event) { try { this.onEvent(event); } catch { /* Reporting cannot change a send outcome. */ } }
   assertRunning() {
-    if (this.closed) throw new Error('Workflow is closed');
+    if (this.closed) throw this.closedError();
     assertReconciled(this.config);
   }
   // The user, or a revision, may have acted first; then the event no longer applies.
@@ -45,7 +47,7 @@ export class Workflow {
     this.adapter.cancelLogin?.();
   }
   run(fn) {
-    if (this.closed) return Promise.reject(new Error('Workflow is closed'));
+    if (this.closed) return Promise.reject(this.closedError());
     const result = this.queue.then(async () => {
       this.assertRunning();
       try { await this.beforeWork(); }
@@ -81,7 +83,7 @@ export class Workflow {
   }
   // Once per German calendar day, on the first check after the night pause.
   async morningCleanup() {
-    const today = new Date().toLocaleDateString('sv', { timeZone: 'Europe/Berlin' });
+    const today = new Date().toLocaleDateString('sv', { timeZone: TIME_ZONE });
     if (this.cleanedOn === today) return;
     this.cleanedOn = today;
     await this.pruneGone();
@@ -96,7 +98,7 @@ export class Workflow {
   dismiss(id, version) { return this.store.dispatch(id, { type: 'dismiss', version }); }
   // Writes the first draft (instructions ''), revises it, or, with manual, takes instructions as the new draft verbatim.
   revise(id, version, instructions, { manual = false } = {}) {
-    if (this.closed) return Promise.reject(new Error('Workflow is closed'));
+    if (this.closed) return Promise.reject(this.closedError());
     const task = this.reviseInternal(id, version, instructions, manual).finally(() => this.revisions.delete(task));
     this.revisions.add(task);
     return task;
@@ -108,18 +110,16 @@ export class Workflow {
   async failure(component, error) {
     const failures = ++this.failures[component];
     this.emit({ type: 'health_error', detail: `${component} failure ${failures}: ${error.message}` });
-    if (failures === ALERT_AFTER) await this.raise(`⚠️ ${component} failed ${failures} times in a row.\nLast error: ${error.message}\n${ADVICE[component]}`);
+    if (failures === ALERT_AFTER) await this.raise(failedAlert(component, failures, error, ADVICE[component]));
   }
   async recovered(component) {
     const failures = this.failures[component];
     this.failures[component] = 0;
-    if (failures >= ALERT_AFTER) await this.raise(`✅ ${component} recovered; normal operation resumed.`);
+    if (failures >= ALERT_AFTER) await this.raise(recoveredAlert(component));
   }
   async is24Failure(error) {
     await this.failure('IS24', error);
-    // The pause doubles with every failure (skip 0, 1, 3, 7... polls), capped near one hour.
-    const maxPolls = Math.max(1, Math.floor(MAX_BACKOFF_MS / this.interval()));
-    this.backoff = { skip: Math.min(2 ** (this.failures.IS24 - 1), maxPolls) - 1, blocked: error.code === 'BLOCKED' };
+    this.backoff = { skip: backoffSkip(this.failures.IS24, this.interval()), blocked: error.code === 'BLOCKED' };
   }
 
   async pollInternal() {
@@ -165,14 +165,13 @@ export class Workflow {
       const result = outside ? { decision: 'dismiss', reasons: [outside], draft: '', confident: false } : await this.evaluate(snapshot, { signal: this.controller.signal });
       this.assertRunning();
       if (!outside) await this.recovered('LLM');
-      if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during analysis');
+      if (this.changedSince(bindings)) throw new Error('Configuration changed during analysis');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
       this.emit({ type: 'analysis', review: saved });
-      // Auto-send: the owner's standing approval for clear matches, written and sent in this same tick. Only for newly
-      // published listings: the first check, or one after a search change, would otherwise mass-apply.
-      // A listing with missing facts always waits for the owner, whatever the model thinks.
-      if (saved.status === 'awaiting_approval' && this.config.autoSend === true && result.confident === true && review.fresh === true && !snapshot.missing && await this.autoSend(saved, bindings)) return;
-      if (saved.status === 'awaiting_approval') { batch.tried.add(saved.id); await this.deliver(saved); } // Each listing as soon as it is screened.
+      if (saved.status !== 'awaiting_approval') return;
+      if (this.autoSendable(review, result, snapshot) && await this.autoSend(saved, bindings)) return;
+      batch.tried.add(saved.id);
+      await this.deliver(saved); // Each listing as soon as it is screened.
     } catch (error) {
       // Shutdown and global outages are not the listing's fault and do not use up its attempts.
       const systemic = this.closed || error.code === 'BLOCKED' || error.code === 'LLM_UNAVAILABLE';
@@ -200,11 +199,17 @@ export class Workflow {
       if (dismissed) await this.withdraw(dismissed).catch(error => this.emit({ type: 'notification_error', id: review.id, detail: error.message }));
     }
   }
+  // Auto-send: the owner's standing approval for clear matches, written and sent in the same tick. Only for newly
+  // published listings: the first check, or one after a search change, would otherwise mass-apply.
+  // A listing with missing facts always waits for the owner, whatever the model thinks.
+  autoSendable(review, result, snapshot) {
+    return this.config.autoSend === true && result.confident === true && review.fresh === true && !snapshot.missing;
+  }
   // False if writing failed; then the listing waits for the user like any other.
   async autoSend(review, bindings) {
     try {
       const written = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
-      if (this.closed || written.decision !== 'message' || hash(bindings) !== hash(this.bindings())) return false;
+      if (this.closed || written.decision !== 'message' || this.changedSince(bindings)) return false;
       const revised = this.store.dispatch(review.id, { type: 'revise', version: review.version, draft: written.draft, reasons: review.reasons, bindings });
       this.store.dispatch(review.id, { type: 'approve', version: revised.version, draftHash: revised.draftHash, bindings, by: 'auto' });
       return true;
@@ -231,7 +236,7 @@ export class Workflow {
       : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
     if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
-    if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during revision; tap Edit again');
+    if (this.changedSince(bindings)) throw new Error('Configuration changed during revision; tap Edit again');
     const revised = this.store.dispatch(id, { type: 'revise', version, draft: result.draft, reasons: result.reasons.length ? result.reasons : review.reasons, bindings });
     if (!await this.deliver(revised)) throw new Error('Draft revised, but delivering it failed; it will be resent on the next poll');
     return this.store.get(id);

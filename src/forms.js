@@ -1,4 +1,4 @@
-import { send, verifyInitData } from './connect.js';
+import { readJson, send, verifyInitData } from './connect.js';
 
 // The settings forms (settings.js FORMS) as a Telegram Mini App: the chat's ✏️ Edit buttons open
 // /form?part=<name>, prefilled with what is set. Only the person's own signed requests read or save their settings.
@@ -20,10 +20,8 @@ export class FormApp {
       catch { return send(res, 404); }
     }
     if (req.method !== 'POST' || action !== '/save') return send(res, 405);
-    let body = '';
-    for await (const chunk of req) { body += chunk; if (body.length > 32_768) return send(res, 413); }
-    let input;
-    try { input = JSON.parse(body); } catch { return send(res, 400); }
+    const { input, status } = await readJson(req, 32_768);
+    if (status) return send(res, status);
     try { this.settings.saveForm(input?.part, input?.values); }
     catch (error) { return send(res, 400, 'application/json', JSON.stringify({ error: error.message })); }
     send(res, 204);

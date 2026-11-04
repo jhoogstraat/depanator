@@ -1,13 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { isQuiet } from './settings.js';
+import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
 
 // The admin's searches, each crawled on its own schedule into one table that everybody reads (push, not rounds).
 // One IS24 request per due search, however many people picked it; a search nobody searching picked costs nothing.
 // Each person's rent, rooms and area are matched on what they read, and never reach IS24.
 export const PAGES = 3; // A crawl stops at the first known listing, so this is only reached in a busy spell.
 const EXPOSE_MS = 600_000;
-const ALERT_AFTER = 3;
-const MAX_BACKOFF_MS = 3_600_000;
 // A search's identity: its query. A renamed search keeps its listings and everybody's place in them.
 export const feedKey = filters => JSON.stringify(filters);
 
@@ -92,19 +91,18 @@ export class Feeds {
       this.feed(key, { crawled_at: at, baseline: 0 });
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    if (health.failures >= ALERT_AFTER) this.onAlert(key, `✅ IS24 search ${search.name} recovered; normal operation resumed.`);
+    if (health.failures >= ALERT_AFTER) this.onAlert(key, recoveredAlert(`IS24 search ${search.name}`));
     Object.assign(health, { failures: 0, blocked: false });
     if (!result.complete) this.onError(`${search.name}: page limit reached; search coverage is partial`);
     this.onCrawled(key);
     return result;
   }
-  // The pause doubles with every failure (skip 0, 1, 3, 7... crawls), capped near one hour.
   async failed(search, health, error) {
     health.failures++;
     health.blocked = error.code === 'BLOCKED';
-    health.skip = Math.min(2 ** (health.failures - 1), Math.max(1, Math.floor(MAX_BACKOFF_MS / search.intervalMs))) - 1;
+    health.skip = backoffSkip(health.failures, search.intervalMs);
     this.onError(`health_error: IS24 search ${search.name} failure ${health.failures}: ${error.message}`);
-    if (health.failures === ALERT_AFTER) this.onAlert(search.key, `⚠️ IS24 search ${search.name} failed ${health.failures} times in a row.\nLast error: ${error.message}\nI keep retrying with longer pauses. If it continues, IS24 may be blocking this connection.`);
+    if (health.failures === ALERT_AFTER) this.onAlert(search.key, failedAlert(`IS24 search ${search.name}`, health.failures, error, IS24_ADVICE));
   }
   feedRow(key) { return this.db.prepare('SELECT crawled_at, baseline FROM feeds WHERE search=?').get(key) ?? { crawled_at: null, baseline: 1 }; }
   feed(key, values) {

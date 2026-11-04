@@ -5,7 +5,7 @@ import { Store } from './store.js';
 import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES } from './settings.js';
 import { FormApp } from './forms.js';
 import { Workflow } from './workflow.js';
-import { IS24Adapter, searchFilters } from './is24.js';
+import { IS24Adapter, searchFilters, searchKey } from './is24.js';
 import { feedKey } from './feed.js';
 import { createEvaluator } from './llm.js';
 import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './codex.js';
@@ -34,6 +34,60 @@ export function limiter(max) {
   };
 }
 
+// Runs work() one at a time. A call during a run returns that run and makes it go once more right after, so
+// nothing that arrived meanwhile is missed; onBusy() runs on such a call. stopped() ends the repeats.
+export function coalesced(work, { onBusy = () => {}, stopped = () => false } = {}) {
+  let running = null, again = false;
+  return () => {
+    if (running) { again = true; onBusy(); return running; }
+    running = (async () => {
+      let result;
+      do { again = false; result = await work(); } while (again && !stopped());
+      return result;
+    })().finally(() => { running = null; });
+    return running;
+  };
+}
+
+// One person's ticks, once setup is complete. Each resolves with the tick's result, or { error } (logged here).
+// Outcome reports go out even while a tick is stuck.
+function ticker(workflow, settings, log) {
+  const run = coalesced(() => workflow.tick().then(result => {
+    const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
+    log.info(skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`);
+    if (result?.warning) log.error(result.warning);
+    return result;
+  }).catch(failure => { log.error(`Agent: ${failure.message}`); return { error: failure.message }; }),
+  { onBusy: () => workflow.reportOutcomes(), stopped: () => workflow.closed });
+  return () => settings.complete() ? run() : Promise.resolve();
+}
+
+// The person's IS24 and Immomio logins. An account email whose login is gone is cleared, so setup asks to connect.
+function openSessions(folder, settings) {
+  const is24 = new IS24Session(join(folder, SESSIONS[0]));
+  const immomio = new ImmomioSession(join(folder, SESSIONS[1]));
+  if (!is24.connected && settings.config.accountEmail) settings.set('accountEmail', '');
+  if (!immomio.connected && settings.config.immomioEmail) settings.set('immomioEmail', '');
+  return { is24, immomio };
+}
+
+// Sends a connect button (once per open request) and resolves with the connected email, saved as `setting`.
+function connector({ app, setting, name, path, config, settings, send, log }) {
+  return async intro => {
+    const { fresh, done } = app.request();
+    if (fresh) {
+      log.info(`Waiting for them to connect ${name}.`);
+      await send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 Connect ${name}`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(failure => log.error(failure.message));
+    }
+    const email = await done;
+    if (email !== config[setting]) settings.set(setting, email);
+    return email;
+  };
+}
+
+// The shared ChatGPT login, as the Assistant uses it.
+const codexFor = config => ({ loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) });
+
 export const userIds = dataDir => {
   const root = join(dataDir, 'users');
   return existsSync(root) ? readdirSync(root).filter(name => /^\d+$/.test(name)) : [];
@@ -47,9 +101,10 @@ function migrate(dataDir, firstId) {
   if (!existsSync(database)) return;
   const store = new Store(database);
   const chatId = store.settings().chatId ?? firstId;
-  if (/^\d+$/.test(String(chatId ?? ''))) store.saveSetting('admin', true);
+  const paired = /^\d+$/.test(String(chatId ?? ''));
+  if (paired) store.saveSetting('admin', true);
   store.close(); // Folds any write-ahead log into the database.
-  if (!/^\d+$/.test(String(chatId ?? ''))) return; // Nobody paired yet: it waits for the first person.
+  if (!paired) return; // Nobody paired yet: it waits for the first person.
   const folder = join(dataDir, 'users', String(chatId));
   mkdirSync(folder, { recursive: true, mode: 0o700 });
   for (const file of [...SESSIONS, 'agent.db-wal', 'agent.db-shm', 'agent.db']) {
@@ -57,7 +112,9 @@ function migrate(dataDir, firstId) {
   }
 }
 
-const sameSearch = (a, b) => JSON.stringify(searchFilters(a)) === JSON.stringify(searchFilters(b));
+const sameSearch = (a, b) => searchKey(a) === searchKey(b);
+// Set up and not paused: their picked searches are crawled for them.
+const isSearching = user => user.settings.complete() && !user.settings.config.paused;
 // People used to paste their own search URL. Its rent, rooms and area become their limits and the rest joins the
 // admin's list, so people who differed only in those three share one search as before.
 function adoptSearchUrls(dataDir) {
@@ -113,79 +170,45 @@ export class Users {
     const config = settings.config;
     for (const [key, value] of Object.entries({ chatId: id, ...initial })) settings.assign(key, value);
     const isAdmin = settings.values.admin === true;
-    const error = text => this.log.error(`[${id}] ${text}`);
-    const session = new IS24Session(join(folder, SESSIONS[0]));
-    // The account email comes from the connected IS24 session; without one, setup asks to connect.
-    if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
-    const immomioSession = new ImmomioSession(join(folder, SESSIONS[1]));
-    if (!immomioSession.connected && config.immomioEmail) settings.set('immomioEmail', '');
+    const log = { info: text => this.log.log(`[${id}] ${text}`), error: text => this.log.error(`[${id}] ${text}`) };
+    const error = log.error;
+    const { is24: session, immomio: immomioSession } = openSessions(folder, settings);
     const adapter = new IS24Adapter(config, { session, immomio: immomioSession, feeds, catalog: () => this.catalog,
       cursors: { get: () => store.settings().cursors ?? {}, set: value => store.saveSetting('cursors', value) } });
-    const is24App = new ConnectApp({ config, session });
-    const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
+    const is24App = new ConnectApp({ config, session, bot });
+    const immomioApp = new ConnectApp({ config, session: immomioSession, bot, brand: BRANDS.immomio });
+    // Everything below talks to the person through their Telegram, which needs the workflow first.
+    let telegram;
+    const send = (text, extra) => telegram.send(text, extra);
     // The settings forms. The name IS24 knows prefills the form until one is saved.
     const formApp = new FormApp({ config, settings,
       prefill: () => ({ 'persona.vorname': session.profile.firstname || undefined, 'persona.nachname': session.profile.lastname || undefined }),
       onSaved: part => telegram.assistant.formSaved(part).catch(failure => error(failure.message)) });
-    let telegram;
-    // Sends the connect button (once per request) and resolves with the connected email, saved as `setting`.
-    const connector = (app, setting, name, path) => async intro => {
-      const { fresh, done } = app.request();
-      if (fresh) {
-        this.log.log(`[${id}] Waiting for them to connect ${name}.`);
-        await telegram.send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 Connect ${name}`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(failure => error(failure.message));
-      }
-      const email = await done;
-      if (email !== config[setting]) settings.set(setting, email);
-      return email;
-    };
-    const connect = connector(is24App, 'accountEmail', 'ImmoScout24', 'connect');
+    const connect = connector({ app: is24App, setting: 'accountEmail', name: 'ImmoScout24', path: 'connect', config, settings, send, log });
     // Optional: only listings that link to Immomio need it.
-    const connectImmomio = connector(immomioApp, 'immomioEmail', 'Immomio', 'immomio');
+    const connectImmomio = connector({ app: immomioApp, setting: 'immomioEmail', name: 'Immomio', path: 'immomio', config, settings, send, log });
     const evaluate = createEvaluator(config);
     const workflow = new Workflow({
       store, adapter, config, evaluate: (snapshot, options) => this.limit(() => evaluate(snapshot, options)),
       notify: review => telegram.notify(review),
       report: review => telegram.notifyOutcome(review),
       withdraw: review => telegram.withdraw(review),
-      alert: text => { error(text); return telegram.send(text); }, interval: () => this.interval(),
+      alert: text => { error(text); return send(text); }, interval: () => this.interval(),
       beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
       onEvent: event => {
-        if (event.type === 'submission') this.log.log(`[${id}] ${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
+        if (event.type === 'submission') log.info(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
         if (event.type.endsWith('_error')) error(`${event.type}: ${event.detail}`);
       },
     });
     telegram = new Telegram({ config, store, workflow, bot, onError: error });
-    // Resolves with the tick's result, or { error } (logged here). A wake-up during a tick runs one more after it,
-    // so a crawl that finished meanwhile is never missed. Outcome reports go out even while a tick is stuck.
-    let running = null, again = false;
-    const tick = () => {
-      if (!settings.complete()) return Promise.resolve();
-      if (running) { again = true; workflow.reportOutcomes(); return running; }
-      running = (async () => {
-        let result;
-        do { again = false; result = await once(); } while (again && !workflow.closed);
-        return result;
-      })().finally(() => { running = null; });
-      return running;
-    };
-    const once = () => {
-      return workflow.tick().then(result => {
-        const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
-        this.log.log(`[${id}] ${skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`}`);
-        if (result?.warning) error(result.warning);
-        return result;
-      }).catch(failure => { error(`Agent: ${failure.message}`); return { error: failure.message }; });
-    };
+    const tick = ticker(workflow, settings, log);
     telegram.assistant = new Assistant({
-      settings, store, send: (text, extra) => telegram.send(text, extra),
-      codex: { loggedIn: () => codexLoggedIn(config), login: options => loginWithCodex(config, options), models: () => listCodexModels(config), account: () => codexAccount(config) },
+      settings, store, send, codex: codexFor(config),
       is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
       immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
-      catalog: () => this.catalog, feedStatus: search => feeds.status(feedKey(searchFilters(search.url))),
-      admin: isAdmin ? { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url),
-        renameSearch: (name, to) => this.renameSearch(name, to), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) } : null,
+      catalog: () => this.catalog, feedStatus: search => feeds.status(searchKey(search.url)),
+      admin: isAdmin ? this.adminActions() : null,
       onReady: () => tick(), onError: error,
     });
     // Back from a pause: only what is crawled from now on is new, and what is online now counts as already online.
@@ -202,24 +225,32 @@ export class Users {
     this.users.set(id, user);
     return user;
   }
+  // What only the admin's chat can do.
+  adminActions() {
+    return { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url),
+      renameSearch: (name, to) => this.renameSearch(name, to), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) };
+  }
   // Checks run as often as the most frequent search someone searching picked; each search runs on its own interval.
   interval() {
-    const picked = new Set([...this.users.values()].filter(user => user.settings.complete() && !user.settings.config.paused).flatMap(user => user.settings.config.searches));
+    const picked = new Set(this.searching().flatMap(user => user.settings.config.searches));
     const intervals = this.catalog.filter(search => picked.has(search.name)).map(search => search.intervalMs);
     return intervals.length ? Math.min(...intervals) : this.defaults().intervalMs;
   }
   // Everybody's housekeeping besides the crawls: outcome reports, approved sends, the morning cleanup.
   round() { return Promise.allSettled([...this.users.values()].map(user => user.tick())); }
   // Everyone searching, and who picked what.
-  searching() { return [...this.users.values()].filter(user => user.settings.complete() && !user.settings.config.paused); }
+  searching() { return [...this.users.values()].filter(isSearching); }
   // The admin's searches as the crawlers need them. wanted: someone searching picked it.
   feedSearches() {
     const picked = new Set(this.searching().flatMap(user => user.settings.config.searches));
-    return this.catalog.map(search => ({ ...search, key: feedKey(searchFilters(search.url)), filters: searchFilters(search.url), wanted: picked.has(search.name) }));
+    return this.catalog.map(search => {
+      const filters = searchFilters(search.url);
+      return { ...search, key: feedKey(filters), filters, wanted: picked.has(search.name) };
+    });
   }
   // The people a search's news is for. A rename keeps the key, so they are found by name in the current list.
   followers(key) {
-    const name = this.catalog.find(search => feedKey(searchFilters(search.url)) === key)?.name;
+    const name = this.catalog.find(search => searchKey(search.url) === key)?.name;
     return [...this.users.values()].filter(user => user.settings.complete() && user.settings.config.searches.includes(name));
   }
   // A crawl of `key` finished: whoever picked it reads what is new.
@@ -247,51 +278,59 @@ export class Users {
     const defaults = this.defaults();
     return (this.admin?.store.settings().catalog ?? []).map(search => ({ ...defaults, ...search }));
   }
+  // Stores a changed list of searches; the crawlers pick up the change.
+  saveCatalog(catalog) {
+    this.admin.store.saveSetting('catalog', catalog);
+    this.onCatalog();
+  }
+  // The search of that name on the list, or a user-facing error.
+  listed(name) {
+    const search = this.catalog.find(entry => entry.name === name);
+    if (!search) throw new Error(`${name} is no longer on the list.`);
+    return search;
+  }
+  // A user-facing error unless `name` can name a search. except: the search being renamed may keep its name.
+  checkName(name, except = null) {
+    if (!name || name.length > 40 || /[\r\n]/.test(name)) throw new Error('Please send a name of one line, at most 40 characters.');
+    if (name !== except && this.catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
+  }
+  // Applies change(searches) to everyone who picked `name`; returns them.
+  repick(name, change) {
+    const pickers = [...this.users.values()].filter(user => user.settings.config.searches.includes(name));
+    for (const user of pickers) user.settings.assign('searches', change(user.settings.config.searches));
+    return pickers;
+  }
   // A search's interval and/or night pause; also what the next new search starts with.
   scheduleSearch(name, change) {
     if (change.intervalMs !== undefined && !INTERVALS.includes(change.intervalMs)) throw new Error('Please pick one of the intervals.');
     if (change.quietHours !== undefined && !NIGHT_PAUSES.includes(change.quietHours)) throw new Error('Please pick one of the night pauses.');
-    const { catalog } = this;
-    const search = catalog.find(entry => entry.name === name);
-    if (!search) throw new Error(`${name} is no longer on the list.`);
-    const updated = { ...search, ...change };
-    this.admin.store.saveSetting('catalog', catalog.map(entry => entry === search ? updated : entry));
+    const updated = { ...this.listed(name), ...change };
+    // The list before the new defaults: other searches without their own schedule keep theirs.
+    const catalog = this.catalog.map(entry => entry.name === name ? updated : entry);
     this.admin.store.saveSetting('searchDefaults', { intervalMs: updated.intervalMs, quietHours: updated.quietHours });
-    this.onCatalog();
+    this.saveCatalog(catalog);
     return updated;
   }
   addSearch(name, url) {
     const { href } = new URL(url);
     searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
-    const { catalog } = this;
-    if (catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
-    const twin = catalog.find(search => sameSearch(search.url, href));
+    this.checkName(name);
+    const twin = this.catalog.find(search => sameSearch(search.url, href));
     if (twin) throw new Error(`${twin.name} is already this search.`);
-    this.admin.store.saveSetting('catalog', [...catalog, { name, url: href, ...this.defaults() }]);
-    this.onCatalog();
+    this.saveCatalog([...this.catalog, { name, url: href, ...this.defaults() }]);
   }
   // Same search, new name, for everyone who picked it.
   renameSearch(name, to) {
-    if (!to || to.length > 40 || /[\r\n]/.test(to)) throw new Error('Please send a name of one line, at most 40 characters.');
-    const { catalog } = this;
-    if (!catalog.some(search => search.name === name)) throw new Error(`${name} is no longer on the list.`);
-    if (to !== name && catalog.some(search => search.name === to)) throw new Error(`There already is a search named ${to}.`);
-    this.admin.store.saveSetting('catalog', catalog.map(search => search.name === name ? { ...search, name: to } : search));
-    for (const user of this.users.values()) {
-      const { searches } = user.settings.config;
-      if (searches.includes(name)) user.settings.assign('searches', searches.map(picked => picked === name ? to : picked));
-    }
+    this.checkName(to, name);
+    this.listed(name);
+    this.saveCatalog(this.catalog.map(search => search.name === name ? { ...search, name: to } : search));
+    this.repick(name, searches => searches.map(picked => picked === name ? to : picked));
   }
   // Whoever had picked it hears so; someone with nothing left gets the list again.
   async removeSearch(name) {
-    const { catalog } = this;
-    if (catalog.length < 2) throw new Error('This is the last search. Add another one first.');
-    this.admin.store.saveSetting('catalog', catalog.filter(search => search.name !== name));
-    this.onCatalog();
-    for (const user of this.users.values()) {
-      const { searches } = user.settings.config;
-      if (!searches.includes(name)) continue;
-      user.settings.assign('searches', searches.filter(picked => picked !== name));
+    if (this.catalog.length < 2) throw new Error('This is the last search. Add another one first.');
+    this.saveCatalog(this.catalog.filter(search => search.name !== name));
+    for (const user of this.repick(name, searches => searches.filter(picked => picked !== name))) {
       await user.telegram.send(`🔎 The search ${name} is no longer available.`).then(() => user.telegram.assistant.continue()).catch(error => this.log.error(`[${user.id}] ${error.message}`));
     }
   }
