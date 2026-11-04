@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { IS24Session, loginRequired } from './is24-auth.js';
+import { IS24Session } from './is24-auth.js';
+import { claims, loginRequired, oauthToken, pkce } from './oauth.js';
 
 // Immomio: some landlords take applications only there and link the apply page in the IS24 description.
 // Applying uses the tenant app's GraphQL API with the account's Immomio profile; no message is written.
@@ -39,14 +39,7 @@ function loginForm(html) {
   return null;
 }
 
-async function token(fetchImpl, params) {
-  const res = await fetchImpl(`${SSO}/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams({ client_id: CLIENT_ID, ...params }) });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok && data.access_token) return data;
-  const error = new Error(`Immomio login failed: ${data.error_description || data.error || `HTTP ${res.status}`}`);
-  if (data.error === 'invalid_grant') error.code = 'LOGIN_REQUIRED';
-  throw error;
-}
+const token = (fetchImpl, params) => oauthToken(fetchImpl, `${SSO}/token`, { client_id: CLIENT_ID, ...params }, { service: 'Immomio' });
 
 // Email and password (+ a one-time code from askCode(question)) on Keycloak's login form → OAuth code with PKCE → tokens.
 // ponytail: scrapes Keycloak's standard login form; a custom theme or extra required step fails with a clear message.
@@ -58,10 +51,8 @@ async function keycloakLogin({ email, password, askCode, fetchImpl = fetch }) {
     remember(res);
     return res;
   };
-  const verifier = randomBytes(32).toString('base64url');
-  const state = randomBytes(16).toString('base64url');
-  let res = await request(`${SSO}/auth?${new URLSearchParams({ client_id: CLIENT_ID, response_type: 'code', scope: 'openid offline_access', redirect_uri: REDIRECT_URI,
-    state, nonce: randomBytes(16).toString('base64url'), login_hint: email, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' })}`);
+  const { verifier, state, params } = pkce();
+  let res = await request(`${SSO}/auth?${new URLSearchParams({ client_id: CLIENT_ID, response_type: 'code', scope: 'openid offline_access', redirect_uri: REDIRECT_URI, login_hint: email, ...params })}`);
   let passwordSent = false, retry = '';
   for (let steps = 0; steps < 10; steps++) {
     const location = res.headers.get('location');
@@ -94,7 +85,6 @@ async function keycloakLogin({ email, password, askCode, fetchImpl = fetch }) {
   throw new Error('Immomio login did not finish');
 }
 
-const claims = jwt => { try { return JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url')); } catch { return {}; } };
 // The connected Immomio account, stored and renewed like the IS24 one.
 export class ImmomioSession extends IS24Session {
   async login({ email, password, askCode }) {

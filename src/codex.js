@@ -4,6 +4,7 @@ import { mkdirSync, chmodSync, mkdtempSync, writeFileSync, readFileSync, statSyn
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SCHEMA, INSTRUCTIONS, reviewInput, unavailable } from './llm.js';
+import { claims } from './oauth.js';
 
 const require = createRequire(import.meta.url);
 function codexExecutable() {
@@ -11,6 +12,12 @@ function codexExecutable() {
   const target = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-${process.platform === 'darwin' ? 'apple-darwin' : 'unknown-linux-musl'}`;
   const root = dirname(require.resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`));
   return join(root, 'vendor', target, 'bin', 'codex');
+}
+
+// work(directory) in a private temporary directory, removed afterwards.
+async function inTempDir(prefix, work) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  try { return await work(directory); } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
 function codexEnvironment(config, home) {
@@ -58,15 +65,14 @@ function codexArguments(config, directory) {
 export function codexAccount(config) {
   try {
     const { tokens } = JSON.parse(readFileSync(join(config.llm.codexHome, 'auth.json'), 'utf8'));
-    const claims = JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64url'));
-    return { email: String(claims.email || ''), plan: String(claims['https://api.openai.com/auth']?.chatgpt_plan_type || '') };
+    const account = claims(tokens.id_token);
+    return { email: String(account.email || ''), plan: String(account['https://api.openai.com/auth']?.chatgpt_plan_type || '') };
   } catch { return { email: '', plan: '' }; }
 }
 
 // The models this ChatGPT plan offers, with the thinking levels each supports (first = its default).
-export async function listCodexModels(config, { spawnImpl = spawn } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-models-'));
-  try {
+export function listCodexModels(config, { spawnImpl = spawn } = {}) {
+  return inTempDir('depanator-codex-models-', async directory => {
     const child = spawnImpl(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', 'debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
@@ -79,13 +85,12 @@ export async function listCodexModels(config, { spawnImpl = spawn } = {}) {
       const levels = (model.supported_reasoning_levels || []).map(level => level.effort);
       return { id: model.slug, name: model.display_name || model.slug, thinking: levels, defaultThinking: model.default_reasoning_level || '' };
     });
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
 }
 
 export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal, revision } = {}) {
   signal?.throwIfAborted();
-  const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-'));
-  try {
+  return inTempDir('depanator-codex-', async directory => {
     const args = codexArguments(config, directory);
     const child = spawnImpl(codexExecutable(), args, { cwd: directory, env: codexEnvironment(config, directory), stdio: ['pipe', 'ignore', 'ignore'] });
     const complete = new Promise((resolve, reject) => {
@@ -104,21 +109,22 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
     if (statSync(filename).size > 65000) throw new Error('Codex output exceeded the review limit');
     try { return JSON.parse(readFileSync(filename, 'utf8')); }
     catch { throw new Error('Codex returned invalid JSON; nothing was sent'); }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
 }
 
 const LOGIN_FLAGS = ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login'];
 function runCodex(config, args, { spawnImpl = spawn, onOutput = () => {} } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'depanator-codex-login-'));
-  const child = spawnImpl(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  const collect = chunk => { output += String(chunk).replace(/\x1b\[[0-9;]*m/g, ''); onOutput(output); };
-  child.stdout?.on('data', collect);
-  child.stderr?.on('data', collect);
-  return new Promise(resolve => {
-    child.once('error', () => resolve(false));
-    child.once('close', code => resolve(code === 0));
-  }).finally(() => rmSync(directory, { recursive: true, force: true }));
+  return inTempDir('depanator-codex-login-', directory => {
+    const child = spawnImpl(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    const collect = chunk => { output += String(chunk).replace(/\x1b\[[0-9;]*m/g, ''); onOutput(output); };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    return new Promise(resolve => {
+      child.once('error', () => resolve(false));
+      child.once('close', code => resolve(code === 0));
+    });
+  });
 }
 export function codexLoggedIn(config, options) { return runCodex(config, ['status'], options); }
 // Device-code login for the ChatGPT subscription: onCode({ url, code }) is called once both are printed.

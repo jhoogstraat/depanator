@@ -1,4 +1,5 @@
 import { immomioDraft, usesImmomio } from './immomio.js';
+import { coded } from './errors.js';
 
 export const SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -15,9 +16,9 @@ export const SCHEMA = {
 // Reasons belong to screening: a draft pass may return none, and the screening reasons are kept.
 function validateEvaluation(result, { write = false } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)
-    || Object.keys(result).some(key => !['decision', 'reasons', 'draft', 'confident'].includes(key))
+    || Object.keys(result).some(key => !SCHEMA.required.includes(key))
     || typeof result.confident !== 'boolean' || (result.decision === 'dismiss' && result.confident)
-    || !['message', 'dismiss'].includes(result.decision)
+    || !SCHEMA.properties.decision.enum.includes(result.decision)
     || !Array.isArray(result.reasons) || (!write && !result.reasons.length) || result.reasons.length > 10
     || result.reasons.some(reason => typeof reason !== 'string' || !reason.trim() || reason.length > 1000)
     || typeof result.draft !== 'string' || result.draft.length > 5000
@@ -28,11 +29,7 @@ function validateEvaluation(result, { write = false } = {}) {
 }
 
 // Outages are systemic: the workflow pauses analysis instead of charging the listing an attempt.
-export function unavailable(message) {
-  const error = new Error(message);
-  error.code = 'LLM_UNAVAILABLE';
-  return error;
-}
+export const unavailable = message => coded(message, 'LLM_UNAVAILABLE');
 
 // revision ({ draft, instructions }, either may be empty): write a draft instead of screening.
 export function reviewInput(config, snapshot, revision) {

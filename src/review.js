@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { coded } from './errors.js';
 
 // The review lifecycle. MACHINE below is the complete state machine: a review's status changes only
 // through these handlers, and any (status, event) pair not listed is a CONFLICT.
@@ -47,11 +48,7 @@ export function configHashFor(config) {
 export const compactId = id => id.replaceAll('-', '');
 export const expandId = compact => compact.replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-');
 
-export function conflict(message) {
-  const error = new Error(message);
-  error.code = 'CONFLICT';
-  throw error;
-}
+export function conflict(message) { throw coded(message, 'CONFLICT'); }
 
 export function newReview({ id, snapshot, now }) {
   const exposeId = String(snapshot.expose_id ?? '');

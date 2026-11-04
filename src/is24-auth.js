@@ -1,5 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { claims, loginRequired, oauthToken, pkce } from './oauth.js';
+
+export { loginRequired };
 
 // IS24's app login (Okta), used the way the IS24 Android app uses it: no website, so no robot check.
 const BASE = 'https://login.immobilienscout24.de';
@@ -23,14 +25,7 @@ async function call(fetchImpl, url, body) {
   throw error;
 }
 
-async function token(fetchImpl, params) {
-  const res = await fetchImpl(`${ISSUER}/v1/token`, { method: 'POST', headers: { ...HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: CLIENT_ID, ...params }) });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok && data.access_token) return data;
-  const error = new Error(`IS24 login failed: ${data.error_description || data.error || `HTTP ${res.status}`}`);
-  if (data.error === 'invalid_grant') error.code = 'LOGIN_REQUIRED'; // The renewal key expired or was revoked.
-  throw error;
-}
+const token = (fetchImpl, params) => oauthToken(fetchImpl, `${ISSUER}/v1/token`, { client_id: CLIENT_ID, ...params }, { service: 'IS24', headers: HEADERS });
 
 // Password (+ a 2FA code from askCode(question)) → Okta session → OAuth code with PKCE → tokens.
 // The password is only sent to IS24's login service; nothing here stores or logs it.
@@ -52,13 +47,8 @@ async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
     try { state = await call(fetchImpl, href, { stateToken: state.stateToken, passCode }); retry = ''; }
     catch (error) { if (error.status !== 403) throw error; retry = 'That code did not work. Please enter it again.'; }
   }
-  const verifier = randomBytes(32).toString('base64url');
-  const expected = randomBytes(16).toString('base64url');
-  const query = new URLSearchParams({
-    client_id: CLIENT_ID, response_type: 'code', scope: 'openid profile offline_access', redirect_uri: REDIRECT_URI,
-    state: expected, nonce: randomBytes(16).toString('base64url'), sessionToken: state.sessionToken,
-    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
-  });
+  const { verifier, state: expected, params } = pkce();
+  const query = new URLSearchParams({ client_id: CLIENT_ID, response_type: 'code', scope: 'openid profile offline_access', redirect_uri: REDIRECT_URI, sessionToken: state.sessionToken, ...params });
   const res = await fetchImpl(`${ISSUER}/v1/authorize?${query}`, { headers: HEADERS, redirect: 'manual' });
   const location = new URL(res.headers.get('location') || 'about:blank');
   const code = location.searchParams.get('code');
@@ -73,13 +63,6 @@ export async function accountInfo(accessToken, fetchImpl = fetch) {
   if (!res.ok) throw new Error(`IS24 account check failed: HTTP ${res.status}`);
   const name = value => typeof value === 'string' ? value.trim().slice(0, 60) : '';
   return { email: String(data.email || data.preferred_username || '').toLowerCase(), firstname: name(data.given_name), lastname: name(data.family_name) };
-}
-
-const claims = jwt => { try { return JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url')); } catch { return {}; } };
-export function loginRequired(message = 'IS24 login required') {
-  const error = new Error(message);
-  error.code = 'LOGIN_REQUIRED';
-  return error;
 }
 
 // The connected IS24 account: tokens in a private file (0600) of the data directory. Access tokens last

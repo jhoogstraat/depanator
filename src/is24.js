@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
+import { parseSearchUrl, searchListPath } from './url-translator.js';
 import { PAGES, feedKey, outsideSearch } from './feed.js';
-import { loginRequired } from './is24-auth.js';
-import { isQuiet } from './settings.js';
+import { loginRequired } from './oauth.js';
+import { coded } from './errors.js';
+import { allQuiet, pickedSearches } from './settings.js';
 import { applyOnImmomio, immomioClient, immomioPropertyId, immomioUrl, usesImmomio } from './immomio.js';
 
 // Everything goes through the IS24 app's API (api.mobile.immobilienscout24.de): no website, no browser.
@@ -14,11 +15,7 @@ const USER_AGENT = 'ImmoScout_27.12_26.2_._';
 // The app version a working third-party client sends contact requests with.
 const CONTACT_USER_AGENT = 'ImmoScout24_1458_34_._';
 const LISTING_FACTS = ['title', 'price', 'area', 'rooms', 'address', 'description'];
-// BLOCKED: rate limit or access denied, back off globally. LISTING_GONE: only this listing is affected.
-function coded(error, code) {
-  error.code = code;
-  return error;
-}
+// Error codes: BLOCKED is a rate limit or access denied, back off globally. LISTING_GONE: only this listing is affected.
 function listingUrl(id) {
   if (!/^\d{1,20}$/.test(String(id))) throw new Error('Invalid expose ID');
   return `${ORIGIN}/expose/${id}`;
@@ -26,11 +23,12 @@ function listingUrl(id) {
 
 // Throws a user-facing reason when the search URL cannot be polled exactly.
 export function searchFilters(searchUrl) {
-  const validation = validateSearchUrl(searchUrl);
-  if (!validation.ok) throw new Error(validation.error);
-  if (!['calculatedtotalrent','rentpermonth'].includes(validation.canonical.price.type)) throw new Error('Unsupported rent price type');
-  return validation.canonical;
+  const filters = parseSearchUrl(searchUrl);
+  if (!['calculatedtotalrent', 'rentpermonth'].includes(filters.price.type)) throw new Error('Unsupported rent price type');
+  return filters;
 }
+// A search's identity in the crawled feeds (feed.js).
+export const searchKey = searchUrl => feedKey(searchFilters(searchUrl));
 
 // "1.234,56 €", "33,13 m²", "2,5" → number.
 function parseNumber(text) {
@@ -138,11 +136,11 @@ export class IS24Adapter {
     const timeout = AbortSignal.timeout(30000);
     const response = await this.fetch(`${API}${path}`, { redirect: 'error', ...request,
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', ...request.headers }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-    if ([404, 410].includes(response.status)) throw coded(new Error('Listing is no longer available'), 'LISTING_GONE');
+    if ([404, 410].includes(response.status)) throw coded('Listing is no longer available', 'LISTING_GONE');
     const text = await response.text().catch(() => '');
     const refuse = (problem, code) => {
       this.keep(path.split('?')[0].slice(1).replaceAll('/', '-'), problem, text);
-      throw coded(new Error(problem), code);
+      throw coded(problem, code);
     };
     if ([401, 403, 429].includes(response.status)) refuse(`IS24 blocked access (HTTP ${response.status})`, 'BLOCKED');
     if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) refuse(`IS24 unavailable (HTTP ${response.status})`);
@@ -150,7 +148,7 @@ export class IS24Adapter {
   }
   async searchPage(page, signal, filters) {
     signal?.throwIfAborted();
-    const data = await this.api(buildMobileApiUrl(filters, { page }).slice(API.length), { method: 'POST', signal,
+    const data = await this.api(searchListPath(filters, { page }), { method: 'POST', signal,
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ supportedResultListTypes: [], userData: {} }) });
     if (!Array.isArray(data?.resultListItems) || !Number.isSafeInteger(data.numberOfPages) || data.numberOfPages < 0) {
       this.keep('search-list', 'Unexpected search response', data);
@@ -184,13 +182,15 @@ export class IS24Adapter {
       const facts = { price: attribute('€'), area: attribute('m²'), rooms: attribute('Zi') };
       const gaps = Object.entries({ title: expose.title, address, ...facts }).filter(([, value]) => !value).map(([key]) => key);
       if (gaps.length && !known(id)) this.keep(`search-item-${id}`, `Search result without ${gaps.join(', ')}`, item);
-      if (!listings.has(id)) listings.set(id,{expose_id:id,title:expose.title || `Listing ${id}`,...facts,address,image_url:expose.titlePicture?.full || expose.titlePicture?.preview || '',url,published:String(expose.published || ''),earlyAccess:expose.paywallListing?.active === true});
+      if (listings.has(id)) continue;
+      listings.set(id, { expose_id: id, title: expose.title || `Listing ${id}`, ...facts, address, image_url: expose.titlePicture?.full || expose.titlePicture?.preview || '',
+        url, published: String(expose.published || ''), earlyAccess: expose.paywallListing?.active === true });
     }
     return { listings: [...listings.values()], complete, pages };
   }
-  picked() { return this.catalog().filter(search => this.config.searches.includes(search.name)); }
+  picked() { return pickedSearches(this.catalog(), this.config.searches); }
   // Every search this person picked is in its night pause.
-  quiet(now = Date.now()) { const picked = this.picked(); return picked.length > 0 && picked.every(search => isQuiet(search.quietHours, now)); }
+  quiet(now = Date.now()) { return allQuiet(this.picked(), now); }
   // What the crawlers found since this person last read, in the searches they picked, narrowed to their limits.
   // `listings` are new; `baseline` were already online. A search picked anew starts at its newest row, its newest
   // page counting as already online. After a gap (a stuck login, a restart) at most the newest PAGES pages of unread
@@ -201,7 +201,7 @@ export class IS24Adapter {
     const cursors = {};
     const fresh = new Map(), noted = new Map(); // A listing in two searches counts once; as already online, if either says so.
     for (const search of this.picked()) {
-      const key = feedKey(searchFilters(search.url));
+      const key = searchKey(search.url);
       if (read[key] === undefined) {
         const { seq, listings } = this.feeds.latest(key, 20);
         cursors[key] = seq;
@@ -245,37 +245,40 @@ export class IS24Adapter {
       catch (error) { if (error.code !== 'LOGIN_REQUIRED') throw error; await onRequired(); }
     }
   }
-  // One contact request with the approved draft. Never retried: a lost answer is an unknown outcome.
+  // One application with the approved draft, on Immomio or as an IS24 contact request. Never retried: a lost
+  // answer is an unknown outcome, and so is any failure once attempt() said the request may go out.
   async send(review, { beforeSubmit, assertCanSubmit } = {}) {
     let attempted = false;
+    const attempt = () => { assertCanSubmit?.(); attempted = true; };
     try {
       if (typeof beforeSubmit !== 'function') throw new Error('Persistent approval check required');
-      if (usesImmomio(review.snapshot, this.config)) {
-        if (this.immomio?.email !== this.config.immomioEmail) throw new Error('The connected Immomio account differs from the approved one');
-        const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio ended my login; send /immomio to connect again, or apply yourself: ${review.snapshot.immomio.url}`); });
-        const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, beforeSubmit,
-          onSubmitAttempt: () => { assertCanSubmit?.(); attempted = true; } });
-        return { outcome: 'sent', detail };
-      }
-      if (this.session.email !== this.config.accountEmail) throw loginRequired('The connected IS24 account differs from the approved one');
-      const id = review.snapshot.expose_id;
-      const { body, reason } = contactRequest(await this.expose(id), this.config.persona, review.draft, this.session.ssoId);
-      if (reason) return { outcome: 'failed', detail: reason };
-      const token = await this.session.accessToken();
-      if (await beforeSubmit() === false) throw new Error('Approval no longer valid');
-      assertCanSubmit?.();
-      attempted = true;
-      const response = await this.fetch(`${API}/expose/${id}/contact?referrer=resultlist`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
-        headers: { 'User-Agent': CONTACT_USER_AGENT, Accept: 'application/json', 'Content-Type': 'application/json; charset=UTF-8', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
-      if (response.ok) return { outcome: 'sent', detail: 'IS24 accepted the request' };
-      const raw = await response.text().catch(() => '');
-      this.keep(`contact-${id}`, `Contact request answered HTTP ${response.status}`, raw);
-      const answer = raw.replace(/\s+/g, ' ').slice(0, 200);
-      // IS24 answers delivered contact requests with HTTP 500 (confirmed live in the account's messages).
-      if (response.status === 500) return { outcome: 'sent', detail: 'IS24 delivered the request' };
-      // Other server errors may come after IS24 already forwarded the request.
-      if (response.status > 500) return { outcome: 'unknown_outcome', detail: `IS24 answered HTTP ${response.status}${answer && `: ${answer}`}; check your IS24 messages whether it arrived` };
-      return { outcome: 'failed', detail: `IS24 rejected the request (HTTP ${response.status}${answer && `: ${answer}`})` };
+      return await (usesImmomio(review.snapshot, this.config) ? this.sendImmomio(review, beforeSubmit, attempt) : this.sendContact(review, beforeSubmit, attempt));
     } catch (error) { return { outcome: attempted ? 'unknown_outcome' : 'failed', detail: error.message }; }
+  }
+  async sendImmomio(review, beforeSubmit, attempt) {
+    if (this.immomio?.email !== this.config.immomioEmail) throw new Error('The connected Immomio account differs from the approved one');
+    const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio ended my login; send /immomio to connect again, or apply yourself: ${review.snapshot.immomio.url}`); });
+    const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, beforeSubmit, onSubmitAttempt: attempt });
+    return { outcome: 'sent', detail };
+  }
+  async sendContact(review, beforeSubmit, attempt) {
+    if (this.session.email !== this.config.accountEmail) throw loginRequired('The connected IS24 account differs from the approved one');
+    const id = review.snapshot.expose_id;
+    const { body, reason } = contactRequest(await this.expose(id), this.config.persona, review.draft, this.session.ssoId);
+    if (reason) return { outcome: 'failed', detail: reason };
+    const token = await this.session.accessToken();
+    if (await beforeSubmit() === false) throw new Error('Approval no longer valid');
+    attempt();
+    const response = await this.fetch(`${API}/expose/${id}/contact?referrer=resultlist`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
+      headers: { 'User-Agent': CONTACT_USER_AGENT, Accept: 'application/json', 'Content-Type': 'application/json; charset=UTF-8', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    if (response.ok) return { outcome: 'sent', detail: 'IS24 accepted the request' };
+    const raw = await response.text().catch(() => '');
+    this.keep(`contact-${id}`, `Contact request answered HTTP ${response.status}`, raw);
+    const answer = raw.replace(/\s+/g, ' ').slice(0, 200);
+    // IS24 answers delivered contact requests with HTTP 500 (confirmed live in the account's messages).
+    if (response.status === 500) return { outcome: 'sent', detail: 'IS24 delivered the request' };
+    // Other server errors may come after IS24 already forwarded the request.
+    if (response.status > 500) return { outcome: 'unknown_outcome', detail: `IS24 answered HTTP ${response.status}${answer && `: ${answer}`}; check your IS24 messages whether it arrived` };
+    return { outcome: 'failed', detail: `IS24 rejected the request (HTTP ${response.status}${answer && `: ${answer}`})` };
   }
 }

@@ -79,7 +79,7 @@ export async function main(args = process.argv.slice(2)) {
     users = new Users({ runtime, bot, feeds, onCatalog: () => feeds.refresh() });
     users.load();
     // Only the page itself is served to everybody; signed requests reach that person's own login (forUser).
-    connectApp = new ConnectApp({ config: runtime, port: runtime.port, apps: [new ConnectApp({ config: runtime, brand: BRANDS.immomio }), new FormApp({ config: runtime })], forUser: id => users.get(id)?.connects });
+    connectApp = new ConnectApp({ config: runtime, bot, port: runtime.port, apps: [new ConnectApp({ config: runtime, bot, brand: BRANDS.immomio }), new FormApp({ config: runtime })], forUser: id => users.get(id)?.connects });
     await connectApp.listen();
     await bot.verify();
     await bot.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });

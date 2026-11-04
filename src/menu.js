@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { compactId } from './review.js';
-import { INTERVALS, NIGHT_PAUSES, every, nightPause } from './settings.js';
+import { INTERVALS, NIGHT_PAUSES, TIME_ZONE, every, nightPause } from './settings.js';
 
 // The Telegram menu (☰ next to the message field): two entry points, everything else is a button in the chat.
 // Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /autosend, /connect, /immomio, /login. Admin only: /users.
@@ -26,10 +26,12 @@ export function fit(buttons, most = 3) {
 // Every view is HTML; anything not written here (listing titles, your texts) goes through esc().
 const esc = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
 const html = (text, buttons) => ({ text, extra: { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: buttons } } });
-// ponytail: German time zone fixed; IS24 is a German site. Make it a setting if that ever changes.
-const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Berlin' }).format(time) : 'not yet';
+const WHEN = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short', timeZone: TIME_ZONE });
+const when = time => time ? WHEN.format(time) : 'not yet';
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
-const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+export const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+// How many people picked a search.
+const usedBy = using => using === 1 ? '1 person uses it' : using ? `${using} people use it` : 'Nobody uses it';
 
 // A search's schedule as people read it: "every 2 min · 🌙 22:00–07:00".
 const schedule = ({ intervalMs, quietHours }) => `every ${every(intervalMs)} · 🌙 ${quietHours ? nightPause(quietHours) : 'no night pause'}`;
@@ -156,7 +158,7 @@ export function searchesView({ catalog, selected, admin }) {
 // One search of the admin's list. using: how many people picked it.
 export function searchView(search, index, using) {
   const mark = fingerprint(search.name);
-  return html(`<b>🔎 ${esc(search.name)}</b>\n<a href="${esc(new URL(search.url).href)}">Open on ImmoScout24</a>\n⏱ Every ${every(search.intervalMs)}\n🌙 Night pause: ${nightPause(search.quietHours)}\n${using === 1 ? '1 person uses it.' : `${using || 'Nobody'} ${using ? 'people use' : 'uses'} it.`}`, [
+  return html(`<b>🔎 ${esc(search.name)}</b>\n<a href="${esc(new URL(search.url).href)}">Open on ImmoScout24</a>\n⏱ Every ${every(search.intervalMs)}\n🌙 Night pause: ${nightPause(search.quietHours)}\n${usedBy(using)}.`, [
     [{ text: `⏱ ${every(search.intervalMs)}`, callback_data: `x:si:${index}:${mark}` }, { text: `🌙 ${search.quietHours ? nightPause(search.quietHours) : 'Off'}`, callback_data: `x:sq:${index}:${mark}` }],
     [{ text: '✏️ Rename', callback_data: `x:sn:${index}:${mark}` }, { text: '🗑 Remove', callback_data: `x:sr:${index}:${mark}` }],
     [{ text: '← Back', callback_data: 'x:searches:edit' }],
@@ -179,7 +181,7 @@ export function searchAddedView(name, listings) {
   return html(`✅ <b>${esc(name)}</b> works: IS24 answered it.\n\n${newest ? `Newest listings:\n${newest}\n\nIf these are outside the area you picked, IS24 did not take the area from the link: remove the search.` : 'It has no listings right now, which can be right for a small area.'}`, []);
 }
 export function removeSearchView({ name }, index, using) {
-  return html(`<b>Remove ${esc(name)}?</b>\n${using === 1 ? '1 person uses it and will be told.' : using ? `${using} people use it and will be told.` : 'Nobody uses it.'}`,
+  return html(`<b>Remove ${esc(name)}?</b>\n${usedBy(using)}${using ? ' and will be told' : ''}.`,
     [[{ text: '🗑 Yes, remove', callback_data: `x:sr:${index}:${fingerprint(name)}:yes` }], [{ text: 'Cancel', callback_data: 'x:searches:edit' }]]);
 }
 
