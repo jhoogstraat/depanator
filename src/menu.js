@@ -173,6 +173,11 @@ export function scheduleView(search, index, what) {
     [{ text: '← Back', callback_data: `x:se:${index}:${mark}` }],
   ]);
 }
+// listings: the newest results of the test run, so the admin can see the area and filters took effect.
+export function searchAddedView(name, listings) {
+  const newest = listings.slice(0, 3).map(({ title, address, url }) => `• <a href="${esc(url)}">${esc(title)}</a>${address ? `, ${esc(address)}` : ''}`).join('\n');
+  return html(`✅ <b>${esc(name)}</b> works: IS24 answered it.\n\n${newest ? `Newest listings:\n${newest}\n\nIf these are outside the area you picked, IS24 did not take the area from the link: remove the search.` : 'It has no listings right now, which can be right for a small area.'}`, []);
+}
 export function removeSearchView({ name }, index, using) {
   return html(`<b>Remove ${esc(name)}?</b>\n${using === 1 ? '1 person uses it and will be told.' : using ? `${using} people use it and will be told.` : 'Nobody uses it.'}`,
     [[{ text: '🗑 Yes, remove', callback_data: `x:sr:${index}:${fingerprint(name)}:yes` }], [{ text: 'Cancel', callback_data: 'x:searches:edit' }]]);

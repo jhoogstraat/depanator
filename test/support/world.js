@@ -49,7 +49,7 @@ export async function createWorld(t) {
   const world = {
     dataDir, listings: [], searches: 0, searchUrls: [], reads: {}, contacts: [], immomioApplications: [], unexpected: [], telegram: [], holdContact: false, agentLog: '',
     updates: [], nextUpdate: 1, nextMessage: 1,
-    // Set to { status, type, body } to make IS24 answer exactly that. unusableResults join every search result page.
+    // Set to { status, type, body } to make IS24 answer exactly that; search may also be a function of the query string. unusableResults join every search result page.
     respond: { search: null, expose: {}, contact: null }, unusableResults: [],
     listing(id, title, description, facts) {
       const listing = { id, title, description, ...facts };
@@ -178,7 +178,8 @@ export async function createWorld(t) {
       if (path === '/search/list') {
         world.searches++;
         world.searchUrls.push(url.search);
-        if (world.respond.search) return answer(res, world.respond.search);
+        const answered = typeof world.respond.search === 'function' ? world.respond.search(url.search) : world.respond.search;
+        if (answered) return answer(res, answered);
         return json(res, { resultListItems: [...world.listings.toReversed().map(searchItem), ...world.unusableResults], numberOfPages: 1 });
       }
       if (contact) {

@@ -260,15 +260,24 @@ export class Users {
     this.onCatalog();
     return updated;
   }
-  addSearch(name, url) {
+  // Runs the search once before saving it, so the admin knows IS24 answers it. -> the newest listings it found.
+  async addSearch(name, url) {
     const { href } = new URL(url);
-    searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
-    const { catalog } = this;
-    if (catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
-    const twin = catalog.find(search => sameSearch(search.url, href));
-    if (twin) throw new Error(`${twin.name} is already this search.`);
-    this.admin.store.saveSetting('catalog', [...catalog, { name, url: href, ...this.defaults() }]);
+    const filters = searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
+    const duplicate = () => {
+      const { catalog } = this;
+      if (catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
+      const twin = catalog.find(search => sameSearch(search.url, href));
+      if (twin) throw new Error(`${twin.name} is already this search.`);
+    };
+    duplicate();
+    // Straight to IS24, past the feed: its own first crawl starts the search's history.
+    const { listings } = await this.feeds.adapter.scan(filters, { maxPages: 1 })
+      .catch(error => { throw new Error(`IS24 could not run this search (${error.message}), so I did not add it. Try again, or check the link on immobilienscout24.de.`); });
+    duplicate(); // The list may have changed while IS24 answered.
+    this.admin.store.saveSetting('catalog', [...this.catalog, { name, url: href, ...this.defaults() }]);
     this.onCatalog();
+    return listings;
   }
   // Same search, new name, for everyone who picked it.
   renameSearch(name, to) {

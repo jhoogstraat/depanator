@@ -1,6 +1,6 @@
 import { INTERVALS, NIGHT_PAUSES, isQuiet } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchView, scheduleView, removeSearchView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
+import { MENU_HINT, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchAddedView, searchView, scheduleView, removeSearchView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
 const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
@@ -201,8 +201,10 @@ export class Assistant {
     if (this.asking === 'search+') {
       const [, name, url] = /^(.{1,40}?)\s+(https:\/\/\S+)$/.exec(message.trim()) ?? [];
       if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
-      try { this.admin.addSearch(name, url); } catch (error) { return this.send(error.message); }
+      let listings;
+      try { listings = await this.admin.addSearch(name, url); } catch (error) { return this.send(error.message); }
       this.asking = null;
+      await this.show(searchAddedView(name, listings));
       return this.show(this.searchesView());
     }
     if (this.asking?.startsWith(RENAME)) {

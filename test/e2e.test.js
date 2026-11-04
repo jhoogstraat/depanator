@@ -314,11 +314,19 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   await world.sees(/Which searches/);
   await world.tap('➕ Add');
   await world.sees(/send a name and the address/);
+  // Adding runs the search once: one IS24 refuses is not added, and the admin hears why.
+  world.respond.search = query => query.includes('altona') && { status: 412, body: '{}' };
+  world.say('Altona https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/altona/wohnung-mieten');
+  await world.sees(/IS24 could not run this search \(IS24 unavailable \(HTTP 412\)\), so I did not add it/);
+  assert.ok(!world.labels().includes('⬜ Altona'));
+  world.respond.search = null;
   world.say('Hamburg https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/wohnung-mieten');
+  await world.sees(/✅ <b>Hamburg<\/b> works: IS24 answered it\.\n\nIt has no listings right now/);
   await until('the new search', () => world.labels().includes('⬜ Hamburg'));
+  const tried = world.searchUrls.filter(hamburg).length;
   const before = world.searches;
   await until('more checks', () => world.searches > before + 3);
-  assert.ok(!world.searchUrls.some(hamburg), 'nobody picked it, so IS24 never hears about it');
+  assert.equal(world.searchUrls.filter(hamburg).length, tried, 'nobody picked it, so IS24 hears about it only for the check');
 
   await world.tap('⬜ Hamburg');
   await until('both searches', () => world.searchUrls.some(hamburg));
