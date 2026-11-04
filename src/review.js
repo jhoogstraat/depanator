@@ -116,8 +116,8 @@ const MACHINE = {
     // by: 'user' (a Telegram tap) or 'auto' (auto-send on, and the LLM was confident).
     approve: (review, { version, draftHash, bindings, by = 'user' }, now) => {
       if (review.version !== version || review.draftHash !== draftHash) conflict('A newer draft replaced this one');
-      if (!review.draft.trim()) conflict('Tap ✍️ Write message first.');
-      if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Edit to renew it, or Dismiss.');
+      if (!review.draft.trim()) conflict('Tap ✨ Write message first.');
+      if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Rewrite to renew it, or Dismiss.');
       return { ...review, status: 'approved', approvedAt: now, approvedBy: by };
     },
     dismiss,

@@ -257,12 +257,6 @@ export class Assistant {
   }
   // The Mini App address of a settings form (forms.js).
   formUrl(part) { return `${this.settings.config.publicUrl}/form?part=${part}`; }
-  // 🧠 Remember on a draft: one more line of writing style, used for every later draft.
-  remember(instruction) {
-    const style = [this.settings.config.style, instruction.trim()].filter(Boolean).join('\n');
-    if (style.length > 1000) throw new Error('The agent\'s writing style is full (1000 characters). Shorten it in /settings first.');
-    this.settings.set('style', style);
-  }
   async command(name) {
     if (name === '/start' || name === '/setup') return this.settings.complete() ? this.send(`Setup is complete. ${MENU_HINT}`) : this.continue();
     // Reconnecting works during setup too: setup may be waiting for it.

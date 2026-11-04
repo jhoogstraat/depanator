@@ -50,11 +50,12 @@ test('first run: from pairing through setup to one approved application', async 
 
   world.listing(200, 'Sonnige Wohnung', 'Balkon, ruhig.');
   await world.sees(/Sonnige Wohnung\n📍 Teststraße 1, 10115 Berlin/);
-  await world.tap('✍️ Write message');
+  await world.tap('✨ Write message');
   await world.sees(/Guten Tag, ich bin Alex\.$/);
+  assert.deepEqual(world.button('📋 Copy').copy_text, { text: 'Guten Tag, ich bin Alex.' }, 'a short draft copies with one tap');
   const firstSend = world.button('✅ Send');
-  await world.tap('✏️ Improve');
-  await world.sees(/What should change/);
+  await world.tap('✏️ Rewrite');
+  await world.sees(/How should I rewrite it/);
   world.say('Einzug ab März.');
   await world.sees(/Guten Tag, ich bin Alex\. Einzug ab März\./);
   assert.match(await world.press(firstSend), /newer draft/, 'the replaced draft cannot be approved');
@@ -71,6 +72,26 @@ test('first run: from pairing through setup to one approved application', async 
   assert.deepEqual([form.message, form.firstname, form.emailAddress, form.phoneNumber], ['Guten Tag, ich bin Alex. Einzug ab März.', 'Alex', 'alex@example.com', '+49 170 1234567']);
   assert.deepEqual(form.address, { street: 'Straße des 17. Juni', houseNumber: '12a', postcode: '10115', city: 'Berlin' });
   assert.equal(world.codexCalls().filter(call => call.input.listing.title === 'Already online').length, 0, 'listings online before the start are not reviewed');
+});
+
+test('a draft too long for a copy button is copied from a code block', async t => {
+  const world = await createWorld(t);
+  world.seed();
+  await world.start();
+  await until('the first search', () => world.searches > 0);
+  world.listing(250, 'Lange Wohnung', 'Balkon, ruhig, unclear.');
+  await world.sees(/^Lange Wohnung\n/);
+  await world.tap('✨ Write message');
+  await world.sees(/Guten Tag, ich bin Alex\.$/);
+  await world.tap('📝 Write myself');
+  await world.sees(/exactly as it should go out/);
+  const long = `Guten Tag, ${'ich möchte die Wohnung gerne besichtigen. '.repeat(10)}`.trim();
+  world.say(long);
+  await world.sees(new RegExp(`${long.slice(-40).replace(/[.]/g, '\\.')}$`));
+  assert.match(await world.tap('📋 Copy'), /Tap the code block/);
+  const copy = await until('the code block', () => world.messages().find(call => call.body.text === long));
+  assert.deepEqual(copy.body.entities, [{ type: 'pre', offset: 0, length: long.length }]);
+  assert.ok(copy.body.reply_parameters, 'the code block sits under its draft');
 });
 
 test('chat settings change what happens: a mismatch stays silent, a clear match auto-sends, the rest asks', async t => {
@@ -166,7 +187,7 @@ test('a crash during sending is reported as uncertain and never sent again', asy
   await until('the first search', () => world.searches > 0);
   world.listing(500, 'Absturz Wohnung', 'Balkon, ruhig, unclear.');
   await world.sees(/^Absturz Wohnung\n/);
-  await world.tap('✍️ Write message');
+  await world.tap('✨ Write message');
   await world.sees(/Guten Tag, ich bin Alex\./);
   const send = world.button('✅ Send');
 
@@ -225,7 +246,7 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   await until('more searches', () => world.searches > searches + 3);
   assert.deepEqual(stored(), labels);
 
-  await world.press({ ...card.reply_markup.inline_keyboard.flat().find(button => button.text === '✍️ Write message'), messageId: (world.messages().find(call => call.body === card)).result.message_id });
+  await world.press({ ...card.reply_markup.inline_keyboard.flat().find(button => button.text === '✨ Write message'), messageId: (world.messages().find(call => call.body === card)).result.message_id });
   await until('the draft', () => world.labels().includes('✅ Send'));
   await world.tap('✅ Send');
   await until('the contact request', () => world.contacts.length === 2);
@@ -242,7 +263,7 @@ test('a rent that appears after approval stops the send', async t => {
   await until('the first search', () => world.searches > 0);
   const listing = world.listing(610, 'Miete folgt', 'Balkon, ruhig.', { rent: null });
   await world.sees(/^Miete folgt\n/);
-  await world.tap('✍️ Write message');
+  await world.tap('✨ Write message');
   await world.sees(/Guten Tag, ich bin Alex\./);
   listing.rent = '1.900 €';
   await world.tap('✅ Send');
@@ -285,7 +306,7 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   const rejectedSend = async (id, title) => {
     world.listing(id, title, 'Balkon, ruhig, unclear.');
     await world.sees(new RegExp(`^${title}\\n`));
-    await world.tap('✍️ Write message');
+    await world.tap('✨ Write message');
     await until('the draft', () => world.labels().includes('✅ Send'));
     await world.tap('✅ Send');
     await until(`the rejection of ${title}`, () => world.messages().some(call => call.body.text.includes(title) && /IS24 rejected the request/.test(call.body.text)));
@@ -470,7 +491,7 @@ test('two people on one bot: private by invite, one shared search, separate chat
   assert.ok(world.searches - before[1] <= (polls() - before[0]) * 0.75, 'two people do not mean two searches a round');
 
   // Each applies from their own account, with their own details.
-  await world.tap('✍️ Write message', FRIEND);
+  await world.tap('✨ Write message', FRIEND);
   await world.seesIn(FRIEND, /Guten Tag, ich bin Robin\.$/);
   await world.tap('✅ Send', FRIEND);
   await world.seesIn(FRIEND, /✅ Message sent/);

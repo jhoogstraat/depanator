@@ -231,7 +231,7 @@ export class Workflow {
       : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
     if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
-    if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during revision; tap Edit again');
+    if (hash(bindings) !== hash(this.bindings())) throw new Error('Configuration changed during revision; tap ✏️ Rewrite again');
     const revised = this.store.dispatch(id, { type: 'revise', version, draft: result.draft, reasons: result.reasons.length ? result.reasons : review.reasons, bindings });
     if (!await this.deliver(revised)) throw new Error('Draft revised, but delivering it failed; it will be resent on the next poll');
     return this.store.get(id);

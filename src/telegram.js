@@ -5,13 +5,13 @@ import { compactId, conflict, expandId } from './review.js';
 import { usesImmomio } from './immomio.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
+const COPY_LIMIT = 256; // Telegram's cap on a copy_text button's text.
 const INVALID = { text: 'This approval is invalid.' };
 // Review buttons, one letter each to fit Telegram's 64-byte limit: a approve, d dismiss, w write the message,
-// and the three edits below, whose prompt's reply revises the draft.
+// p copy a draft too long for a copy button, and the two edits below, whose prompt's reply revises the draft.
 const EDITS = {
-  e: { mode: 'ai', ask: '✏️ What should change?', placeholder: 'e.g. shorter, mention move-in 1 March' },
+  e: { mode: 'ai', ask: '✏️ How should I rewrite it?', placeholder: 'e.g. shorter, different opening, mention move-in 1 March' },
   m: { mode: 'manual', ask: '📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', placeholder: 'Your message' },
-  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to the agent\'s writing style (/settings) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
 };
 
 function chunks(text, limit = LIMIT) {
@@ -118,7 +118,7 @@ export class Telegram {
     this.bot = bot ?? new Bot({ config, fetchImpl, onError });
     this.token = config.telegramBotToken;
     this.controller = new AbortController();
-    // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Edit again is enough.
+    // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Rewrite again is enough.
     this.editPrompts = new Map();
   }
   api(...args) { return this.bot.api(...args); }
@@ -156,7 +156,7 @@ export class Telegram {
   buttons(review, layout) {
     return { inline_keyboard: layout.map(row => row.map(([text, action]) => ({ text, callback_data: this.callback(review, action) }))) };
   }
-  cardButtons(review) { return this.buttons(review, [[['✍️ Write message', 'w'], ['✖️ Dismiss', 'd']]]); }
+  cardButtons(review) { return this.buttons(review, [[['✨ Write message', 'w'], ['✖️ Dismiss', 'd']]]); }
   // A new listing is a compact card; you decide from it whether ChatGPT writes a message. A draft (written
   // on request, or revised) arrives as its own short reply under the card. again: show the card and its draft.
   // heading/note: an outcome shown above the listing and its message instead of buttons (auto-sent reviews).
@@ -205,8 +205,12 @@ export class Telegram {
   async notifyDraft(review) {
     const heading = `✉️ ${review.snapshot.title}`;
     const card = (review.telegramMessages || []).find(message => message.chatId === this.chatId)?.messageId;
+    const keyboard = this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Rewrite', 'e'], ['📝 Write myself', 'm']], []]);
+    // A short draft copies with one tap; a longer one is sent as a code block, which Telegram copies with one tap.
+    keyboard.inline_keyboard[2].push(review.draft.length <= COPY_LIMIT
+      ? { text: '📋 Copy', copy_text: { text: review.draft } } : { text: '📋 Copy', callback_data: this.callback(review, 'p') });
     await this.formatted(`${heading}\n${review.draft}`, [{ type: 'bold', offset: 0, length: heading.length }, { type: 'blockquote', offset: heading.length + 1, length: review.draft.length }], {
-      reviewId: review.id, replyTo: card, last: { reply_markup: this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Improve', 'e'], ['📝 Write myself', 'm']], [['🧠 Remember', 'r']]]) },
+      reviewId: review.id, replyTo: card, last: { reply_markup: keyboard },
     });
   }
   async notifyOutcome(review) {
@@ -234,7 +238,7 @@ export class Telegram {
     await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes a few minutes.');
     await this.assistant.continue();
   }
-  // Commands and setup answers go to the assistant; replies to an ✏️ Edit prompt revise that draft.
+  // Commands and setup answers go to the assistant; replies to a ✏️ Rewrite prompt revise that draft.
   async handleMessage(message) {
     const text = typeof message.text === 'string' ? message.text.trim() : '';
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
@@ -246,12 +250,8 @@ export class Telegram {
     if (!instructions) return;
     const manual = target.mode === 'manual';
     if (!manual && instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
-    // 🧠 Remember: kept in your writing style, so every later draft follows it too.
-    if (target.mode === 'remember') {
-      try { this.assistant.remember(instructions); } catch (error) { return this.send(error.message); }
-    }
     this.editPrompts.delete(promptId);
-    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to the agent\'s writing style (/settings). Revising the draft…' : '✍️ Revising the draft…');
+    if (!manual) await this.send('✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
     this.revise(target.id, target.version, instructions, { manual });
   }
@@ -281,7 +281,7 @@ export class Telegram {
   }
   // A review button: <action>:<review ID without dashes>:<version>:<signature>, see callback().
   async reviewTap(query) {
-    const match = /^([adewmr]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
+    const match = /^([adewmp]):([a-f0-9]{32}):(\d+):([A-Za-z0-9_-]{16})$/.exec(query.data || '');
     const review = match && this.store.get(expandId(match[2]));
     if (!review) return INVALID;
     const [, action, , version, signature] = match;
@@ -303,6 +303,10 @@ export class Telegram {
       return { text: 'Dismissed. No message will be sent.', dismissed: review };
     }
     if (review.status !== 'awaiting_approval') conflict('Review was already handled');
+    if (action === 'p') {
+      await this.formatted(review.draft, [{ type: 'pre', offset: 0, length: review.draft.length }], { reviewId: id, replyTo: messageId });
+      return { text: 'Tap the code block to copy the message.' };
+    }
     if (action === 'w') {
       if (review.draft) conflict('The message is already written.');
       this.revise(id, version, '');

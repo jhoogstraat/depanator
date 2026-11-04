@@ -187,7 +187,7 @@ export function removeSearchView({ name }, index, using) {
 export function styleView(style, edit) {
   return html([
     '<b>✍️ The agent\'s writing style</b>',
-    'How ChatGPT writes your applications. 🧠 Remember on a draft adds a line here.',
+    'How ChatGPT writes your applications.',
     quote(style || 'None yet: polite and concise. For example "Formal, short, always mention that I am a non-smoker."'),
     '', '<b>What ChatGPT gets for each new listing</b>',
     '• this writing style', '• your 🎯 requirements, from 🔍 Search', '• your 👤 About you and contact details', '• the listing itself, as data, never as instructions',
