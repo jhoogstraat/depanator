@@ -278,14 +278,16 @@ test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and 
   await until('the first search', () => world.searches > 0);
   const listing = world.listing(620, 'Mit Fotos', 'Balkon, ruhig.', { photos: ['a', 'b', 'c'] });
   const { body: card, result: { message_id: messageId } } = await world.sees(/^Mit Fotos\n/);
-  const shown = () => world.telegram.filter(call => call.method === 'editMessageText' && call.body.message_id === messageId).at(-1)?.body;
+  const edits = () => world.telegram.filter(call => call.method === 'editMessageText' && call.body.message_id === messageId);
+  const shown = () => edits().at(-1)?.body;
   const photo = body => /listings\/(\w+)\.jpg/.exec(body.link_preview_options.url)[1];
   assert.equal(photo(card), 'a', 'the title picture first');
   assert.match(card.link_preview_options.url, /\/format\/jpg\//);
   assert.deepEqual(card.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '1/3', '▶️'], ['✨ Write message', '✖️ Dismiss']]);
   assert.ok(!('images' in world.codexCalls().at(-1).input.listing), 'ChatGPT is not sent the photo links');
 
-  const browse = async label => { const before = world.telegram.length; await world.tap(label); return until(`photo after ${label}`, () => world.telegram.length > before && shown()); };
+  // The tap is answered before the card is edited, so wait for the edit itself.
+  const browse = async label => { const before = edits().length; await world.tap(label); return until(`photo after ${label}`, () => edits().length > before && shown()); };
   let edit = await browse('▶️');
   assert.deepEqual([photo(edit), edit.text, edit.entities], ['b', card.text, card.entities], 'the same card with the next photo');
   assert.ok(!world.telegram.some(call => call.method === 'sendMessage' && call.result.message_id > messageId), 'and no new message');
