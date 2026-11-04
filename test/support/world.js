@@ -32,10 +32,16 @@ const json = (res, body, status = 200) => { res.writeHead(status, { 'Content-Typ
 const answer = (res, { status = 200, type = 'application/json', body }) => { res.writeHead(status, { 'Content-Type': type }); res.end(body); };
 
 // The same JSON shapes the IS24 app API answers with.
-// rent: null and exposeArea: null are the gaps IS24 really leaves.
-const searchItem = ({ id, title, rent = '900 €', rooms = '2', published }) => ({ id, title, published, address: { line: 'Berlin' }, attributes: [rent, '50 m²', `${rooms} Zi.`].filter(Boolean).map(value => ({ value })) });
-const expose = ({ title, description, rent = '900 €', rooms = '2', exposeArea = '50 m²' }) => ({
+// rent: null and exposeArea: null are the gaps IS24 really leaves. photos: picture IDs, the first the title picture;
+// gallery: the IDs the expose lists, the photos unless set.
+const picture = (id, size) => `https://pictures.immobilienscout24.de/listings/${id}.jpg/ORIG/resize/${size}/format/webp/quality/80`;
+const searchItem = ({ id, title, rent = '900 €', rooms = '2', published, photos = [] }) => ({ id, title, published, address: { line: 'Berlin' }, attributes: [rent, '50 m²', `${rooms} Zi.`].filter(Boolean).map(value => ({ value })),
+  ...(photos.length && { titlePicture: { full: picture(photos[0], '800x600'), preview: picture(photos[0], '210x210') } }) });
+const expose = ({ title, description, rent = '900 €', rooms = '2', exposeArea = '50 m²', photos = [], gallery = photos }) => ({
   sections: [
+    // As IS24 sends it: an ad slot among the pictures.
+    ...(gallery.length ? [{ type: 'MEDIA', media: gallery.flatMap((id, index) => [...(index === 1 ? [{ type: 'AD', caption: 'Gesponsert', ad: { id: '/4467/IS24_APP_DE/app_iOS_gallery_ad' } }] : []),
+      { type: 'PICTURE', caption: 'Zimmer', previewImageUrl: picture(id, '800x600'), imageUrlForWeb: picture(id, '%WIDTH%x%HEIGHT%'), fullImageUrl: picture(id, '1500x1000') }]) }] : []),
     { type: 'TOP_ATTRIBUTES', attributes: [...(rent ? [{ label: 'Warmmiete', text: rent }] : []), { label: 'Zimmer', text: rooms }, ...(exposeArea ? [{ label: 'Wohnfläche', text: exposeArea }] : [])] },
     { type: 'TITLE', title }, { type: 'MAP', addressLine1: 'Teststraße 1', addressLine2: '10115 Berlin' }, { type: 'TEXT_AREA', title: 'Objektbeschreibung', text: description },
   ],
@@ -84,9 +90,13 @@ export async function createWorld(t) {
     },
     say(text, from = OWNER) { this.updates.push({ update_id: this.nextUpdate++, message: { message_id: this.nextMessage++, text, chat: { id: from, type: 'private' }, from: { id: from } } }); },
     // Taps a button and resolves with the toast Telegram showed.
+    // Telegram sends the tapped message back as it now looks.
     async press({ callback_data, messageId }, from = OWNER) {
       const id = String(this.nextUpdate);
-      this.updates.push({ update_id: this.nextUpdate++, callback_query: { id, data: callback_data, from: { id: from }, message: { message_id: messageId, chat: { id: from, type: 'private' } } } });
+      const versions = this.telegram.filter(call => ['sendMessage', 'editMessageText', 'editMessageReplyMarkup'].includes(call.method) && (call.body.message_id ?? call.result?.message_id) === messageId);
+      const { text, entities } = versions.findLast(call => call.method !== 'editMessageReplyMarkup')?.body ?? {};
+      const message = { message_id: messageId, chat: { id: from, type: 'private' }, text, entities, reply_markup: versions.at(-1)?.body.reply_markup };
+      this.updates.push({ update_id: this.nextUpdate++, callback_query: { id, data: callback_data, from: { id: from }, message } });
       return (await until(`the answer to tap ${callback_data}`, () => this.telegram.find(call => call.method === 'answerCallbackQuery' && call.body.callback_query_id === id))).body.text;
     },
     tap(label, from) { return this.press(this.button(label, from), from); },

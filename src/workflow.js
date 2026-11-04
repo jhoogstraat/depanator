@@ -281,7 +281,8 @@ export class Workflow {
       let snapshot;
       try { snapshot = await this.adapter.details(review.snapshot); }
       catch (error) { if (error.code !== 'LISTING_GONE') return { retry: error }; throw error; }
-      if (hash(snapshot) !== review.snapshotHash) return { outcome: 'failed', detail: 'Listing details changed; approval invalidated' };
+      // New or reordered photos are not a change to what was approved.
+      if (hash({ ...snapshot, images: review.snapshot.images }) !== review.snapshotHash) return { outcome: 'failed', detail: 'Listing details changed; approval invalidated' };
       const beforeSubmit = async () => {
         this.assertRunning();
         if (!authorizes(this.store.get(review.id), review, this.bindings())) throw new Error('Approval binding changed before submission');

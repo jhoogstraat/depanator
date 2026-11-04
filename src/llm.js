@@ -36,7 +36,7 @@ export function unavailable(message) {
 
 // revision ({ draft, instructions }, either may be empty): write a draft instead of screening.
 export function reviewInput(config, snapshot, revision) {
-  return JSON.stringify({ task: revision ? 'write' : 'screen', preferences: config.preferences, verifiedPersona: config.persona, listing: snapshot,
+  return JSON.stringify({ task: revision ? 'write' : 'screen', preferences: config.preferences, verifiedPersona: config.persona, listing: { ...snapshot, images: undefined },
     ...(config.style && { writingStyle: config.style }),
     ...(revision?.draft && { currentDraft: revision.draft }), ...(revision?.instructions && { userInstructions: revision.instructions }) });
 }

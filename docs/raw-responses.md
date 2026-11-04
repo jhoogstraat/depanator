@@ -16,7 +16,7 @@ Each file is `<label>-<first 12 hex of the body's SHA-256>.json`, so an identica
 
 | Label | Stored when |
 | --- | --- |
-| `expose-<id>` | The listing has empty facts (`title`, `price`, `area`, `rooms`, `address`, `description`), or the request failed: 401/403/429, another HTTP error, non-JSON, invalid JSON |
+| `expose-<id>` | The listing has empty facts (`title`, `price`, `area`, `rooms`, `address`, `description`), has a title picture in the search but no picture in the expose (`Listing without photos`: IS24 may have changed the `MEDIA` section `readPictures` in `src/is24.js` reads), or the request failed: 401/403/429, another HTTP error, non-JSON, invalid JSON |
 | `search-list` | The search request failed the same ways, or its JSON has no valid `resultListItems`/`numberOfPages` |
 | `search-item-<id>` | One search result has empty facts, first time the listing is seen |
 | `search-item` | One search result has no usable listing ID |

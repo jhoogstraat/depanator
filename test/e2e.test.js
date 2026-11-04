@@ -271,6 +271,49 @@ test('a rent that appears after approval stops the send', async t => {
   assert.deepEqual(world.contacts, []);
 });
 
+test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and a changed gallery does not stop the send', async t => {
+  const world = await createWorld(t);
+  world.seed();
+  await world.start();
+  await until('the first search', () => world.searches > 0);
+  const listing = world.listing(620, 'Mit Fotos', 'Balkon, ruhig.', { photos: ['a', 'b', 'c'] });
+  const { body: card, result: { message_id: messageId } } = await world.sees(/^Mit Fotos\n/);
+  const shown = () => world.telegram.filter(call => call.method === 'editMessageText' && call.body.message_id === messageId).at(-1)?.body;
+  const photo = body => /listings\/(\w+)\.jpg/.exec(body.link_preview_options.url)[1];
+  assert.equal(photo(card), 'a', 'the title picture first');
+  assert.match(card.link_preview_options.url, /\/format\/jpg\//);
+  assert.deepEqual(card.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '1/3', '▶️'], ['✨ Write message', '✖️ Dismiss']]);
+  assert.ok(!('images' in world.codexCalls().at(-1).input.listing), 'ChatGPT is not sent the photo links');
+
+  const browse = async label => { const before = world.telegram.length; await world.tap(label); return until(`photo after ${label}`, () => world.telegram.length > before && shown()); };
+  let edit = await browse('▶️');
+  assert.deepEqual([photo(edit), edit.text, edit.entities], ['b', card.text, card.entities], 'the same card with the next photo');
+  assert.ok(!world.telegram.some(call => call.method === 'sendMessage' && call.result.message_id > messageId), 'and no new message');
+  assert.deepEqual(edit.reply_markup.inline_keyboard[0].map(button => button.text), ['◀️', '2/3', '▶️']);
+  edit = await browse('◀️');
+  edit = await browse('◀️');
+  assert.deepEqual([photo(edit), edit.reply_markup.inline_keyboard[0][1].text], ['c', '3/3'], 'it wraps around');
+  assert.match(await world.tap('3/3'), /◀️ or ▶️/);
+
+  await world.tap('✨ Write message');
+  const kept = await until('the card without its decision buttons', () => world.telegram.findLast(call => call.method === 'editMessageReplyMarkup' && call.body.message_id === messageId));
+  assert.deepEqual(kept.body.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '3/3', '▶️']], 'the photos stay browsable');
+  assert.equal(photo(await browse('▶️')), 'a');
+  await world.sees(/Guten Tag, ich bin Alex\./);
+  listing.gallery = ['c', 'a', 'd'];
+  await world.tap('✅ Send');
+  await until('the contact request', () => world.contacts.length === 1);
+  await world.sees(/✅ Message sent/);
+
+  world.listing(621, 'Galerie fehlt', 'Balkon, ruhig.', { photos: ['e'], gallery: [] });
+  const { body: lone } = await world.sees(/^Galerie fehlt\n/);
+  assert.equal(photo(lone), 'e');
+  assert.deepEqual(lone.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['✨ Write message', '✖️ Dismiss']], 'one photo, no carousel');
+  const saved = await until('the expose without a gallery', () => world.kept().find(entry => entry.label === 'expose-621'));
+  assert.equal(saved.problem, 'Listing without photos');
+  assert.ok(!world.kept().some(entry => entry.label === 'expose-620'), 'a listing with a gallery leaves nothing behind');
+});
+
 test('real IS24 failures still count as failures, recover, and are saved', async t => {
   const world = await createWorld(t);
   world.seed();

@@ -69,6 +69,17 @@ function readExpose(expose) {
   };
 }
 
+// The listing's photos, title picture first: the MEDIA section's PICTURE entries (it also holds ad slots). The title
+// picture is not always the gallery's first. fullImageUrl is 1500x1000, previewImageUrl 800x600.
+const PICTURE = /^https:\/\/pictures\.immobilienscout24\.de\/listings\/([^/?#]+)/;
+const MAX_PICTURES = 50;
+function readPictures(expose, title = '') {
+  const media = (expose?.sections || []).filter(section => section?.type === 'MEDIA').flatMap(section => section.media || []);
+  const gallery = media.filter(item => item?.type === 'PICTURE').map(item => item.fullImageUrl || item.previewImageUrl).filter(url => PICTURE.test(url));
+  const first = PICTURE.exec(title)?.[1];
+  return [...(first ? [title] : []), ...gallery.filter(url => PICTURE.exec(url)[1] !== first)].slice(0, MAX_PICTURES);
+}
+
 // Contact fields by the name IS24's per-listing form configuration uses: [what it asks for, persona value].
 // Fields without a value function have no documented format, so the agent never fills them.
 const FIELDS = {
@@ -215,14 +226,16 @@ export class IS24Adapter {
     const expose = await (shared ? this.feeds.expose(listing.expose_id) : this.expose(listing.expose_id));
     const detail = readExpose(expose);
     const { expose_id, image_url = '', published, earlyAccess } = listing;
-    const gaps = LISTING_FACTS.filter(key => !detail[key]);
+    const images = readPictures(expose, image_url);
+    // A title picture in the search but no gallery in the expose may mean IS24 changed the MEDIA section.
+    const gaps = [...LISTING_FACTS.filter(key => !detail[key]), ...(image_url && !readPictures(expose).length ? ['photos'] : [])];
     if (gaps.length) this.keep(`expose-${expose_id}`, `Listing without ${gaps.join(', ')}`, expose);
     // The search result fills gaps, except the rent: it may show the other rent type than the search asked for.
     for (const key of ['title', 'area', 'rooms', 'address']) detail[key] ||= listing[key];
     const missing = LISTING_FACTS.filter(key => !detail[key]);
     const immomio = immomioPropertyId(detail.description);
     return { expose_id: String(expose_id), title: detail.title, price: detail.price, area: detail.area, rooms: detail.rooms, address: detail.address,
-      image_url, url: listingUrl(expose_id), published, earlyAccess, description: detail.description, amenities: detail.amenities,
+      image_url, ...(images.length > 1 && { images }), url: listingUrl(expose_id), published, earlyAccess, description: detail.description, amenities: detail.amenities,
       ...(missing.length && { missing }), ...(immomio && { immomio: { propertyId: immomio, url: immomioUrl(immomio) } }) };
   }
   // Resolves once IS24 access works; onRequired() asks the owner to connect the account and resolves after.

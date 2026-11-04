@@ -37,6 +37,11 @@ function previewImage(raw) {
   } catch { return null; }
 }
 
+// The listing's photos as preview URLs; the first is the one a new card shows.
+const photos = listing => (listing.images || [listing.image_url]).map(previewImage).filter(Boolean);
+const preview = url => ({ url, prefer_large_media: true, show_above_text: true });
+const photoRow = row => row.some(button => button.callback_data?.startsWith('g:'));
+
 // The one connection to Telegram: every person's private chat with the bot arrives here, and route(update)
 // hands each update to that person.
 export class Bot {
@@ -130,7 +135,8 @@ export class Telegram {
     if (Buffer.byteLength(value) > 64) throw new Error('Review callback is too long');
     return value;
   }
-  async formatted(text, entities = [], { last = {}, image = null, reviewId = null, replyTo = null } = {}) {
+  // carousel: buttons above the others on the first part, the one that shows the photo.
+  async formatted(text, entities = [], { last = {}, image = null, carousel = null, reviewId = null, replyTo = null } = {}) {
     let offset = 0;
     const parts = chunks(text);
     for (const [index, part] of parts.entries()) {
@@ -145,9 +151,10 @@ export class Telegram {
       // The photo is a large link preview, not a captioned photo: captions are capped at 1024 characters.
       const message = { chat_id: this.chatId, text: part, entities: clipped, link_preview_options: { is_disabled: true },
         ...(index === 0 && replyTo && { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }), ...(index === parts.length - 1 ? last : {}) };
+      if (index === 0 && carousel) message.reply_markup = { inline_keyboard: [carousel, ...(message.reply_markup?.inline_keyboard || [])] };
       // A rejected photo must never block the review itself.
       const sent = index === 0 && image
-        ? await this.api('sendMessage', { ...message, link_preview_options: { url: image, prefer_large_media: true, show_above_text: true } }).catch(() => this.api('sendMessage', message))
+        ? await this.api('sendMessage', { ...message, link_preview_options: preview(image) }).catch(() => this.api('sendMessage', message))
         : await this.api('sendMessage', message);
       if (reviewId) this.store.recordTelegramMessage(reviewId, this.chatId, sent.message_id);
       offset = end;
@@ -155,6 +162,12 @@ export class Telegram {
   }
   buttons(review, layout) {
     return { inline_keyboard: layout.map(row => row.map(([text, action]) => ({ text, callback_data: this.callback(review, action) }))) };
+  }
+  // A carousel: ◀️/▶️ swap the card's photo in place, so the card stays one message. g:<review>:<photo>; the counter is g:<review>.
+  photoButtons(review, index, count) {
+    const id = compactId(review.id);
+    return [{ text: '◀️', callback_data: `g:${id}:${(index + count - 1) % count}` }, { text: `${index + 1}/${count}`, callback_data: `g:${id}` },
+      { text: '▶️', callback_data: `g:${id}:${(index + 1) % count}` }];
   }
   cardButtons(review) { return this.buttons(review, [[['✨ Write message', 'w'], ['✖️ Dismiss', 'd']]]); }
   // A new listing is a compact card; you decide from it whether ChatGPT writes a message. A draft (written
@@ -196,9 +209,9 @@ export class Telegram {
       append(cut < details.length ? `${details.slice(0, cut)}…` : details, 'expandable_blockquote'); append('\n');
     }
     for (const [part, type, extra] of tail) append(part, type, extra);
-    const image = previewImage(listing.image_url);
+    const images = photos(listing);
     const buttons = immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a']], [['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
-    await this.formatted(text, entities, { image, reviewId: heading ? null : review.id, last: heading || (review.draft && !immomio) ? {} : { reply_markup: buttons } });
+    await this.formatted(text, entities, { image: images[0], carousel: images.length > 1 ? this.photoButtons(review, 0, images.length) : null, reviewId: heading ? null : review.id, last: heading || (review.draft && !immomio) ? {} : { reply_markup: buttons } });
     if (again && review.draft && !heading && !immomio) await this.notifyDraft(review);
   }
   // Only a draft near the 5000-character cap splits; the draft is never shortened and the buttons sit on the final part.
@@ -270,14 +283,26 @@ export class Telegram {
     const owner = this.chatId && query.message?.chat?.type === 'private' && String(query.message.chat.id) === this.chatId && String(query.from?.id) === this.chatId;
     const tap = !owner ? INVALID
       : /^[ckx]:/.test(query.data || '') ? await this.assistant.choice(query.data).catch(error => ({ text: error.message }))
+      : /^g:/.test(query.data || '') ? this.photoTap(query)
       : await this.reviewTap(query);
     await this.api('answerCallbackQuery', { callback_query_id: query.id, text: tap.text });
     const tapped = { chat_id: this.chatId, message_id: query.message?.message_id };
     // Older reviews have no saved IDs; remove the tapped listing message too.
     if (tap.dismissed) return this.withdraw(tap.dismissed, [tapped.message_id]);
     if (tap.edit) await this.api('editMessageText', { ...tapped, text: tap.edit.text, ...tap.edit.extra }).catch(() => {});
-    // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones.
-    else if (tap.used) await this.api('editMessageReplyMarkup', { ...tapped, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones. The photos stay browsable.
+    else if (tap.used) await this.api('editMessageReplyMarkup', { ...tapped, reply_markup: { inline_keyboard: (query.message?.reply_markup?.inline_keyboard || []).filter(photoRow) } }).catch(() => {});
+  }
+  // Shows another photo on the tapped card: the same text and buttons Telegram sent back with the tap, a new preview and counter.
+  photoTap({ data, message }) {
+    const [, id, index] = /^g:([a-f0-9]{32})(?::(\d{1,3}))?$/.exec(data) || [];
+    const review = id && this.store.get(expandId(id));
+    const images = review ? photos(review.snapshot) : [];
+    if (images.length < 2 || !message?.text) return { text: 'These photos are no longer available.' };
+    if (index === undefined) return { text: 'Tap ◀️ or ▶️ for the other photos.' };
+    const at = Number(index) % images.length;
+    const rows = (message.reply_markup?.inline_keyboard || []).map(row => photoRow(row) ? this.photoButtons(review, at, images.length) : row);
+    return { text: '', edit: { text: message.text, extra: { entities: message.entities || [], link_preview_options: preview(images[at]), reply_markup: { inline_keyboard: rows } } } };
   }
   // A review button: <action>:<review ID without dashes>:<version>:<signature>, see callback().
   async reviewTap(query) {
