@@ -8,10 +8,12 @@ import { IS24Adapter } from './is24.js';
 import { Feeds } from './feed.js';
 import { Bot } from './telegram.js';
 import { BRANDS, ConnectApp } from './connect.js';
+import { FormApp } from './forms.js';
 import { Users, userIds } from './users.js';
 import { COMMANDS } from './menu.js';
 import { acquireLock } from './lock.js';
 
+const HOUSEKEEPING_MS = 60_000;
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
 
 async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
@@ -47,16 +49,18 @@ export async function main(args = process.argv.slice(2)) {
   if (!runtime.publicUrl) throw new Error('Set DEPANATOR_PUBLIC_URL to the public HTTPS address of this agent; Telegram opens the ImmoScout24 login there');
   assertReconciled(runtime);
   const unlock = acquireLock(runtime.dataDir);
-  let users, bot, connectApp, timer;
+  let users, bot, connectApp, feeds, timer;
   let closing = false, closePromise;
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
-    clearTimeout(timer);
+    clearInterval(timer);
+    feeds?.stop();
     users?.stop();
     closePromise = boundedShutdown(async () => {
       try {
         const results = await Promise.allSettled([bot?.close(), connectApp?.close(), users?.close()]);
+        feeds?.close(); // After everyone's last read.
         const failure = results.find(result => result.status === 'rejected');
         if (failure) throw failure.reason;
       } finally { unlock(); }
@@ -68,32 +72,30 @@ export async function main(args = process.argv.slice(2)) {
   process.once('SIGTERM', shutdown);
   try {
     bot = new Bot({ config: runtime, route: update => users.route(update), onError: message => console.error(message) });
-    // Searches and listing reads need no IS24 login, so the shared feeds belong to nobody's account.
-    // Half an interval: everyone in a round meets in one result, and the next round (±10%) searches again.
-    const feeds = new Feeds(new IS24Adapter({ dataDir: runtime.dataDir }), { ttlMs: () => users.interval() / 2 });
-    // ±10% jitter keeps polls from forming an exact pattern. A changed interval applies immediately.
-    const schedule = () => {
-      clearTimeout(timer);
-      if (!closing) timer = setTimeout(() => { round(); schedule(); }, users.interval() * (0.9 + Math.random() * 0.2));
-    };
-    users = new Users({ runtime, bot, feeds, onInterval: schedule });
+    // Searches and listing reads need no IS24 login, so the crawlers belong to nobody's account. Each search is
+    // crawled on its own schedule into searches.db, and whoever picked it reads what is new right after.
+    feeds = new Feeds(new IS24Adapter({ dataDir: runtime.dataDir }), { file: join(runtime.dataDir, 'searches.db'),
+      searches: () => users.feedSearches(), onCrawled: key => users.crawled(key), onAlert: (key, text) => users.alert(key, text), onError: message => console.error(message) });
+    users = new Users({ runtime, bot, feeds, onCatalog: () => feeds.refresh() });
     users.load();
     // Only the page itself is served to everybody; signed requests reach that person's own login (forUser).
-    connectApp = new ConnectApp({ config: runtime, port: runtime.port, apps: [new ConnectApp({ config: runtime, brand: BRANDS.immomio })], forUser: id => users.get(id)?.connects });
+    connectApp = new ConnectApp({ config: runtime, port: runtime.port, apps: [new ConnectApp({ config: runtime, brand: BRANDS.immomio }), new FormApp({ config: runtime })], forUser: id => users.get(id)?.connects });
     await connectApp.listen();
     await bot.verify();
     await bot.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
-    // Liveness: "healthy until" (epoch seconds), renewed by every finished round. A stalled round lets it lapse.
-    const heartbeat = () => writeFileSync(join(runtime.dataDir, 'heartbeat'), String(Math.ceil((Date.now() + 2 * users.interval() + 600_000) / 1000)));
-    const round = () => users.round().finally(() => { if (!closing) heartbeat(); });
+    // Liveness: "healthy until" (epoch seconds): two intervals plus ten minutes after each search's last crawl loop.
+    // A crawl that hangs lets it lapse.
+    const heartbeat = () => writeFileSync(join(runtime.dataDir, 'heartbeat'), String(Math.ceil(feeds.healthyUntil() / 1000)));
     heartbeat();
     if (!users.size) users.pairingCode = String(randomInt(100000, 1000000));
     bot.start().catch(error => { console.error(error.message); process.exitCode = 1; shutdown(); });
     if (users.pairingCode) console.log(`Open your bot in Telegram and send:  /start ${users.pairingCode}`);
     console.log('Agent running. Configure and approve everything in your private Telegram chat.');
     users.resume();
-    schedule();
-    round();
+    feeds.refresh();
+    // Housekeeping besides the crawls (outcome reports, approved sends, the morning cleanup) and the heartbeat.
+    timer = setInterval(() => { if (!closing) { heartbeat(); users.round(); } }, HOUSEKEEPING_MS);
+    users.round();
   } catch (error) { await close(); throw error; }
 }
 

@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateSearchUrl, buildMobileApiUrl } from './url-translator.js';
-import { Feeds, outsideSearch } from './feed.js';
+import { PAGES, feedKey, outsideSearch } from './feed.js';
 import { loginRequired } from './is24-auth.js';
+import { isQuiet } from './settings.js';
 import { applyOnImmomio, immomioClient, immomioPropertyId, immomioUrl, usesImmomio } from './immomio.js';
 
 // Everything goes through the IS24 app's API (api.mobile.immobilienscout24.de): no website, no browser.
@@ -103,9 +104,10 @@ const cardId = expose => String(expose.id || expose.exposeId || '');
 
 export class IS24Adapter {
   // config is the live settings object: a changed search URL or persona applies to the next task.
-  // feeds: the searches shared with everyone else on this agent. catalog() -> the admin's [{ name, url }].
-  constructor(config, { session, immomio = null, fetch = globalThis.fetch, feeds = new Feeds(this), catalog = () => [] } = {}) {
-    Object.assign(this, { config, session, immomio, fetch, feeds, catalog });
+  // feeds: the crawled searches shared with everyone else on this agent (feed.js). catalog() -> the admin's
+  // [{ name, url, intervalMs, quietHours }]. cursors: { get(), set(value) } this person's place in each search.
+  constructor(config, { session, immomio = null, fetch = globalThis.fetch, feeds = null, catalog = () => [], cursors = null } = {}) {
+    Object.assign(this, { config, session, immomio, fetch, feeds, catalog, cursors });
   }
   // Responses that went wrong, stored once each in <data>/raw; see docs/raw-responses.md.
   // Never throws: failing to store one must not change what happens to the request.
@@ -175,35 +177,35 @@ export class IS24Adapter {
     }
     return { listings: [...listings.values()], complete, pages };
   }
-  // The shared searches this person picked, narrowed to their limits.
-  // The first successful result after startup, resume or a change of searches or limits only establishes a baseline.
-  // After that, every previously unseen listing is new, including arrivals after an empty baseline.
-  async search({ signal } = {}) {
-    signal?.throwIfAborted();
-    const generation = this.config.searchGeneration ?? 0;
-    const baseline = this.lastGeneration !== generation;
-    const picked = this.catalog().filter(search => this.config.searches.includes(search.name));
-    // Waits for the shared search without tying it to this person's shutdown.
-    let stop = () => {};
-    const aborted = new Promise((_, reject) => {
-      if (!signal) return;
-      stop = () => signal.removeEventListener('abort', cancel);
-      const cancel = () => reject(signal.reason);
-      signal.addEventListener('abort', cancel, { once: true });
-    });
-    const found = new Map(); // A listing in two searches counts once.
-    let complete = true, pages = 0;
-    try {
-      // One at a time: a block from IS24 ends the check here instead of drawing more requests.
-      for (const { url } of picked) {
-        const result = await Promise.race([this.feeds.search(searchFilters(url)), aborted]);
-        for (const listing of result.listings) found.set(listing.expose_id, listing);
-        complete &&= result.complete;
-        pages += result.pages;
+  picked() { return this.catalog().filter(search => this.config.searches.includes(search.name)); }
+  // Every search this person picked is in its night pause.
+  quiet(now = Date.now()) { const picked = this.picked(); return picked.length > 0 && picked.every(search => isQuiet(search.quietHours, now)); }
+  // What the crawlers found since this person last read, in the searches they picked, narrowed to their limits.
+  // `listings` are new; `baseline` were already online. A search picked anew starts at its newest row, its newest
+  // page counting as already online. After a gap (a stuck login, a restart) at most the newest PAGES pages of unread
+  // listings are new and older ones count as already online, as after a night pause. commit() saves the new place,
+  // once the listings are stored: a crash in between reads them again, and they are known by then.
+  search() {
+    const read = this.cursors.get();
+    const cursors = {};
+    const fresh = new Map(), noted = new Map(); // A listing in two searches counts once; as already online, if either says so.
+    for (const search of this.picked()) {
+      const key = feedKey(searchFilters(search.url));
+      if (read[key] === undefined) {
+        const { seq, listings } = this.feeds.latest(key, 20);
+        cursors[key] = seq;
+        for (const listing of listings) noted.set(listing.expose_id, listing);
+        continue;
       }
-    } finally { stop(); }
-    this.lastGeneration = generation; // Failed/invalid searches never consume the warm-up.
-    return {listings:[...found.values()].filter(listing => !outsideSearch(this.config.limits, listing, { priced: false })),complete,caughtUp: !baseline,pages,...(complete ? {} : {warning:'Page limit reached; search coverage is partial'})};
+      const rows = this.feeds.rows(key, read[key]);
+      cursors[key] = rows.at(-1)?.seq ?? read[key];
+      const unread = rows.filter(row => !row.existing);
+      const cut = unread.length - PAGES * 20;
+      for (const row of rows) (row.existing || unread.indexOf(row) < cut ? noted : fresh).set(row.listing.expose_id, row.listing);
+    }
+    for (const id of noted.keys()) fresh.delete(id);
+    const inside = listings => [...listings.values()].filter(listing => !outsideSearch(this.config.limits, listing, { priced: false }));
+    return { listings: inside(fresh), baseline: inside(noted), commit: () => this.cursors.set(cursors) };
   }
   // Why a listing with its details is outside this person's limits, or ''.
   outside(listing) { return outsideSearch(this.config.limits, listing); }

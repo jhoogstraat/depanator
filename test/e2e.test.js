@@ -32,20 +32,18 @@ test('first run: from pairing through setup to one approved application', async 
       await world.tap('⬜ Berlin');
       await world.tap('Done');
     }],
-    [/Highest warm rent/, () => world.say('1500')],
-    [/How many rooms/, () => world.tap('Skip')],
-    [/How much living space/, () => world.tap('Skip')],
-    [/Describe what you are looking for/, () => world.say('No swap')],
-    [/How should landlords address you/, () => world.tap('Frau')],
-    [/Your first name/, () => world.say('Alex')],
-    [/Your last name/, () => world.say('Doe')],
-    [/Your phone number/, () => world.say('+49 170 1234567')],
-    [/Your current street/, () => world.tap('Skip')],
-    [/Your house number/, () => world.tap('Skip')],
-    [/Your postcode/, () => world.tap('Skip')],
-    [/Your current city/, () => world.tap('Skip')],
-    [/What should landlords know/, () => world.say('Nichtraucher.')],
-    [/also include your IS24 Selbstauskunft/, () => world.tap('Message only')],
+    [/What are you looking for/, async () => {
+      assert.match((await world.fill('search', { rent: 'cheap', preferences: 'No swap' })).error, /^Highest warm rent in €: Please write a rent/);
+      assert.match((await world.fill('search', { rent: '1500' })).error, /^Requirements: please fill this in/, 'nothing was saved');
+      assert.equal((await world.fill('search', { rent: '1500', preferences: 'No swap' })).status, 204);
+    }],
+    [/Now about you/, async () => {
+      const contact = { 'persona.anrede': 'FEMALE', 'persona.telefon': '+49 170 1234567', address: 'Musterstraße', 'persona.plz': '10115', 'persona.ort': 'Berlin', 'persona.about': 'Nichtraucher.' };
+      const { form, error } = await world.fill('profile', contact);
+      assert.deepEqual(form.fields.filter(field => field.prefilled).map(field => [field.key, field.value]), [['persona.vorname', 'Alex'], ['persona.nachname', 'Doe']], 'the name comes from the IS24 account');
+      assert.match(error, /^Street and house number: Please write the street and then the house number/);
+      assert.equal((await world.fill('profile', { ...contact, address: 'Straße des 17. Juni 12a' })).status, 204);
+    }],
   ]) { await world.sees(question); await answer(); }
   await world.sees(/All set/);
   await world.sees(/1 listings are already online/);
@@ -71,6 +69,7 @@ test('first run: from pairing through setup to one approved application', async 
   assert.deepEqual(world.contacts.map(({ id, authorization }) => [id, authorization]), [['200', 'Bearer connected-token']]);
   const { form } = world.contacts[0];
   assert.deepEqual([form.message, form.firstname, form.emailAddress, form.phoneNumber], ['Guten Tag, ich bin Alex. Einzug ab März.', 'Alex', 'alex@example.com', '+49 170 1234567']);
+  assert.deepEqual(form.address, { street: 'Straße des 17. Juni', houseNumber: '12a', postcode: '10115', city: 'Berlin' });
   assert.equal(world.codexCalls().filter(call => call.input.listing.title === 'Already online').length, 0, 'listings online before the start are not reviewed');
 });
 
@@ -86,11 +85,16 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await world.tap('⚙️ Settings');
   await world.sees(/Tap what you want to change/);
   await world.tap('🔍 Search');
-  await world.sees(/<b>Requirements<\/b>/);
-  await world.tap('➕ Add');
-  await world.sees(/Send one more requirement/);
-  world.say('No ground floor');
-  await world.sees(/1\. No swap\n2\. No ground floor/);
+  await world.sees(/<b>🎯 Requirements<\/b>\n<blockquote expandable>No swap<\/blockquote>/);
+  assert.deepEqual(world.labels(), ['🔎 Searches', '✏️ Edit']);
+  const { form } = await world.fill('search', { preferences: 'No swap\nNo ground floor' });
+  assert.deepEqual(form.fields.map(field => [field.key, field.value]), [['rent', '-1500'], ['rooms', ''], ['area', ''], ['preferences', 'No swap']], 'the form opens with what is set');
+  await world.sees(/<blockquote expandable>No swap\nNo ground floor<\/blockquote>/);
+  world.say('/settings');
+  await world.tap('✍️ Agent\'s style');
+  await world.sees(/The agent's writing style<\/b>[^]*None yet/);
+  await world.fill('style', { style: 'Kurz & formell.' });
+  await world.sees(/<blockquote expandable>Kurz &amp; formell\.<\/blockquote>/);
 
   world.say('hello?'); // Anything the bot cannot act on opens the settings.
   await until('new settings buttons', () => world.messages().filter(call => /Tap what you want to change/.test(call.body.text)).length === 2);
@@ -113,7 +117,7 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await until('the reviews of all three', () => world.codexCalls().length >= 4);
   assert.deepEqual(world.contacts.map(contact => contact.id), ['302'], 'only the clear match goes out by itself');
   world.never(/^Parterre/);
-  assert.ok(world.codexCalls().every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"') && input.preferences === 'No swap\nNo ground floor'));
+  assert.ok(world.codexCalls().every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"') && input.preferences === 'No swap\nNo ground floor' && input.writingStyle === 'Kurz & formell.'));
 
   const card = world.button('✖️ Dismiss');
   assert.match(await world.press(card), /Dismissed/);
@@ -126,8 +130,13 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   const searches = world.searches;
   await wait(400);
   assert.equal(world.searches, searches, 'paused: no searching');
+  world.listing(304, 'Während der Pause', 'Etage unclear.');
   await world.tap('▶️ Resume');
-  await until('searching to resume', () => world.searches > searches);
+  await until('searching to resume', () => world.searches > searches + 2);
+  world.listing(305, 'Nach der Pause', 'Etage unclear.');
+  await world.sees(/^Nach der Pause\n/);
+  world.never(/^Während der Pause/); // Paused on purpose: what came meanwhile counts as already online.
+  assert.ok(!world.codexCalls().some(call => call.input.listing.title === 'Während der Pause'));
 });
 
 test('Immomio: connected from /settings, a linked listing is applied there and never on IS24', async t => {
@@ -167,8 +176,10 @@ test('a crash during sending is reported as uncertain and never sent again', asy
   await world.kill('SIGKILL');
   rmSync(join(world.dataDir, 'agent.lock'), { force: true }); // The owner's documented step after a hard stop.
   world.holdContact = false;
+  world.listing(501, 'Während des Neustarts', 'Balkon, ruhig, unclear.');
 
   await world.start();
+  await world.sees(/^Während des Neustarts\n/); // Like after a night pause: what came while it was down is new.
   await world.sees(/⚠️ Check your IS24 account/);
   await world.press(send);
   await wait(400);
@@ -322,13 +333,46 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   assert.equal(world.messages().filter(call => /^In beiden\n/.test(call.body.text)).length, 1);
   assert.equal(world.reads[801], undefined, 'a list price above the limit saves reading the listing');
 
+  // Renaming keeps it picked.
+  await world.tap('⚙️');
+  await world.sees(/<b>🔎 Search 1<\/b>\n[^]*1 person uses it/);
+  await world.tap('✏️ Rename');
+  await world.sees(/Send the new name for Search 1/);
+  world.say('Hamburg');
+  await world.sees(/already is a search named Hamburg/);
+  world.say('Berlin');
+  await until('the new name', () => world.labels().includes('✅ Berlin'));
+  const renamed = world.searches;
+  await until('more checks', () => world.searches > renamed + 3);
+  world.listing(802, 'Nach dem Umbenennen', 'Hell.');
+  await world.sees(/^Nach dem Umbenennen\n/); // Still searched, and the rename did not start a new baseline.
+
+  // Each search runs on its own schedule.
+  await world.tap('⚙️');
+  await world.sees(/<b>🔎 Berlin<\/b>[^]*⏱ Every 0\.1 s\n🌙 Night pause: off/);
+  await world.tap('⏱ 0.1 s');
+  await world.sees(/How often should I search Berlin/);
+  assert.match(await world.tap('1 min'), /applies to everyone/);
+  await until('the saved interval', () => world.labels().includes('⏱ 1 min'));
+  const berlin = () => world.searchUrls.filter(url => !hamburg(url)).length;
+  const [berlinBefore, hamburgBefore] = [berlin(), world.searchUrls.filter(hamburg).length];
+  await until('more Hamburg checks', () => world.searchUrls.filter(hamburg).length > hamburgBefore + 5);
+  assert.ok(berlin() <= berlinBefore + 1, 'Berlin waits for its minute while Hamburg keeps its pace');
+  await world.tap('🌙 Off');
+  await world.tap('20:00–08:00');
+  await until('the saved night pause', () => world.labels().includes('🌙 20:00–08:00'));
+  await world.tap('← Back');
+  await world.sees(/Berlin<\/a>: every 1 min · 🌙 20:00–08:00\n.*Hamburg<\/a>: every 0\.1 s · 🌙 no night pause/);
+
   // Removing one tells whoever picked it, and the other keeps running. The last one stays.
-  await world.tap('🗑');
-  await world.sees(/Remove Search 1\?/);
+  await world.tap('⚙️');
+  await world.tap('🗑 Remove');
+  await world.sees(/Remove Berlin\?/);
   await world.tap('🗑 Yes, remove');
-  await world.sees(/The search Search 1 is no longer available/);
-  await until('the shorter list', () => !world.labels().includes('✅ Search 1') && world.labels().includes('✅ Hamburg'));
-  await world.tap('🗑');
+  await world.sees(/The search Berlin is no longer available/);
+  await until('the shorter list', () => !world.labels().includes('✅ Berlin') && world.labels().includes('✅ Hamburg'));
+  await world.tap('⚙️');
+  await world.tap('🗑 Remove');
   await world.sees(/Remove Hamburg\?/);
   assert.match(await world.tap('🗑 Yes, remove'), /last search/);
   const left = world.searchUrls.length;
@@ -368,37 +412,28 @@ test('two people on one bot: private by invite, one shared search, separate chat
   assert.equal((await (await state(OWNER)).json()).step, 'idle', 'it is not someone else\'s');
   assert.equal((await state(STRANGER)).status, 403, 'a valid signature from a stranger gets nothing');
   await world.connect('🔗 Connect ImmoScout24', 'connect', 'friend@example.com', 'correct', FRIEND);
-  const answers = [
-    [/Which searches/, 'tap', '⬜ Search 1'],
-    [/Which searches/, 'tap', 'Done'],
-    [/Highest warm rent/, 'say', '800'],
-    [/How many rooms/, 'say', '2'],
-    [/How much living space/, 'tap', 'Skip'],
-    [/Describe what you are looking for/, 'say', 'No cellar'],
-    [/How should landlords address you/, 'tap', 'Herr'],
-    [/Your first name/, 'say', 'Robin'],
-    [/Your last name/, 'say', 'Roe'],
-    [/Your phone number/, 'tap', 'Skip'],
-    [/Your current street/, 'tap', 'Skip'],
-    [/Your house number/, 'tap', 'Skip'],
-    [/Your postcode/, 'tap', 'Skip'],
-    [/Your current city/, 'tap', 'Skip'],
-    [/What should landlords know/, 'say', 'Nichtraucher.'],
-    [/also include your IS24 Selbstauskunft/, 'tap', 'Message only'],
-  ];
   await world.seesIn(FRIEND, /Which searches/);
-  assert.ok(!world.labels().includes('➕ Add'), 'only the admin adds searches');
+  assert.ok(!world.labels().includes('➕ Add') && !world.labels().includes('⚙️'), 'only the admin adds, renames and removes searches');
   assert.match(await world.press({ callback_data: 'x:sa' }, FRIEND), /outdated/);
-  for (const [question, how, answer] of answers) { await world.seesIn(FRIEND, question); await (how === 'say' ? world.say(answer, FRIEND) : world.tap(answer, FRIEND)); }
+  assert.match(await world.press({ callback_data: 'x:sn:0:x' }, FRIEND), /outdated/);
+  await world.tap('⬜ Search 1', FRIEND);
+  await world.tap('Done', FRIEND);
+  await world.seesIn(FRIEND, /What are you looking for/);
+  const save = from => fetch(`http://127.0.0.1:${world.port}/form/save`, { method: 'POST', headers: { 'x-init-data': world.signed(from) }, body: JSON.stringify({ part: 'search', values: { preferences: 'Stranger' } }) });
+  assert.equal((await save(STRANGER)).status, 403, 'a stranger cannot change anybody\'s settings');
+  assert.equal((await world.fill('search', { rent: '800', rooms: '2', preferences: 'No cellar' }, FRIEND)).status, 204);
+  await world.seesIn(FRIEND, /Now about you/);
+  const { form } = await world.fill('profile', { 'persona.anrede': 'MALE', 'persona.nachname': 'Roe', 'persona.about': 'Nichtraucher.' }, FRIEND);
+  assert.equal(form.fields.find(field => field.key === 'persona.vorname').value, 'Robin', 'their own account, not the admin\'s');
   await world.seesIn(FRIEND, /All set/);
   world.say('/settings', FRIEND);
   await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
   const labels = world.labels();
-  assert.ok(labels.includes('📝 Prompt'), 'these are the settings');
-  assert.ok(!labels.includes('👥 People') && !labels.includes('🔗 ChatGPT') && !labels.some(label => label.startsWith('⏱')), 'the shared interval, login and people stay with the admin');
-  await world.tap('🌙 Night pause', FRIEND);
-  await world.seesIn(FRIEND, /When should I not search/);
-  await world.tap('Search around the clock', FRIEND);
+  assert.ok(labels.includes('✍️ Agent\'s style'), 'these are the settings');
+  assert.ok(!labels.includes('👥 People') && !labels.includes('🔗 ChatGPT'), 'the shared login and people stay with the admin');
+  assert.match(await world.press({ callback_data: 'x:si:0:x:0' }, FRIEND), /outdated/, 'only the admin sets how often a search runs');
+  world.say('/status', FRIEND);
+  await world.seesIn(FRIEND, /🔎 Search 1: every 0\.1 s · 🌙 no night pause/); // The search's, carried over from the admin's old settings.
   await until('their first check', () => world.agentLog.includes(`[${FRIEND}] Poll complete`));
 
   // One listing for each kind of match. Between them they prove the search itself never narrowed.

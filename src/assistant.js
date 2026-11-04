@@ -1,25 +1,32 @@
-import { FIELDS, isQuiet } from './settings.js';
+import { INTERVALS, NIGHT_PAUSES, isQuiet } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementLines, requirementsView, searchesView, removeSearchView, promptView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
+import { MENU_HINT, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchView, scheduleView, removeSearchView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
 const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
 const RECONNECT = { '/connect': 'connectIS24', '/immomio': 'connectImmomio', '/login': 'chatgptLogin' };
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 // Buttons that work during setup, which includes choosing searches.
-const SETUP_ACTIONS = ['searches', 'st', 'sd', 'sa', 'sr'];
+const SETUP_ACTIONS = ['searches', 'st', 'sd', 'sa', 'se', 'si', 'sq', 'sn', 'sr'];
+// What a setup form is for, with its button.
+const FORM_INTRO = {
+  search: ['🔍 What are you looking for? Fill in rent, rooms, living space and, in your own words, what else matters to you.', '✏️ Fill in your search'],
+  profile: ['👤 Now about you, for your applications: your contact details for IS24\'s form, and a few words about yourself for ChatGPT.', '✏️ Fill in about you'],
+};
+// Waiting for a typed name: a new search (search+) or a new name for one (search~<old name>).
+const RENAME = 'search~';
 
 // The menu's buttons (x:<name>:<arguments>, written by menu.js), run with the Assistant as `this`.
 const ACTIONS = {
   async pause() { return { text: this.togglePause() ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() }; },
   requirements() { return this.sendView(this.requirementsView()); },
   settings() { return this.sendView(this.settingsView()); },
-  prompt() { return this.sendView(this.promptView()); },
+  style() { return this.sendView(this.styleView()); },
   reconnect(command) {
     if (!Object.hasOwn(RECONNECT, command)) return STALE;
     return { text: this.reconnect(command) ? '' : BUSY };
   },
-  about() { return this.sendView(aboutView(this.persona())); },
+  about() { return this.sendView(this.aboutView()); },
   sent() { return this.sendView(sentView(this.store.list())); },
   // mode 'edit': replace the tapped message (Cancel on the clear confirmation).
   waiting(mode) {
@@ -97,26 +104,29 @@ const ACTIONS = {
     this.asking = 'search+';
     return this.sendView({ text: 'Set the area and any filters on immobilienscout24.de, then send a name and the address of the results page, for example:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nEvery search costs one more request per check, and everyone can pick it. Their own rent, rooms and living space are matched on the results, so leave those out of the link unless they hold for everybody.' });
   },
+  // One search of the list: rename or remove it.
+  se(index, mark) {
+    const search = this.admin && this.pickedSearch(index, mark);
+    if (!search) return STALE;
+    return { text: '', edit: searchView(search, index, this.using(search.name)) };
+  },
+  // How often a search runs (si) and when it pauses (sq). Without choice: the options.
+  si(index, mark, choice) { return this.schedule('si', index, mark, choice); },
+  sq(index, mark, choice) { return this.schedule('sq', index, mark, choice); },
+  // Rename a search: the next typed message is its new name.
+  async sn(index, mark) {
+    const search = this.admin && this.pickedSearch(index, mark);
+    if (!search) return STALE;
+    this.asking = `${RENAME}${search.name}`;
+    return this.sendView({ text: `✏️ Send the new name for ${search.name}, at most 40 characters. Everyone who picked it keeps it.` });
+  },
   // Without sure: ask to confirm.
   async sr(index, mark, sure) {
     const search = this.admin && this.pickedSearch(index, mark);
     if (!search) return STALE;
-    if (!sure) return { text: '', edit: removeSearchView(search, index, this.admin.users().filter(user => user.searches.includes(search.name)).length) };
+    if (!sure) return { text: '', edit: removeSearchView(search, index, this.using(search.name)) };
     await this.admin.removeSearch(search.name);
     return { text: 'Removed.', edit: this.searchesView() };
-  },
-  // Add a requirement: the next typed message is the new line.
-  async ra() {
-    this.asking = 'requirement+';
-    return this.sendView({ text: '➕ Send one more requirement, for example "No ground floor" or "At most 3rd floor without a lift".' });
-  },
-  // Delete a requirement; the last one stays.
-  rd(index, mark) {
-    const lines = requirementLines(this.settings.config.preferences);
-    if (lines.length < 2 || !lines[Number(index)] || fingerprint(lines[Number(index)]) !== mark) return STALE;
-    lines.splice(Number(index), 1);
-    this.settings.set('preferences', lines.join('\n'));
-    return { text: 'Removed.', edit: this.requirementsView() };
   },
 };
 
@@ -124,16 +134,17 @@ const ACTIONS = {
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
-  // admin: { invite(), users(), remove(id), addSearch(name, url), removeSearch(name) } for the person running the
+  // admin: { invite(), users(), remove(id), addSearch(name, url), renameSearch(name, to), removeSearch(name) } for the person running the
   // agent, null for everyone else. catalog() -> the admin's [{ name, url }].
-  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, catalog = () => [], redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, redeliver, onReady, onError });
+  // feedStatus(search) -> { crawledAt, failures, blocked } of one search's crawler.
+  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, catalog = () => [], feedStatus = () => ({}), redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
+    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, feedStatus, redeliver, onReady, onError });
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
   }
-  // Keep typed prompts through a deployment/restart, including an unfinished requirement addition.
+  // Keep typed prompts through a deployment/restart, including an unfinished search addition.
   get asking() { return this.store.settings().pendingQuestion ?? null; }
   set asking(value) { this.store.saveSetting('pendingQuestion', value); }
   // Ask the next setup question, start a long step, or announce that setup is done.
@@ -144,11 +155,15 @@ export class Assistant {
     if (!field) {
       if (this.ready) return;
       this.ready = true;
-      await this.send(`✅ All set. I check your search every ${this.settings.display('pollIntervalMs')} and send new matches here. You approve every application; once you trust the drafts, auto-send in /settings lets me send clear matches myself.\n\n${MENU_HINT}`);
+      await this.send(`✅ All set. I check your searches as shown in 🔍 Search → 🔎 Searches and send new matches here. You approve every application; once you trust the drafts, auto-send in /settings lets me send clear matches myself.\n\n${MENU_HINT}`);
       return this.onReady();
     }
     if (field.key === 'is24') return this.track(() => this.connectIS24());
     if (field.key === 'searches') return this.show(this.searchesView());
+    if (field.key === 'form') {
+      const [intro, label] = FORM_INTRO[field.part];
+      return this.send(intro, { reply_markup: { inline_keyboard: [[{ text: label, web_app: { url: this.formUrl(field.part) } }]] } });
+    }
     return this.ask(field.key);
   }
   // After a restart: resume a long step, but do not repeat a question that is still open in the chat
@@ -172,8 +187,7 @@ export class Assistant {
     const field = this.settings.field(key);
     const choices = this.settings.choices(key);
     this.asking = choices.length ? null : key;
-    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : []),
-      ...(field.shortcut ? [{ text: field.shortcut[0], callback_data: `c:${key}:s` }] : [])];
+    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : [])];
     const current = this.settings.values[key] !== undefined ? `\n\nCurrently: ${this.settings.display(key)}` : '';
     await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: fit(buttons) } } : {});
   }
@@ -184,11 +198,6 @@ export class Assistant {
   // A typed message that is not a command or a draft edit.
   async text(message) {
     if (this.busy) return this.send('One moment, I am still on the previous step.');
-    if (this.asking === 'requirement+') {
-      this.asking = null;
-      try { this.settings.set('preferences', [...requirementLines(this.settings.config.preferences), message.trim()].join('\n')); } catch (error) { return this.send(error.message); }
-      return this.show(this.requirementsView());
-    }
     if (this.asking === 'search+') {
       const [, name, url] = /^(.{1,40}?)\s+(https:\/\/\S+)$/.exec(message.trim()) ?? [];
       if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
@@ -196,15 +205,21 @@ export class Assistant {
       this.asking = null;
       return this.show(this.searchesView());
     }
+    if (this.asking?.startsWith(RENAME)) {
+      if (!this.admin) { this.asking = null; return this.show(this.settingsView()); }
+      try { this.admin.renameSearch(this.asking.slice(RENAME.length), message.trim()); } catch (error) { return this.send(error.message); }
+      this.asking = null;
+      return this.show(this.searchesView());
+    }
     const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
-    if (!key || !this.settings.field(key) || this.settings.choices(key).length) {
+    if (!key || !this.settings.field(key) || this.settings.field(key).form || this.settings.choices(key).length) {
       return this.ready ? this.show(this.settingsView()) : this.continue();
     }
     try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
     this.asking = null;
     return this.saved(key);
   }
-  // Button taps: c:<key>:<index|-|s> answers a question (a choice, Skip, or the field's shortcut),
+  // Button taps: c:<key>:<index|-> answers a question (a choice or Skip),
   // k:<key> asks to change a setting, x:<action> is a menu action. Returns the toast, whether the tap was
   // used up (then its buttons are removed), and optionally `edit`: a view that replaces the tapped message.
   async choice(data) {
@@ -212,9 +227,9 @@ export class Assistant {
     if (kind === 'x') return this.action(...data.split(':').slice(1));
     const field = this.settings.field(key);
     if (kind === 'k') {
-      if (!field) return { text: 'Unknown setting.' };
+      if (!field || (field.form && key !== 'style')) return { text: 'Unknown setting.' };
       if (key === 'model' || key === 'thinking') { await this.modelMenu(); return { text: '' }; }
-      if (key === 'pollIntervalMs' && !this.admin) return { text: 'The check interval is shared; the admin sets it.' };
+      if (key === 'style') return ACTIONS.style.call(this);
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
     }
@@ -227,16 +242,23 @@ export class Assistant {
   }
   // The { setting: value } a question's button stands for; null if the button is outdated.
   answer(field, index, mark) {
-    if (index === 's') return field.shortcut?.[1] ?? null;
     if (index === '-') return field.optional ? { [field.key]: '' } : null;
     const choice = this.settings.choices(field.key)[Number(index)];
     return choice && mark === fingerprint(choice[1]) ? { [field.key]: choice[0] } : null;
   }
   show(view) { return this.send(view.text, view.extra); }
+  // A form was saved in the Mini App: setup goes on, otherwise the chat shows what is set now.
+  async formSaved(part) {
+    if (!this.ready || !this.settings.complete()) return this.continue();
+    const views = { search: () => this.requirementsView(), profile: () => this.aboutView(), style: () => this.styleView() };
+    return this.show(views[part]());
+  }
+  // The Mini App address of a settings form (forms.js).
+  formUrl(part) { return `${this.settings.config.publicUrl}/form?part=${part}`; }
   // 🧠 Remember on a draft: one more line of writing style, used for every later draft.
   remember(instruction) {
     const style = [this.settings.config.style, instruction.trim()].filter(Boolean).join('\n');
-    if (style.length > 1000) throw new Error('Your writing style is full (1000 characters). Shorten it in /settings first.');
+    if (style.length > 1000) throw new Error('The agent\'s writing style is full (1000 characters). Shorten it in /settings first.');
     this.settings.set('style', style);
   }
   async command(name) {
@@ -246,14 +268,13 @@ export class Assistant {
     if (Object.hasOwn(RECONNECT, name)) return this.reconnect(name) ? undefined : this.send(BUSY);
     const commands = {
       '/status': async () => this.show(await this.statusView()),
-      '/pause': () => this.send(this.togglePause() ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : `▶️ Searching again, every ${this.settings.display('pollIntervalMs')}.`),
+      '/pause': () => this.send(this.togglePause() ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again.'),
       '/settings': () => this.show(this.settingsView()),
       '/search': () => this.show(this.requirementsView()),
-      '/prompt': () => this.show(this.promptView()),
+      '/prompt': () => this.show(this.styleView()),
       '/model': () => this.modelMenu(),
       '/autosend': () => this.ask('autoSend'),
       ...(this.admin && {
-        '/interval': () => this.ask('pollIntervalMs'), // Shared: every search runs on the admin's interval.
         '/users': () => this.show(usersView(this.admin.users())),
       }),
     };
@@ -263,29 +284,38 @@ export class Assistant {
   reconnect(name) { return this.track(() => this[RECONNECT[name]](), name); }
   // Returns whether searching is now paused.
   togglePause() { return this.settings.set('paused', !this.settings.config.paused); }
-  settingsView() { return settingsView({ interval: this.settings.display('pollIntervalMs'), autoSend: this.settings.config.autoSend, admin: Boolean(this.admin) }); }
-  requirementsView() { return requirementsView(this.settings.config.preferences, this.settings.config); }
+  settingsView() { return settingsView({ autoSend: this.settings.config.autoSend, admin: Boolean(this.admin) }); }
+  // The searches this person picked, with their schedules.
+  picked() { return this.catalog().filter(search => this.settings.config.searches.includes(search.name)); }
+  schedule(what, index, mark, choice) {
+    const search = this.admin && this.pickedSearch(index, mark);
+    if (!search) return STALE;
+    if (choice === undefined) return { text: '', edit: scheduleView(search, index, what) };
+    const value = (what === 'si' ? INTERVALS : NIGHT_PAUSES)[Number(choice)];
+    if (value === undefined) return STALE;
+    const updated = this.admin.scheduleSearch(search.name, what === 'si' ? { intervalMs: value } : { quietHours: value });
+    return { text: 'Saved. It applies to everyone who picked it.', edit: searchView(updated, index, this.using(search.name)) };
+  }
+  requirementsView() { return requirementsView(this.settings.config.preferences, this.settings.config, this.formUrl('search')); }
+  aboutView() { return aboutView(this.settings.config.persona, this.settings.config.accountEmail, this.formUrl('profile')); }
+  styleView() { return styleView(this.settings.config.style, this.formUrl('style')); }
+  // How many people picked a search.
+  using(name) { return this.admin.users().filter(user => user.searches.includes(name)).length; }
   searchesView() { return searchesView({ catalog: this.catalog(), selected: this.settings.config.searches, admin: Boolean(this.admin) }); }
   // The search a button names, if the list still has it at that index.
   pickedSearch(index, mark) {
     const search = this.catalog()[Number(index)];
     return search && fingerprint(search.name) === mark ? search : null;
   }
-  promptView() {
-    const about = this.persona().filter(([key]) => this.settings.values[key]).map(([, label, value]) => [label, value]);
-    return promptView({ ...this.settings.config, about: [['Email', this.settings.config.accountEmail], ...about] });
-  }
-  // [[key, label, display]] of every personal detail.
-  persona() { return FIELDS.filter(field => field.key.startsWith('persona.')).map(field => [field.key, field.label, this.settings.display(field.key)]); }
   async statusView() {
     const counts = {};
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
     const { config } = this.settings;
     // The level the model uses when none is chosen; unknown if the model list cannot be read.
     const modelDefault = config.llm.thinking ? null : await this.models().then(list => list.find(model => model.id === config.llm.model)?.defaultThinking, () => null);
-    return statusView({ counts, lastPollAt: this.workflow?.lastPollAt, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, interval: this.settings.display('pollIntervalMs'), autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
-      quietHours: config.quietHours, quiet: isQuiet(config.quietHours), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
+    return statusView({ counts, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
+      paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
+      searches: this.picked().map(search => ({ ...search, quiet: isQuiet(search.quietHours), ...this.feedStatus(search) })), quiet: this.picked().length > 0 && this.picked().every(search => isQuiet(search.quietHours)), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
   async models() {

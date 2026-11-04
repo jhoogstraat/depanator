@@ -66,11 +66,13 @@ async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
   return token(fetchImpl, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI });
 }
 
-export async function accountEmail(accessToken, fetchImpl = fetch) {
+// The account's email, and its name where IS24 has one (OpenID profile claims).
+export async function accountInfo(accessToken, fetchImpl = fetch) {
   const res = await fetchImpl(`${ISSUER}/v1/userinfo`, { headers: { ...HEADERS, Authorization: `Bearer ${accessToken}` } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`IS24 account check failed: HTTP ${res.status}`);
-  return String(data.email || data.preferred_username || '').toLowerCase();
+  const name = value => typeof value === 'string' ? value.trim().slice(0, 60) : '';
+  return { email: String(data.email || data.preferred_username || '').toLowerCase(), firstname: name(data.given_name), lastname: name(data.family_name) };
 }
 
 const claims = jwt => { try { return JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url')); } catch { return {}; } };
@@ -92,12 +94,14 @@ export class IS24Session {
   get connected() { return Boolean(this.tokens?.refresh_token); }
   get email() { return this.tokens?.email || ''; }
   get ssoId() { return claims(this.tokens?.id_token || '').ssoId || ''; }
+  // { firstname, lastname } as the account had them at login; empty strings where IS24 had none.
+  get profile() { return this.tokens?.profile ?? {}; }
   // Returns the account email. The password is only passed through to IS24.
   async login({ email, password, askCode }) {
     const tokens = await appLogin({ email, password, askCode, fetchImpl: this.fetch });
-    const account = await accountEmail(tokens.access_token, this.fetch);
+    const { email: account, ...profile } = await accountInfo(tokens.access_token, this.fetch);
     if (!account) throw new Error('IS24 did not tell which account this is');
-    this.save(tokens, account);
+    this.save(tokens, account, profile);
     return account;
   }
   async accessToken() {
@@ -111,8 +115,8 @@ export class IS24Session {
     return this.tokens.access_token;
   }
   renew(refreshToken) { return token(this.fetch, { grant_type: 'refresh_token', refresh_token: refreshToken }); }
-  save(tokens, email) {
-    this.tokens = { access_token: tokens.access_token, refresh_token: tokens.refresh_token || this.tokens?.refresh_token, id_token: tokens.id_token || this.tokens?.id_token,
+  save(tokens, email, profile = this.tokens?.profile) {
+    this.tokens = { profile, access_token: tokens.access_token, refresh_token: tokens.refresh_token || this.tokens?.refresh_token, id_token: tokens.id_token || this.tokens?.id_token,
       expiresAt: Date.now() + (Number.isFinite(Number(tokens.expires_in ?? NaN)) ? Number(tokens.expires_in) : 3600) * 1000, email };
     writeFileSync(this.file, JSON.stringify(this.tokens), { mode: 0o600 });
   }

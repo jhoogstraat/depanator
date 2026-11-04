@@ -1,6 +1,5 @@
 import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.js';
 import { assertReconciled } from './config.js';
-import { isQuiet } from './settings.js';
 
 // Self-healing (backoff, retry) runs first; the user hears only about streaks it cannot fix.
 const ALERT_AFTER = 3;
@@ -17,8 +16,9 @@ const ADVICE = {
 export class Workflow {
   // notify delivers a draft for approval, report tells the user a send outcome, alert raises an operator problem.
   // withdraw removes the Telegram messages of a listing that went offline.
-  constructor({ store, adapter, evaluate, notify, report = async () => {}, withdraw = async () => {}, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {} }) {
-    Object.assign(this, { store, adapter, evaluate, notify, report, withdraw, config, onEvent, beforeWork, alert });
+  // interval() -> how often checks run.
+  constructor({ store, adapter, evaluate, notify, report = async () => {}, withdraw = async () => {}, config, onEvent = () => {}, beforeWork = async () => {}, alert = async () => {}, interval = () => 600_000 }) {
+    Object.assign(this, { store, adapter, evaluate, notify, report, withdraw, config, onEvent, beforeWork, alert, interval });
     this.controller = new AbortController(); // Aborted once closed.
     this.queue = Promise.resolve(); // Polls and sends run one at a time.
     this.runningTick = null;
@@ -26,7 +26,6 @@ export class Workflow {
     this.reporting = Promise.resolve(); // Outcome reports, serialized but independent of IS24 work.
     this.failures = { IS24: 0, LLM: 0 }; // Consecutive outage streaks.
     this.backoff = { skip: 0, blocked: false }; // Polls to skip; sends pause while IS24 blocks us.
-    this.lastPollAt = null; // The last search that completed.
     this.cleanedOn = null; // The German date of the last morning cleanup.
   }
   get closed() { return this.controller.signal.aborted; }
@@ -74,11 +73,10 @@ export class Workflow {
   // One check: why it does not search, or what it found.
   async check() {
     if (this.config.paused === true) return { paused: true };
-    if (isQuiet(this.config.quietHours)) return { quiet: true };
+    if (this.adapter.quiet?.()) return { quiet: true };
     if (this.backoff.skip > 0) { this.backoff.skip--; return { skipped: true }; }
     await this.morningCleanup();
     const result = await this.pollInternal();
-    this.lastPollAt = Date.now();
     return result;
   }
   // Once per German calendar day, on the first check after the night pause.
@@ -120,22 +118,23 @@ export class Workflow {
   async is24Failure(error) {
     await this.failure('IS24', error);
     // The pause doubles with every failure (skip 0, 1, 3, 7... polls), capped near one hour.
-    const maxPolls = Math.max(1, Math.floor(MAX_BACKOFF_MS / (this.config.pollIntervalMs ?? 600_000)));
+    const maxPolls = Math.max(1, Math.floor(MAX_BACKOFF_MS / this.interval()));
     this.backoff = { skip: Math.min(2 ** (this.failures.IS24 - 1), maxPolls) - 1, blocked: error.code === 'BLOCKED' };
   }
 
   async pollInternal() {
     let search;
     try {
-      search = await this.adapter.search({ signal: this.controller.signal });
+      search = await this.adapter.search();
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
     } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
     this.assertRunning();
-    // The adapter marks the first successful search after startup/resume/change as a baseline.
+    // The adapter marks each search's first successful result after startup/resume/change/night pause as a baseline.
     // Those listings were already online; only later arrivals become candidates.
-    const existing = search.caughtUp === false;
-    const noted = this.store.discover(search.listings, { fresh: search.caughtUp === true, existing });
-    if (existing && noted.length) await this.raise(`👀 Watching your search. ${noted.length} listings are already online; I skip those and message you only about new ones.`);
+    const noted = this.store.discover(search.baseline ?? [], { existing: true });
+    this.store.discover(search.listings, { fresh: true });
+    search.commit?.();
+    if (noted.length) await this.raise(`👀 Watching your search. ${noted.length} listings are already online; I skip those and message you only about new ones.`);
     const batch = { stop: false, is24Failed: false, llmFailed: false, tried: new Set() }; // tried: delivered once this poll
     const queue = this.store.list('discovered');
     const worker = async () => { while (!batch.stop && queue.length) await this.analyze(queue.shift(), batch); };

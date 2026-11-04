@@ -15,11 +15,11 @@ function verifiedUser(initData, botToken, now = Date.now()) {
   if (!(now / 1000 - Number(params.get('auth_date')) < 3600)) return '';
   try { return String(JSON.parse(params.get('user')).id ?? ''); } catch { return ''; }
 }
-function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
+export function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
   return Boolean(ownerId) && verifiedUser(initData, botToken, now) === String(ownerId);
 }
 
-const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
+export const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
   res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(body);
 };

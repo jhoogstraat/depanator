@@ -11,7 +11,7 @@ const INVALID = { text: 'This approval is invalid.' };
 const EDITS = {
   e: { mode: 'ai', ask: '✏️ What should change?', placeholder: 'e.g. shorter, mention move-in 1 March' },
   m: { mode: 'manual', ask: '📝 Send the message exactly as it should go out. Tip: copy the draft above and change it.', placeholder: 'Your message' },
-  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to your writing style (/settings) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
+  r: { mode: 'remember', ask: '🧠 What should I always do differently? I save it to the agent\'s writing style (/settings) and rewrite this draft with it.', placeholder: 'e.g. always mention my cat' },
 };
 
 function chunks(text, limit = LIMIT) {
@@ -231,7 +231,7 @@ export class Telegram {
   send(text, extra = {}) { return this.api('sendMessage', { chat_id: this.chatId, text, ...extra }); }
   // A new person's first message from the bot.
   async welcome() {
-    await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes about five minutes.');
+    await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes a few minutes.');
     await this.assistant.continue();
   }
   // Commands and setup answers go to the assistant; replies to an ✏️ Edit prompt revise that draft.
@@ -251,7 +251,7 @@ export class Telegram {
       try { this.assistant.remember(instructions); } catch (error) { return this.send(error.message); }
     }
     this.editPrompts.delete(promptId);
-    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to your writing style (/settings). Revising the draft…' : '✍️ Revising the draft…');
+    if (!manual) await this.send(target.mode === 'remember' ? '🧠 Saved to the agent\'s writing style (/settings). Revising the draft…' : '✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
     this.revise(target.id, target.version, instructions, { manual });
   }

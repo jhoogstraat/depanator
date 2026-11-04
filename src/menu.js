@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { compactId } from './review.js';
+import { INTERVALS, NIGHT_PAUSES, every, nightPause } from './settings.js';
 
 // The Telegram menu (☰ next to the message field): two entry points, everything else is a button in the chat.
-// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /interval, /autosend, /connect, /immomio, /login. Admin only: /users, /interval.
+// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /autosend, /connect, /immomio, /login. Admin only: /users.
 export const COMMANDS = [
   ['status', 'Overview: search now, waiting and sent'],
-  ['settings', 'Search, requirements, style, model, connections'],
+  ['settings', 'Search, about you, writing style, model, connections'],
 ];
 export const MENU_HINT = 'Send /status to see what I am doing, /settings to change anything.';
 
@@ -30,16 +31,17 @@ const when = time => time ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'short
 const link = review => `<a href="https://www.immobilienscout24.de/expose/${encodeURIComponent(review.exposeId)}">${esc(review.snapshot.title)}</a>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-// status: { counts, lastPollAt, failures: { IS24, LLM }, blocked, paused, interval, autoSend, email, immomioEmail, model, thinking, chatgpt: { email, plan }, quietHours, quiet }
-const hours = quietHours => quietHours.split('-').map(hour => `${hour.padStart(2, '0')}:00`);
+// A search's schedule as people read it: "every 2 min · 🌙 22:00–07:00".
+const schedule = ({ intervalMs, quietHours }) => `every ${every(intervalMs)} · 🌙 ${quietHours ? nightPause(quietHours) : 'no night pause'}`;
+// status: { counts, failures: { IS24, LLM }, blocked, paused, autoSend, email, immomioEmail, model, thinking, chatgpt: { email, plan },
+// searches: [{ name, intervalMs, quietHours, quiet, crawledAt, failures, blocked }] (the ones picked), quiet: all of them are in their night pause }
 export function statusView(s) {
   const n = key => s.counts[key] ?? 0;
   const health = (failures, ok, blocked = false) => blocked ? '⛔ blocking me, backing off' : failures ? `⚠️ ${plural(failures, 'failure')} in a row` : `✅ ${ok}`;
   const lines = [
     s.paused ? '<b>⏸ Paused</b>: I do not search. Waiting drafts and sending still work.'
-      : s.quiet ? `<b>🌙 Night pause</b> until ${hours(s.quietHours)[1]}.` : `<b>🟢 Searching</b> every ${esc(s.interval)}`,
-    `🌙 Night pause: ${s.quietHours ? `${hours(s.quietHours).join(' – ')}` : 'off'}`,
-    `🕑 Last check: ${when(s.lastPollAt)}`,
+      : s.quiet ? '<b>🌙 Night pause</b> for all your searches.' : '<b>🟢 Searching</b>',
+    ...s.searches.map(search => `🔎 ${esc(search.name)}: ${schedule(search)}${search.quiet && !s.quiet ? ' (now paused)' : ''}\n      🕑 checked ${when(search.crawledAt)}${search.blocked ? ' · ⛔ IS24 is blocking it, backing off' : search.failures ? ` · ⚠️ ${plural(search.failures, 'failure')} in a row` : ''}`),
     `🏠 ImmoScout24: ${s.email ? health(s.failures.IS24, `connected as ${esc(s.email)}`, s.blocked) : '❌ not connected, /connect'}`,
     `🏢 Immomio: ${s.immomioEmail ? `connected as ${esc(s.immomioEmail)}` : 'not connected, /immomio'}`,
     `🤖 ChatGPT${s.chatgpt.plan ? ` ${esc(s.chatgpt.plan[0].toUpperCase() + s.chatgpt.plan.slice(1))}` : ''}: ${health(s.failures.LLM, s.chatgpt.email ? `connected as ${esc(s.chatgpt.email)}` : 'connected')}`,
@@ -63,15 +65,14 @@ export function statusView(s) {
 }
 
 // One way to everything you can change; each button opens that setting's own question or view.
-// admin: the shared check interval and ChatGPT login, and who is on this agent.
-export function settingsView({ interval, autoSend, admin }) {
+// admin: the shared ChatGPT login, and who is on this agent. Each search's schedule is set on the search (🔍 Search → 🔎 Searches).
+export function settingsView({ autoSend, admin }) {
   return html('<b>⚙️ Settings</b>\nTap what you want to change.', [
     [{ text: '🔍 Search', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
-    [{ text: '✍️ Writing style', callback_data: 'k:style' }, { text: '📝 Prompt', callback_data: 'x:prompt' }],
-    [{ text: '🧠 Model', callback_data: 'k:model' }, { text: '🌙 Night pause', callback_data: 'k:quietHours' }],
+    [{ text: '✍️ Agent\'s style', callback_data: 'x:style' }, { text: '🧠 Model', callback_data: 'k:model' }],
     [{ text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'k:autoSend' }],
-    ...rows([{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }, ...(admin ? [{ text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }] : [])], 2),
-    ...(admin ? [[{ text: `⏱ ${interval}`, callback_data: 'k:pollIntervalMs' }, { text: '👥 People', callback_data: 'x:users' }]] : []),
+    [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }],
+    ...(admin ? [[{ text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }, { text: '👥 People', callback_data: 'x:users' }]] : []),
   ]);
 }
 
@@ -125,29 +126,51 @@ export function thinkingView(model, modelIndex, current, thinking) {
     fit(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3));
 }
 
-export const requirementLines = preferences => String(preferences || '').split('\n').map(line => line.trim()).filter(Boolean);
 const span = ({ min, max }, unit) => min === null && max === null ? 'any' : min === null ? `up to ${max}${unit}` : max === null ? `from ${min}${unit}` : `${min}–${max}${unit}`;
-// searches: the names you picked. limits: { price, rooms, livingSpace }, see Settings.
-export function requirementsView(preferences, { searches, limits }) {
-  const lines = requirementLines(preferences);
+const quote = body => `<blockquote expandable>${esc(body)}</blockquote>`;
+// A button that opens a settings form (forms.js) in Telegram.
+const editButton = (url, text = '✏️ Edit') => ({ text, web_app: { url } });
+
+// searches: the names you picked. limits: { price, rooms, livingSpace }, see Settings. edit: the search form's address.
+export function requirementsView(preferences, { searches, limits }, edit) {
   const hard = [`🔎 Searches: ${esc(searches.join(', '))}`, `💶 Warm rent: ${span(limits.price, ' €')}`, `🚪 Rooms: ${span(limits.rooms, '')}`, `📐 Living space: ${span(limits.livingSpace, ' m²')}`];
-  return html(`<b>🔍 Search</b>\n${hard.join('\n')}\n\n<b>Requirements</b>\nChatGPT skips listings that clearly break one of these; every other listing comes to you.\n\n${lines.map((line, index) => `${index + 1}. ${esc(line)}`).join('\n') || 'None yet.'}`, [
-    [{ text: '🔎 Searches', callback_data: 'x:searches' }, { text: '💶 Rent', callback_data: 'k:rent' }],
-    [{ text: '🚪 Rooms', callback_data: 'k:rooms' }, { text: '📐 Space', callback_data: 'k:area' }],
-    [{ text: '➕ Add', callback_data: 'x:ra' }, { text: '✏️ Rewrite all', callback_data: 'k:preferences' }],
-    ...rows(lines.length > 1 ? lines.map((line, index) => ({ text: `🗑 ${index + 1}`, callback_data: `x:rd:${index}:${fingerprint(line)}` })) : [], 5),
-  ]);
+  return html([
+    '<b>🔍 Search</b>', ...hard,
+    '', '<b>🎯 Requirements</b>', quote(preferences || 'None yet.'),
+    'Listings outside the searches, rent, rooms or living space never reach you. ChatGPT reads your requirements for the rest and skips the ones that clearly do not fit; every other listing comes to you.',
+  ].join('\n'), [[{ text: '🔎 Searches', callback_data: 'x:searches' }, editButton(edit)]]);
 }
 
-// catalog: the admin's [{ name, url }]. selected: the names this person picked. Only the admin adds and removes.
+// catalog: the admin's [{ name, url, intervalMs, quietHours }]. selected: the names this person picked.
+// Only the admin adds them, sets how often and when they run, renames and removes them.
 export function searchesView({ catalog, selected, admin }) {
-  const links = admin ? catalog.map(({ name, url }) => `<a href="${esc(new URL(url).href)}">${esc(name)}</a>`).join('\n') : '';
+  const lines = catalog.map(search => `${admin ? `<a href="${esc(new URL(search.url).href)}">${esc(search.name)}</a>` : `<b>${esc(search.name)}</b>`}: ${schedule(search)}`).join('\n');
   const empty = admin ? 'None yet. Tap ➕ Add for the first one.' : 'None yet. The admin adds them.';
-  return html(`<b>🔎 Which searches do you want listings from?</b>\nTap to pick. Your rent, rooms, living space and requirements are applied to each.\n\n${links || (catalog.length ? '' : empty)}`.trim(), [
+  return html(`<b>🔎 Which searches do you want listings from?</b>\nTap to pick. Your rent, rooms, living space and requirements are applied to each. Each search runs as often and pauses at night as shown${admin ? '; ⚙️ changes that, renames or removes it' : ''}.\n\n${lines || empty}`, [
     ...catalog.map(({ name }, index) => [{ text: `${selected.includes(name) ? '✅' : '⬜'} ${name}`, callback_data: `x:st:${index}:${fingerprint(name)}` },
-      ...(admin ? [{ text: '🗑', callback_data: `x:sr:${index}:${fingerprint(name)}` }] : [])]),
+      ...(admin ? [{ text: '⚙️', callback_data: `x:se:${index}:${fingerprint(name)}` }] : [])]),
     ...(admin ? [[{ text: '➕ Add', callback_data: 'x:sa' }]] : []),
     [{ text: 'Done', callback_data: 'x:sd' }],
+  ]);
+}
+// One search of the admin's list. using: how many people picked it.
+export function searchView(search, index, using) {
+  const mark = fingerprint(search.name);
+  return html(`<b>🔎 ${esc(search.name)}</b>\n<a href="${esc(new URL(search.url).href)}">Open on ImmoScout24</a>\n⏱ Every ${every(search.intervalMs)}\n🌙 Night pause: ${nightPause(search.quietHours)}\n${using === 1 ? '1 person uses it.' : `${using || 'Nobody'} ${using ? 'people use' : 'uses'} it.`}`, [
+    [{ text: `⏱ ${every(search.intervalMs)}`, callback_data: `x:si:${index}:${mark}` }, { text: `🌙 ${search.quietHours ? nightPause(search.quietHours) : 'Off'}`, callback_data: `x:sq:${index}:${mark}` }],
+    [{ text: '✏️ Rename', callback_data: `x:sn:${index}:${mark}` }, { text: '🗑 Remove', callback_data: `x:sr:${index}:${mark}` }],
+    [{ text: '← Back', callback_data: 'x:searches:edit' }],
+  ]);
+}
+// How often a search runs (what: 'si') or when it pauses ('sq'): each button saves one choice.
+export function scheduleView(search, index, what) {
+  const mark = fingerprint(search.name);
+  const [title, note, options, current, label] = what === 'si'
+    ? [`⏱ How often should I search ${esc(search.name)}?`, 'Being early matters most; every 2 minutes is a good balance. Each check costs IS24 one request.', INTERVALS, search.intervalMs, every]
+    : [`🌙 When should ${esc(search.name)} pause?`, 'Hardly anyone publishes listings at night. German time.', NIGHT_PAUSES, search.quietHours, value => value ? nightPause(value) : 'Around the clock'];
+  return html(`<b>${title}</b>\n${note}\nIt applies to everyone who picked this search.`, [
+    ...fit(options.map((option, choice) => ({ text: `${option === current ? '✓ ' : ''}${label(option)}`, callback_data: `x:${what}:${index}:${mark}:${choice}` })), 3),
+    [{ text: '← Back', callback_data: `x:se:${index}:${mark}` }],
   ]);
 }
 export function removeSearchView({ name }, index, using) {
@@ -155,24 +178,25 @@ export function removeSearchView({ name }, index, using) {
     [[{ text: '🗑 Yes, remove', callback_data: `x:sr:${index}:${fingerprint(name)}:yes` }], [{ text: 'Cancel', callback_data: 'x:searches:edit' }]]);
 }
 
-// What ChatGPT gets with each listing that you control (the fixed safety rules are not shown).
-// about: [[label, value]] of your details as ChatGPT gets them (unset ones left out).
-export function promptView({ style, preferences, about }) {
-  const block = body => `<blockquote expandable>${esc(body)}</blockquote>`;
-  const facts = about.map(([label, value]) => `${label}: ${value}`).join('\n');
+// How ChatGPT writes, and everything else it gets with each listing (the fixed safety rules are not shown).
+export function styleView(style, edit) {
   return html([
-    '<b>📝 What ChatGPT gets for each new listing</b>',
-    '', '<b>✍️ Your writing style</b>', block(style || 'None yet. Tap below to add one, e.g. "Formal, short, mention that I am a non-smoker."'),
-    '', '<b>🎯 Requirements</b>', block(requirementLines(preferences).join('\n')),
-    '', '<b>👤 About you</b>', block(facts || 'Nothing yet.'),
-    '', 'Plus the listing itself, which ChatGPT treats as data, never as instructions.',
-  ].join('\n'), [
-    [{ text: '✍️ Style', callback_data: 'k:style' }, { text: '🎯 Requirements', callback_data: 'x:requirements' }],
-    [{ text: '👤 About you', callback_data: 'x:about' }, ...(style ? [{ text: '🗑 Remove style', callback_data: 'c:style:-' }] : [])],
-  ]);
+    '<b>✍️ The agent\'s writing style</b>',
+    'How ChatGPT writes your applications. 🧠 Remember on a draft adds a line here.',
+    quote(style || 'None yet: polite and concise. For example "Formal, short, always mention that I am a non-smoker."'),
+    '', '<b>What ChatGPT gets for each new listing</b>',
+    '• this writing style', '• your 🎯 requirements, from 🔍 Search', '• your 👤 About you and contact details', '• the listing itself, as data, never as instructions',
+  ].join('\n'), [[editButton(edit), ...(style ? [{ text: '🗑 Remove', callback_data: 'c:style:-' }] : [])]]);
 }
-// fields: [[key, label, display]]; each button changes that detail.
-export function aboutView(fields) {
-  return html(`<b>👤 About you</b>\nApplications state only these facts. Tap one to change it.\n\n${fields.map(([, label, value]) => `${esc(label)}: ${esc(value)}`).join('\n')}`,
-    fit(fields.map(([key, label]) => ({ text: label, callback_data: `k:${key}` })), 2));
+// persona: the stored persona.* values without the prefix; email: the IS24 login, which IS24 sends along.
+const SALUTATION = { FEMALE: 'Frau', MALE: 'Herr' };
+export function aboutView(persona, email, edit) {
+  const address = [[persona.strasse, persona.hausnummer].filter(Boolean).join(' '), [persona.plz, persona.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return html([
+    '<b>👤 About you</b>', '', '<b>Contact details</b> · go into IS24\'s contact form',
+    esc([SALUTATION[persona.anrede], persona.vorname, persona.nachname].filter(Boolean).join(' ') || 'No name yet'),
+    `✉️ ${esc(email || 'not connected')} (your IS24 login)`, `📞 ${esc(persona.telefon || '–')}`, `🏠 ${esc(address || '–')}`,
+    '', '<b>About you</b> · free text for ChatGPT, which writes your applications', quote(persona.about || 'Nothing yet. Applications then mention only your name.'),
+    '', `<b>IS24 Selbstauskunft</b>: ${persona.sendProfile === true ? 'attached to applications' : 'not attached'}`,
+  ].join('\n'), [[editButton(edit)]]);
 }

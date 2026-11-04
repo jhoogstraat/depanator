@@ -13,7 +13,9 @@ export const STRANGER = 777;
 export const FRIEND = 55;
 export const SEARCH_URL = 'https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten?price=-1500';
 const TOKEN = 'e2e-bot-token';
-const POLL_MS = 100; // Below the chat's choices, so tests need no fake clock.
+// The names the fake IS24 account has, as its login tells them.
+const NAMES = { 'alex@example.com': { given_name: 'Alex', family_name: 'Doe' }, 'friend@example.com': { given_name: 'Robin' } };
+const POLL_MS = 100; // Below the chat's choices, so tests need no fake clock. Shown as "every 0.1 s".
 const ROOT = new URL('../..', import.meta.url).pathname;
 const FAKE_CODEX = new URL('./fake-codex.js', import.meta.url).pathname;
 
@@ -101,11 +103,28 @@ export async function createWorld(t) {
       const response = await fetch(`http://127.0.0.1:${this.port}/${path}/login`, { method: 'POST', headers: { 'x-init-data': this.signed(from) }, body: JSON.stringify({ email, password }) });
       assert.equal(response.status, 204);
     },
+    // What the Telegram app shows when they open a ✏️ form button: that form with its current values.
+    async form(part, from = OWNER) {
+      const { web_app } = await until(`the ${part} form button`, () => this.messages().filter(call => String(call.body.chat_id) === String(from)).flatMap(call => call.body.reply_markup?.inline_keyboard?.flat() ?? [])
+        .find(button => button.web_app && new URL(button.web_app.url).searchParams.get('part') === part));
+      assert.equal(new URL(web_app.url).pathname, '/form');
+      const response = await fetch(`http://127.0.0.1:${this.port}/form/state?part=${part}`, { headers: { 'x-init-data': this.signed(from) } });
+      assert.equal(response.status, 200);
+      return response.json();
+    },
+    // Opens the form, changes `values` and saves it. Resolves with the form as it was opened and the error shown, if any.
+    async fill(part, values, from = OWNER) {
+      const form = await this.form(part, from);
+      const current = Object.fromEntries(form.fields.map(field => [field.key, field.value]));
+      const response = await fetch(`http://127.0.0.1:${this.port}/form/save`, { method: 'POST', headers: { 'x-init-data': this.signed(from) }, body: JSON.stringify({ part, values: { ...current, ...values } }) });
+      return { form, status: response.status, error: response.status === 400 ? (await response.json()).error : '' };
+    },
     codexCalls() {
       const file = join(dataDir, 'codex', 'calls.jsonl');
       return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
     },
-    // Stored directly, as a finished setup leaves them, plus the IS24 login that goes with them.
+    // Stored directly, as a finished setup before searches had their own schedule left them (the admin's interval and
+    // night pause were everybody's), plus the IS24 login that goes with them.
     seed(values = {}) {
       const store = new Store(join(dataDir, 'agent.db'));
       const settings = { chatId: String(OWNER), accountEmail: 'alex@example.com', searchUrl: SEARCH_URL, preferences: 'No swap', 'persona.anrede': 'FEMALE', 'persona.vorname': 'Alex', 'persona.nachname': 'Doe',
@@ -114,11 +133,11 @@ export async function createWorld(t) {
       store.close();
       writeFileSync(join(dataDir, 'is24-session.json'), JSON.stringify({ access_token: 'seeded-token', refresh_token: 'refresh', expiresAt: Date.now() + 3_600_000, email: settings.accountEmail, id_token: jwt({ ssoId: 'sso-1' }) }));
     },
-    // An unset first run: only what a test cannot choose in the chat without waiting (poll speed, no night pause).
+    // An unset first run: only what a test cannot choose in the chat without waiting (the first search's poll
+    // speed, no night pause).
     seedFirstRun() {
       const store = new Store(join(dataDir, 'agent.db'));
-      store.saveSetting('pollIntervalMs', POLL_MS);
-      store.saveSetting('quietHours', '');
+      store.saveSetting('searchDefaults', { intervalMs: POLL_MS, quietHours: '' });
       store.close();
     },
     // Starts the real agent. Resolves once it runs; its output is kept for the pairing code and failure messages.
@@ -179,7 +198,7 @@ export async function createWorld(t) {
       }
       if (path.endsWith('/v1/authorize')) { res.writeHead(302, { Location: `immobilienscout24.de:/loginCallback?code=code&state=${url.searchParams.get('state')}` }); return res.end(); }
       if (path.endsWith('/v1/token')) return json(res, { access_token: 'connected-token', refresh_token: 'refresh', id_token: jwt({ ssoId: 'sso-1' }), expires_in: 3600 });
-      if (path.endsWith('/v1/userinfo')) return json(res, { email: world.lastLogin });
+      if (path.endsWith('/v1/userinfo')) return json(res, { email: world.lastLogin, ...NAMES[world.lastLogin.toLowerCase()] });
       json(res, {}, 404);
     },
     'sso.immomio.com'(req, res, body, path, url) {

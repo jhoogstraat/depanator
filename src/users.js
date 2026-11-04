@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Store } from './store.js';
-import { Settings } from './settings.js';
+import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES } from './settings.js';
+import { FormApp } from './forms.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter, searchFilters } from './is24.js';
+import { feedKey } from './feed.js';
 import { createEvaluator } from './llm.js';
 import { codexLoggedIn, loginWithCodex, listCodexModels, codexAccount } from './codex.js';
 import { Telegram } from './telegram.js';
@@ -18,7 +20,6 @@ const SKIPPED = { paused: 'Paused', quiet: 'Night pause', skipped: 'Backing off 
 const INVITE_MS = 24 * 3_600_000;
 // Across everybody: they all use one ChatGPT login, so one person's burst must not starve the others.
 const LLM_CONCURRENCY = 3;
-const DEFAULT_INTERVAL_MS = 120_000;
 const SESSIONS = ['is24-session.json', 'immomio-session.json'];
 
 // At most `max` calls at once, first come first served.
@@ -87,9 +88,9 @@ function adoptSearchUrls(dataDir) {
 // Everyone on this agent: one private chat with the bot and one folder per person (users/<chat id>/).
 // Shared: the bot, the admin's list of IS24 searches and their feeds, and the ChatGPT login. Nobody's store, sessions or chat reach another's.
 export class Users {
-  // onInterval: the admin changed the shared check interval.
-  constructor({ runtime, bot, feeds, onInterval = () => {}, log = console }) {
-    Object.assign(this, { runtime, bot, feeds, onInterval, log });
+  // feeds: the crawled searches (feed.js). onCatalog: the admin's list or a search's schedule changed.
+  constructor({ runtime, bot, feeds, onCatalog = () => {}, log = console }) {
+    Object.assign(this, { runtime, bot, feeds, onCatalog, log });
     this.users = new Map();
     this.limit = limiter(LLM_CONCURRENCY);
     this.pairingCode = null;
@@ -118,9 +119,14 @@ export class Users {
     if (!session.connected && config.accountEmail) settings.set('accountEmail', '');
     const immomioSession = new ImmomioSession(join(folder, SESSIONS[1]));
     if (!immomioSession.connected && config.immomioEmail) settings.set('immomioEmail', '');
-    const adapter = new IS24Adapter(config, { session, immomio: immomioSession, feeds, catalog: () => this.catalog });
+    const adapter = new IS24Adapter(config, { session, immomio: immomioSession, feeds, catalog: () => this.catalog,
+      cursors: { get: () => store.settings().cursors ?? {}, set: value => store.saveSetting('cursors', value) } });
     const is24App = new ConnectApp({ config, session });
     const immomioApp = new ConnectApp({ config, session: immomioSession, brand: BRANDS.immomio });
+    // The settings forms. The name IS24 knows prefills the form until one is saved.
+    const formApp = new FormApp({ config, settings,
+      prefill: () => ({ 'persona.vorname': session.profile.firstname || undefined, 'persona.nachname': session.profile.lastname || undefined }),
+      onSaved: part => telegram.assistant.formSaved(part).catch(failure => error(failure.message)) });
     let telegram;
     // Sends the connect button (once per request) and resolves with the connected email, saved as `setting`.
     const connector = (app, setting, name, path) => async intro => {
@@ -142,7 +148,7 @@ export class Users {
       notify: review => telegram.notify(review),
       report: review => telegram.notifyOutcome(review),
       withdraw: review => telegram.withdraw(review),
-      alert: text => { error(text); return telegram.send(text); },
+      alert: text => { error(text); return telegram.send(text); }, interval: () => this.interval(),
       beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
       onEvent: event => {
         if (event.type === 'submission') this.log.log(`[${id}] ${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
@@ -150,9 +156,20 @@ export class Users {
       },
     });
     telegram = new Telegram({ config, store, workflow, bot, onError: error });
-    // Resolves with the tick's result, or { error } (logged here).
-    const tick = async () => {
-      if (!settings.complete()) return;
+    // Resolves with the tick's result, or { error } (logged here). A wake-up during a tick runs one more after it,
+    // so a crawl that finished meanwhile is never missed. Outcome reports go out even while a tick is stuck.
+    let running = null, again = false;
+    const tick = () => {
+      if (!settings.complete()) return Promise.resolve();
+      if (running) { again = true; workflow.reportOutcomes(); return running; }
+      running = (async () => {
+        let result;
+        do { again = false; result = await once(); } while (again && !workflow.closed);
+        return result;
+      })().finally(() => { running = null; });
+      return running;
+    };
+    const once = () => {
       return workflow.tick().then(result => {
         const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
         this.log.log(`[${id}] ${skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`}`);
@@ -166,13 +183,15 @@ export class Users {
       is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
       immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
-      catalog: () => this.catalog,
-      admin: isAdmin ? { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url), removeSearch: name => this.removeSearch(name) } : null,
+      catalog: () => this.catalog, feedStatus: search => feeds.status(feedKey(searchFilters(search.url))),
+      admin: isAdmin ? { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url),
+        renameSearch: (name, to) => this.renameSearch(name, to), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) } : null,
       onReady: () => tick(), onError: error,
     });
-    if (isAdmin) settings.onChange(key => { if (key === 'pollIntervalMs') this.shareInterval(); });
+    // Back from a pause: only what is crawled from now on is new, and what is online now counts as already online.
+    settings.onChange(key => { if (key === 'paused' && !config.paused) store.saveSetting('cursors', {}); });
     const user = {
-      id, folder, store, settings, workflow, telegram, tick, connects: [is24App, immomioApp],
+      id, folder, store, settings, workflow, telegram, tick, connects: [is24App, immomioApp, formApp],
       close: async () => {
         workflow.stop();
         telegram.close();
@@ -183,18 +202,32 @@ export class Users {
     this.users.set(id, user);
     return user;
   }
-  // Every search runs on the admin's interval, since all of them share the same checks.
-  interval() { return this.admin?.settings.config.pollIntervalMs ?? DEFAULT_INTERVAL_MS; }
-  shareInterval() {
-    const interval = this.interval();
-    for (const user of this.users.values()) if (user !== this.admin) user.settings.assign('pollIntervalMs', interval);
-    this.onInterval();
+  // Checks run as often as the most frequent search someone searching picked; each search runs on its own interval.
+  interval() {
+    const picked = new Set([...this.users.values()].filter(user => user.settings.complete() && !user.settings.config.paused).flatMap(user => user.settings.config.searches));
+    const intervals = this.catalog.filter(search => picked.has(search.name)).map(search => search.intervalMs);
+    return intervals.length ? Math.min(...intervals) : this.defaults().intervalMs;
   }
-  // One check for everybody at once, so they meet in the same feed result. Resolves when the first person's
-  // check finished: someone who never reconnects IS24 stalls only their own checks, not the health signal.
-  round() {
-    const ticks = [...this.users.values()].filter(user => user.settings.complete()).map(user => user.tick());
-    return ticks.length ? Promise.any(ticks) : Promise.resolve();
+  // Everybody's housekeeping besides the crawls: outcome reports, approved sends, the morning cleanup.
+  round() { return Promise.allSettled([...this.users.values()].map(user => user.tick())); }
+  // Everyone searching, and who picked what.
+  searching() { return [...this.users.values()].filter(user => user.settings.complete() && !user.settings.config.paused); }
+  // The admin's searches as the crawlers need them. wanted: someone searching picked it.
+  feedSearches() {
+    const picked = new Set(this.searching().flatMap(user => user.settings.config.searches));
+    return this.catalog.map(search => ({ ...search, key: feedKey(searchFilters(search.url)), filters: searchFilters(search.url), wanted: picked.has(search.name) }));
+  }
+  // The people a search's news is for. A rename keeps the key, so they are found by name in the current list.
+  followers(key) {
+    const name = this.catalog.find(search => feedKey(searchFilters(search.url)) === key)?.name;
+    return [...this.users.values()].filter(user => user.settings.complete() && user.settings.config.searches.includes(name));
+  }
+  // A crawl of `key` finished: whoever picked it reads what is new.
+  crawled(key) { for (const user of this.followers(key)) if (!user.settings.config.paused) user.tick(); }
+  // A search's failure streak: whoever picked it hears it, and the admin always.
+  alert(key, text) {
+    this.log.error(text);
+    for (const user of new Set([...this.followers(key), this.admin].filter(Boolean))) user.telegram.send(text).catch(error => this.log.error(`[${user.id}] ${error.message}`));
   }
   // Persisted approvals go out independently of a temporary search outage.
   resume() {
@@ -203,8 +236,30 @@ export class Users {
       else user.telegram.assistant.resume().catch(error => this.log.error(`[${user.id}] ${error.message}`));
     }
   }
-  // The searches IS24 is asked for: the admin's list, kept in their store. [{ name, url }]
-  get catalog() { return this.admin?.store.settings().catalog ?? []; }
+  // What a new search starts with: the admin's last choice. Before searches had their own, the admin's interval and
+  // night pause were everybody's.
+  defaults() {
+    const stored = this.admin?.store.settings() ?? {};
+    return { ...SCHEDULE, ...(stored.pollIntervalMs && { intervalMs: stored.pollIntervalMs }), ...(stored.quietHours !== undefined && { quietHours: stored.quietHours }), ...stored.searchDefaults };
+  }
+  // The searches IS24 is asked for: the admin's list, kept in their store. [{ name, url, intervalMs, quietHours }]
+  get catalog() {
+    const defaults = this.defaults();
+    return (this.admin?.store.settings().catalog ?? []).map(search => ({ ...defaults, ...search }));
+  }
+  // A search's interval and/or night pause; also what the next new search starts with.
+  scheduleSearch(name, change) {
+    if (change.intervalMs !== undefined && !INTERVALS.includes(change.intervalMs)) throw new Error('Please pick one of the intervals.');
+    if (change.quietHours !== undefined && !NIGHT_PAUSES.includes(change.quietHours)) throw new Error('Please pick one of the night pauses.');
+    const { catalog } = this;
+    const search = catalog.find(entry => entry.name === name);
+    if (!search) throw new Error(`${name} is no longer on the list.`);
+    const updated = { ...search, ...change };
+    this.admin.store.saveSetting('catalog', catalog.map(entry => entry === search ? updated : entry));
+    this.admin.store.saveSetting('searchDefaults', { intervalMs: updated.intervalMs, quietHours: updated.quietHours });
+    this.onCatalog();
+    return updated;
+  }
   addSearch(name, url) {
     const { href } = new URL(url);
     searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
@@ -212,13 +267,27 @@ export class Users {
     if (catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
     const twin = catalog.find(search => sameSearch(search.url, href));
     if (twin) throw new Error(`${twin.name} is already this search.`);
-    this.admin.store.saveSetting('catalog', [...catalog, { name, url: href }]);
+    this.admin.store.saveSetting('catalog', [...catalog, { name, url: href, ...this.defaults() }]);
+    this.onCatalog();
+  }
+  // Same search, new name, for everyone who picked it.
+  renameSearch(name, to) {
+    if (!to || to.length > 40 || /[\r\n]/.test(to)) throw new Error('Please send a name of one line, at most 40 characters.');
+    const { catalog } = this;
+    if (!catalog.some(search => search.name === name)) throw new Error(`${name} is no longer on the list.`);
+    if (to !== name && catalog.some(search => search.name === to)) throw new Error(`There already is a search named ${to}.`);
+    this.admin.store.saveSetting('catalog', catalog.map(search => search.name === name ? { ...search, name: to } : search));
+    for (const user of this.users.values()) {
+      const { searches } = user.settings.config;
+      if (searches.includes(name)) user.settings.assign('searches', searches.map(picked => picked === name ? to : picked));
+    }
   }
   // Whoever had picked it hears so; someone with nothing left gets the list again.
   async removeSearch(name) {
     const { catalog } = this;
     if (catalog.length < 2) throw new Error('This is the last search. Add another one first.');
     this.admin.store.saveSetting('catalog', catalog.filter(search => search.name !== name));
+    this.onCatalog();
     for (const user of this.users.values()) {
       const { searches } = user.settings.config;
       if (!searches.includes(name)) continue;
@@ -277,12 +346,12 @@ export class Users {
       migrate(this.runtime.dataDir, id); // Settings stored before anyone paired are theirs.
       adoptSearchUrls(this.runtime.dataDir);
       const user = this.open(id, { admin: true });
-      this.onInterval(); // The schedule ran on the default until now.
+      this.onCatalog(); // Searches stored before anyone paired are theirs now.
       return user.telegram.welcome();
     }
     if (!code) return;
     if (!this.redeem(code)) return reply('This invite is not valid any more. Please ask for a new one.');
-    return this.open(id, { pollIntervalMs: this.interval() }).telegram.welcome();
+    return this.open(id).telegram.welcome();
   }
   stop() { for (const user of this.users.values()) { user.workflow.stop(); user.telegram.close(); } }
   async close() {

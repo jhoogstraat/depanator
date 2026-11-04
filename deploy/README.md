@@ -8,7 +8,7 @@ The operator chooses the container runtime, service manager, host paths, volume 
 
 1. Create a Telegram bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and keep its token.
 2. Run the image with `TELEGRAM_BOT_TOKEN`, a persistent volume at `/data`, and port 8080 published behind HTTPS (reverse proxy or tunnel). Set `DEPANATOR_PUBLIC_URL` to that HTTPS address; Telegram opens the "Connect ImmoScout24" page there.
-3. Read the container log. It prints `Open your bot in Telegram and send:  /start <code>`. Send that to your bot; the bot then guides you through ChatGPT login, connecting ImmoScout24 (inside Telegram), your search, contact details, and check interval. Auto-send starts off; turn it on later in `/settings`. All answers are stored in `/data`.
+3. Read the container log. It prints `Open your bot in Telegram and send:  /start <code>`. Send that to your bot; the bot then guides you through ChatGPT login, connecting ImmoScout24 (inside Telegram), your searches, what you look for, and your details. Auto-send starts off; turn it on later in `/settings`. All answers are stored in `/data`.
 
 There is no configuration file. `deploy/secrets.env.example` lists every input.
 
@@ -26,7 +26,7 @@ Internal paths are image defaults, not prescribed host locations. Persist the da
 
 Commands: `start` (default), `status` (read-only history), and `health` (exit 0 while `start` is polling).
 
-`start` checks the Telegram token and rejects a bot with a webhook before doing any work, so a misconfigured bot exits instead of silently failing. The image's `HEALTHCHECK` runs `health`: after every check the agent renews a deadline of two check intervals plus ten minutes in `heartbeat`, so the container turns unhealthy when checks hang for everybody. One person's unfinished IS24 connection stalls only their own checks. Docker uses it as is; Podman keeps it only for images built with `--format docker`, otherwise pass `--health-cmd '/usr/local/bin/depanator-entrypoint health'`. Restarting an unhealthy container is safe: interrupted submissions are quarantined, never resent.
+`start` checks the Telegram token and rejects a bot with a webhook before doing any work, so a misconfigured bot exits instead of silently failing. The image's `HEALTHCHECK` runs `health`: every minute the agent renews a deadline in `heartbeat`: two intervals plus ten minutes after each search's last check, so the container turns unhealthy when a search's checks hang. The night pause does not count as hanging. One person's unfinished IS24 connection stalls only their own checks. Docker uses it as is; Podman keeps it only for images built with `--format docker`, otherwise pass `--health-cmd '/usr/local/bin/depanator-entrypoint health'`. Restarting an unhealthy container is safe: interrupted submissions are quarantined, never resent.
 
 ## Mounted secrets, stopping, and restores
 
