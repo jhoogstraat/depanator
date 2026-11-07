@@ -3,10 +3,10 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { compactId, conflict, expandId } from './review.js';
 import { usesImmomio } from './immomio.js';
-import { TIME_ZONE } from './settings.js';
 
 const LIMIT = 4096; // Telegram's message length in UTF-16 units.
 const COPY_LIMIT = 256; // Telegram's cap on a copy_text button's text.
+const TOAST_LIMIT = 200; // Telegram's cap on a tap's answer; a longer one is refused and the button keeps spinning.
 const INVALID = { text: 'This approval is invalid.' };
 // Review buttons, one letter each to fit Telegram's 64-byte limit: a approve, d dismiss, w write the message,
 // p copy a draft too long for a copy button, and the two edits below, whose prompt's reply revises the draft.
@@ -22,7 +22,6 @@ const OUTCOME = {
     text: `Submission outcome is uncertain. Check your ${site === 'IS24' ? 'IS24 messages' : 'Immomio applications'} before taking any further action. The agent will not retry.` }),
   failed: () => ({ heading: '❌ Message not sent', text: 'The message was not sent. No automatic retry will occur.' }),
 };
-const PUBLISHED = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: TIME_ZONE });
 
 // A cut at `end` that keeps a UTF-16 surrogate pair together.
 const safeEnd = (text, end) => end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) ? end - 1 : end;
@@ -68,7 +67,6 @@ function listingMessage(review, { heading, note, draftLabel }) {
   append(String(listing.title), 'bold');
   append(`\n📍 ${address || 'Address unavailable'}\n💶 `); append(`${listing.price ?? '?'} €`, 'bold');
   const facts = [`📐 ${listing.area ?? '?'} m²`, `🚪 ${listing.rooms ?? '?'} Zi.`,
-    listing.published && `🕒 ${PUBLISHED.format(new Date()).replace(',', '')}`,
     listing.earlyAccess && '🔒 Suchen+'].filter(Boolean);
   append(` · ${facts.join(' · ')}\n`);
   const query = encodeURIComponent(address);
@@ -182,9 +180,8 @@ export class Bot {
 // One person's interface. Reads reviews to verify signed buttons; every decision goes to the workflow,
 // every configuration message to the assistant.
 export class Telegram {
-  constructor({ config, store, workflow, assistant = null, bot = null, fetchImpl = fetch, onError = () => {} }) {
-    Object.assign(this, { config, store, workflow, assistant, onError });
-    this.bot = bot ?? new Bot({ config, fetchImpl, onError });
+  constructor({ config, store, workflow, bot, assistant = null, onError = () => {} }) {
+    Object.assign(this, { config, store, workflow, bot, assistant, onError });
     this.token = config.telegramBotToken;
     this.controller = new AbortController();
     // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Rewrite again is enough.
@@ -291,16 +288,18 @@ export class Telegram {
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
     if (text.startsWith('/')) return this.assistant.command(text.split(/[\s@]/)[0].toLowerCase());
     if (!text) return;
-    const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts.keys()].at(-1);
+    // Not a reply: the newest edit prompt whose draft is still open, unless the chat waits for a typed answer.
+    const open = ([, { id, version }]) => { const review = this.store.get(id); return review?.status === 'awaiting_approval' && review.version === version; };
+    const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts].findLast(open)?.[0];
     const target = this.editPrompts.get(promptId);
     if (!target) return this.assistant.text(text);
-    const instructions = text; // A reply to an edit prompt: how to change that draft.
+    // A reply to an edit prompt: how to change that draft, or the new draft itself.
     const manual = target.mode === 'manual';
-    if (!manual && instructions.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
+    if (!manual && text.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
     this.editPrompts.delete(promptId);
     if (!manual) await this.send('✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
-    this.revise(target.id, target.version, instructions, { manual });
+    this.revise(target.id, target.version, text, { manual });
   }
   revise(id, version, instructions, options) {
     Promise.resolve().then(() => this.workflow.revise(id, version, instructions, options))
@@ -319,13 +318,19 @@ export class Telegram {
       : /^[ckx]:/.test(query.data || '') ? await this.assistant.choice(query.data).catch(error => ({ text: error.message }))
       : /^g:/.test(query.data || '') ? this.photoTap(query)
       : await this.reviewTap(query);
-    await this.api('answerCallbackQuery', { callback_query_id: query.id, text: tap.text });
     const tapped = { chat_id: this.chatId, message_id: query.message?.message_id };
+    // The new view before the answer: once the tap is answered, the message already shows what it led to.
+    if (tap.edit && !tap.dismissed) await this.api('editMessageText', { ...tapped, text: tap.edit.text, ...tap.edit.extra }).catch(() => {});
+    // A toast too long for Telegram is cut, and the whole text follows as a message. If the answer is refused anyway,
+    // one without text still stops the spinner.
+    const long = (tap.text?.length ?? 0) > TOAST_LIMIT;
+    await this.api('answerCallbackQuery', { callback_query_id: query.id, text: long ? `${tap.text.slice(0, safeEnd(tap.text, TOAST_LIMIT - 1))}…` : tap.text })
+      .catch(() => this.api('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {}));
+    if (long) await this.send(tap.text).catch(() => {});
     // Older reviews have no saved IDs; remove the tapped listing message too.
     if (tap.dismissed) return this.withdraw(tap.dismissed, [tapped.message_id]);
-    if (tap.edit) await this.api('editMessageText', { ...tapped, text: tap.edit.text, ...tap.edit.extra }).catch(() => {});
     // Decided reviews lose their buttons, so old messages cannot be mistaken for open ones. The photos stay browsable.
-    else if (tap.used) await this.api('editMessageReplyMarkup', { ...tapped, reply_markup: { inline_keyboard: (query.message?.reply_markup?.inline_keyboard || []).filter(photoRow) } }).catch(() => {});
+    if (!tap.edit && tap.used) await this.api('editMessageReplyMarkup', { ...tapped, reply_markup: { inline_keyboard: (query.message?.reply_markup?.inline_keyboard || []).filter(photoRow) } }).catch(() => {});
   }
   // Shows another photo on the tapped card: the same text and buttons Telegram sent back with the tap, a new preview and counter.
   photoTap({ data, message }) {

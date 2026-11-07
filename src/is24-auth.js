@@ -1,8 +1,6 @@
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { claims, loginRequired, oauthToken, pkce } from './oauth.js';
 
-export { loginRequired };
-
 // IS24's app login (Okta), used the way the IS24 Android app uses it: no website, so no robot check.
 const BASE = 'https://login.immobilienscout24.de';
 const ISSUER = `${BASE}/oauth2/aus1227au6oBg6hGH417`;
@@ -57,7 +55,7 @@ async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
 }
 
 // The account's email, and its name where IS24 has one (OpenID profile claims).
-export async function accountInfo(accessToken, fetchImpl = fetch) {
+async function accountInfo(accessToken, fetchImpl = fetch) {
   const res = await fetchImpl(`${ISSUER}/v1/userinfo`, { headers: { ...HEADERS, Authorization: `Bearer ${accessToken}` } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`IS24 account check failed: HTTP ${res.status}`);

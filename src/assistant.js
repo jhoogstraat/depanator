@@ -1,12 +1,14 @@
-import { INTERVALS, NIGHT_PAUSES, allQuiet, isQuiet, pickedSearches } from './settings.js';
+import { INTERVALS, NIGHT_PAUSES, STYLE_SECTIONS, allQuiet, isQuiet, pickedSearches } from './settings.js';
 import { expandId } from './review.js';
-import { MENU_HINT, plural, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchAddedView, searchView, scheduleView, removeSearchView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
+import { MENU_HINT, plural, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchAddedView, searchView, scheduleView, removeSearchView, catalogView, adminView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
 const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
 const BUSY = 'One moment, I am still on the previous step.';
 const RECONNECT = { '/connect': 'connectIS24', '/immomio': 'connectImmomio', '/login': 'chatgptLogin' };
 // Buttons that work during setup, which includes choosing searches.
-const SETUP_ACTIONS = ['searches', 'st', 'sd', 'sa', 'se', 'si', 'sq', 'sn', 'sr'];
+const SETUP_ACTIONS = ['searches', 'catalog', 'st', 'sd', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr', 'cancel'];
+// Buttons only the admin's chat has.
+const ADMIN_ACTIONS = ['admin', 'users', 'invite', 'rm', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr'];
 // What a setup form is for, with its button.
 const FORM_INTRO = {
   search: ['🔍 What are you looking for? Fill in rent, rooms, living space and, in your own words, what else matters to you.', '✏️ Fill in your search'],
@@ -14,24 +16,54 @@ const FORM_INTRO = {
 };
 // Waiting for a typed name: a new search (search+) or a new name for one (search~<old name>).
 const RENAME = 'search~';
+// Waiting for a typed link: the new address of a search (search@<name>).
+const RELINK = 'search@';
 
 // The menu's buttons (x:<name>:<arguments>, written by menu.js), run with the Assistant as `this`.
+// Moving through the menus edits the tapped message (navigate), so the chat keeps one menu; /commands start a new one.
+const navigate = view => ({ text: '', edit: view });
+// Under a question that waits for a typed answer.
+const CANCEL = { reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'x:cancel' }]] } };
 const ACTIONS = {
+  async status() { return navigate(await this.statusView()); },
   async pause() { return { text: this.togglePause() ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() }; },
-  requirements() { return this.sendView(this.requirementsView()); },
-  settings() { return this.sendView(this.settingsView()); },
-  style() { return this.sendView(this.styleView()); },
+  requirements() { return navigate(this.requirementsView()); },
+  settings() { return navigate(this.settingsView()); },
+  style() { return navigate(this.styleView()); },
+  // 📤 switches at once; the settings show what it means now.
+  autosend() {
+    const on = this.settings.set('autoSend', !this.settings.config.autoSend);
+    return { text: on ? '📤 Auto-send on' : '📤 Auto-send off', edit: this.settingsView() };
+  },
+  // Step 1 of a model menu, use: 'w' (🧠 Writing model, everyone) or 's' (🔎 Screening model, the admin).
+  // Without the plan's list, the writing model is typed instead.
+  async model(use = 'w') {
+    if (!this.mayChoose(use)) return STALE;
+    let list;
+    try { list = await this.models(); } catch (error) {
+      if (use === 's') return { text: `⚠️ I could not read the plan's models (${error.message}).` };
+      await this.send(`⚠️ I could not read your plan's models (${error.message}).`); await this.ask('model'); return { text: '' };
+    }
+    const { model, thinking } = this.llm(use);
+    return navigate(modelView(use, list, model, thinking));
+  },
+  // Cancel on a question that waits for a typed answer (a search's name or link): back to the searches.
+  cancel() {
+    this.asking = null;
+    return { text: 'Cancelled.', edit: this.searchList() };
+  },
+  // 🗑 Remove: every section of the writing style.
+  clearStyle() {
+    for (const { key } of STYLE_SECTIONS) for (const setting of [key, `${key}.example`]) if (this.settings.values[setting]) this.settings.set(setting, '');
+    return { text: 'Removed.', edit: this.styleView() };
+  },
   reconnect(command) {
     if (!Object.hasOwn(RECONNECT, command)) return STALE;
     return { text: this.reconnect(command) ? '' : BUSY };
   },
-  about() { return this.sendView(this.aboutView()); },
-  sent() { return this.sendView(sentView(this.store.list())); },
-  // mode 'edit': replace the tapped message (Cancel on the clear confirmation).
-  waiting(mode) {
-    const view = waitingView(this.store.list('awaiting_approval'));
-    return this.present(view, mode);
-  },
+  about() { return navigate(this.aboutView()); },
+  sent() { return navigate(sentView(this.store.list())); },
+  waiting() { return navigate(waitingView(this.store.list('awaiting_approval'))); },
   // Without count: ask to confirm. With it: dismiss exactly the listings that were waiting when confirmed.
   clear(count) {
     const waiting = this.store.list('awaiting_approval');
@@ -40,7 +72,7 @@ const ACTIONS = {
     if (Number(count) !== waiting.length) return { text: 'The list changed; check it again.', edit: waitingView(waiting) };
     let cleared = 0;
     for (const review of waiting) { try { this.workflow.dismiss(review.id, review.version); cleared++; } catch (error) { if (error.code !== 'CONFLICT') throw error; } }
-    return { text: `Cleared ${cleared}.`, edit: { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, extra: {} } };
+    return { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, edit: waitingView(this.store.list('awaiting_approval')) };
   },
   // Shows a waiting listing again with its buttons.
   async show(compact) {
@@ -49,41 +81,37 @@ const ACTIONS = {
     await this.redeliver(review);
     return { text: '' };
   },
-  // /model step 1: a model was picked, now its thinking level.
-  m(index, mark) {
-    const model = this.pickedModel(index, mark);
+  // Model menu step 1: a model was picked, now its thinking level.
+  m(use, index, mark) {
+    const model = this.mayChoose(use) && this.pickedModel(index, mark);
     if (!model) return STALE;
-    const { llm } = this.settings.config;
-    return { text: '', edit: thinkingView(model, Number(index), llm.model, llm.thinking) };
+    const { model: current, thinking } = this.llm(use);
+    return { text: '', edit: thinkingView(use, model, Number(index), current, thinking) };
   },
-  // /model step 2: model and thinking level are saved together.
-  t(index, level, mark) {
-    const model = this.pickedModel(index, mark);
+  // Model menu step 2: model and thinking level are saved together.
+  t(use, index, level, mark) {
+    const model = this.mayChoose(use) && this.pickedModel(index, mark);
     if (!model?.thinking.includes(level)) return STALE;
-    this.settings.set('model', model.id);
-    this.settings.set('thinking', level === model.defaultThinking ? '' : level);
-    return { text: 'Saved.', edit: { text: `✅ Using ${model.name} · thinking ${level}. Applies to the next listing.`, extra: {} } };
+    const thinking = level === model.defaultThinking ? '' : level;
+    if (use === 's') this.admin.setScreening({ model: model.id, thinking });
+    else { this.settings.set('model', model.id); this.settings.set('thinking', thinking); }
+    const applies = use === 's' ? 'Screens the next listings, for everyone.' : 'Writes your next messages.';
+    return { text: `✅ ${model.name} · thinking ${level}. ${applies}`, edit: modelView(use, this.modelCache.list, model.id, thinking) };
   },
-  users(mode) {
-    if (!this.admin) return STALE;
-    const view = usersView(this.admin.users());
-    return this.present(view, mode);
-  },
+  admin() { return navigate(adminView()); },
+  // 🛠 Admin → 🔎 Manage searches; during setup, the list the admin adds the first ones to.
+  catalog() { return navigate(this.searchList()); },
+  users() { return navigate(usersView(this.admin.users())); },
   invite() {
-    if (!this.admin) return STALE;
     return this.sendView({ text: `🔗 Send this link to the person you want to invite. It works once, within 24 hours, and opens their own private chat with me:\n${this.admin.invite()}` });
   },
   // Without sure: ask to confirm.
   async rm(id, sure) {
-    if (!this.admin) return STALE;
     if (!sure) return { text: '', edit: removeUserView(id) };
     await this.admin.remove(id);
     return { text: 'Removed.', edit: usersView(this.admin.users()) };
   },
-  // mode 'edit': replace the tapped message (Cancel on the remove confirmation).
-  searches(mode) {
-    return this.present(this.searchesView(), mode);
-  },
+  searches() { return navigate(this.searchesView()); },
   // Pick or unpick a search.
   st(index, mark) {
     const search = this.pickedSearch(index, mark);
@@ -92,20 +120,21 @@ const ACTIONS = {
     this.settings.assign('searches', searches.includes(search.name) ? searches.filter(name => name !== search.name) : [...searches, search.name]);
     return { text: '', edit: this.searchesView() };
   },
+  // Done (during setup) or ← Search: each tap already saved its pick.
   async sd() {
     if (!this.settings.config.searches.length) return { text: 'Pick at least one search.' };
+    if (this.settings.complete()) return navigate(this.requirementsView());
     await this.saved('searches');
     return { text: 'Saved.', used: true };
   },
   // Add a search to the shared list: the next typed message names it.
   async sa() {
-    if (!this.admin) return STALE;
     this.asking = 'search+';
-    return this.sendView({ text: 'Set the area and any filters on immobilienscout24.de, then send a name and the address of the results page, for example:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nEvery search costs one more request per check, and everyone can pick it. Their own rent, rooms and living space are matched on the results, so leave those out of the link unless they hold for everybody.' });
+    return this.sendView({ extra: CANCEL, text: 'Set the area and any filters on immobilienscout24.de, then send a name and the address of the results page, for example:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nEvery search costs one more request per check, and everyone can pick it. Their own rent, rooms and living space are matched on the results, so leave those out of the link unless they hold for everybody.' });
   },
   // One search of the list: rename or remove it.
   se(index, mark) {
-    const search = this.adminSearch(index, mark);
+    const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     return { text: '', edit: searchView(search, index, this.using(search.name)) };
   },
@@ -114,18 +143,25 @@ const ACTIONS = {
   sq(index, mark, choice) { return this.schedule('sq', index, mark, choice); },
   // Rename a search: the next typed message is its new name.
   async sn(index, mark) {
-    const search = this.adminSearch(index, mark);
+    const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     this.asking = `${RENAME}${search.name}`;
-    return this.sendView({ text: `✏️ Send the new name for ${search.name}, at most 40 characters. Everyone who picked it keeps it.` });
+    return this.sendView({ extra: CANCEL, text: `✏️ Send the new name for ${search.name}, at most 40 characters. Everyone who picked it keeps it.` });
+  },
+  // Change a search's link: the next typed message is its new address.
+  async su(index, mark) {
+    const search = this.pickedSearch(index, mark);
+    if (!search) return STALE;
+    this.asking = `${RELINK}${search.name}`;
+    return this.sendView({ extra: CANCEL, text: `🔗 Send the new address of the IS24 results page for ${search.name}. I try it once before I save it; its name, schedule and everyone who picked it stay.\n\nNow: ${search.url}` });
   },
   // Without sure: ask to confirm.
   async sr(index, mark, sure) {
-    const search = this.adminSearch(index, mark);
+    const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     if (!sure) return { text: '', edit: removeSearchView(search, index, this.using(search.name)) };
     await this.admin.removeSearch(search.name);
-    return { text: 'Removed.', edit: this.searchesView() };
+    return { text: 'Removed.', edit: this.searchList() };
   },
 };
 
@@ -133,11 +169,13 @@ const ACTIONS = {
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
-  // admin: { invite(), users(), remove(id), addSearch(name, url), renameSearch(name, to), removeSearch(name) } for the person running the
+  // admin: Users#adminActions() (people, the searches everyone picks from, the screening model) for the person running the
   // agent, null for everyone else. catalog() -> the admin's [{ name, url }].
   // feedStatus(search) -> { crawledAt, failures, blocked } of one search's crawler.
-  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, catalog = () => [], feedStatus = () => ({}), redeliver = async () => {}, onReady = () => {}, onError = () => {} }) {
-    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, feedStatus, redeliver, onReady, onError });
+  constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, catalog = () => [], feedStatus = () => ({}), redeliver = async () => {}, onReady = () => {}, onError = () => {},
+    screening = () => settings.config.llm }) {
+    // screening() -> { model, thinking }: the admin's model for reading every listing; this person's own writes their messages.
+    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, feedStatus, redeliver, onReady, onError, screening });
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
@@ -202,9 +240,11 @@ export class Assistant {
       if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
       return this.changeSearches(async () => searchAddedView(name, await this.admin.addSearch(name, url)));
     }
-    if (this.asking?.startsWith(RENAME)) {
+    const [, change, name] = /^(search[~@])(.*)$/s.exec(this.asking ?? '') ?? [];
+    if (change) {
       if (!this.admin) { this.asking = null; return this.show(this.settingsView()); }
-      return this.changeSearches(() => this.admin.renameSearch(this.asking.slice(RENAME.length), message.trim()));
+      if (change === RENAME) return this.changeSearches(() => this.admin.renameSearch(name, message.trim()));
+      return this.changeSearches(async () => searchAddedView(name, await this.admin.changeSearchUrl(name, message.trim())));
     }
     const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
     if (!key || !this.settings.field(key) || this.settings.field(key).form || this.settings.choices(key).length) {
@@ -277,7 +317,7 @@ export class Assistant {
   // The searches this person picked, with their schedules.
   picked() { return pickedSearches(this.catalog(), this.settings.config.searches); }
   schedule(what, index, mark, choice) {
-    const search = this.adminSearch(index, mark);
+    const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     if (choice === undefined) return { text: '', edit: scheduleView(search, index, what) };
     const value = (what === 'si' ? INTERVALS : NIGHT_PAUSES)[Number(choice)];
@@ -290,7 +330,9 @@ export class Assistant {
   styleView() { return styleView(this.settings.config.style, this.formUrl('style')); }
   // How many people picked a search.
   using(name) { return this.admin.users().filter(user => user.searches.includes(name)).length; }
-  searchesView() { return searchesView({ catalog: this.catalog(), selected: this.settings.config.searches, admin: Boolean(this.admin) }); }
+  // Where the admin's search changes lead back to: 🛠 Admin's list, or during setup the one they pick from.
+  searchList() { return this.admin && this.settings.complete() ? catalogView(this.catalog(), name => this.using(name)) : this.searchesView(); }
+  searchesView() { return searchesView({ catalog: this.catalog(), selected: this.settings.config.searches, admin: Boolean(this.admin), ready: this.settings.complete() }); }
   // A typed search addition or rename: the error to correct, or the updated list.
   // change() may return a view to show before the list.
   async changeSearches(change) {
@@ -298,10 +340,8 @@ export class Assistant {
     try { view = await change(); } catch (error) { return this.send(error.message); }
     this.asking = null;
     if (view) await this.show(view);
-    return this.show(this.searchesView());
+    return this.show(this.searchList());
   }
-  // The search an admin-only button names; null for everyone else.
-  adminSearch(index, mark) { return this.admin ? this.pickedSearch(index, mark) : null; }
   // The search a button names, if the list still has it at that index.
   pickedSearch(index, mark) {
     const search = this.catalog()[Number(index)];
@@ -312,10 +352,14 @@ export class Assistant {
     for (const review of this.store.list()) counts[review.status] = (counts[review.status] ?? 0) + 1;
     const { config } = this.settings;
     const picked = this.picked();
-    // The level the model uses when none is chosen; unknown if the model list cannot be read.
-    const modelDefault = config.llm.thinking ? null : await this.models().then(list => list.find(model => model.id === config.llm.model)?.defaultThinking, () => null);
+    // The level a model uses when none is chosen; unknown if the model list cannot be read.
+    const list = await this.models().catch(() => []);
+    const level = ({ model, thinking }) => {
+      const fallback = list.find(entry => entry.id === model)?.defaultThinking;
+      return thinking || (fallback ? `${fallback} (default)` : '');
+    };
     return statusView({ counts, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: config.llm.thinking || (modelDefault ? `${modelDefault} (default)` : ''),
+      paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: level(config.llm), screening: this.admin ? { model: this.screening().model, thinking: level(this.screening()) } : null,
       searches: picked.map(search => ({ ...search, quiet: isQuiet(search.quietHours), ...this.feedStatus(search) })), quiet: allQuiet(picked), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
@@ -326,15 +370,16 @@ export class Assistant {
   async modelMenu() {
     let list;
     try { list = await this.models(); } catch (error) { await this.send(`⚠️ I could not read your plan's models (${error.message}).`); return this.ask('model'); }
-    return this.show(modelView(list, this.settings.config.llm.model, this.settings.config.llm.thinking));
+    return this.show(modelView('w', list, this.settings.config.llm.model, this.settings.config.llm.thinking));
   }
+  // Everyone picks their writing model; only the admin the screening model.
+  mayChoose(use) { return use === 'w' || (use === 's' && Boolean(this.admin)); }
+  llm(use) { return use === 's' ? this.screening() : this.settings.config.llm; }
   // Menu buttons: x:<name>:<arguments>, see ACTIONS.
   async action(name, ...args) {
     if (!this.settings.complete() && !SETUP_ACTIONS.includes(name)) return { text: 'Finish the setup first.' };
-    return Object.hasOwn(ACTIONS, name) ? ACTIONS[name].apply(this, args) : STALE;
+    return Object.hasOwn(ACTIONS, name) && (this.admin || !ADMIN_ACTIONS.includes(name)) ? ACTIONS[name].apply(this, args) : STALE;
   }
-  // mode 'edit': the view replaces the tapped message (Cancel on a confirmation); otherwise it is a new message.
-  present(view, mode) { return mode === 'edit' ? { text: '', edit: view } : this.sendView(view); }
   // Shows a view as a new message; the tapped one stays.
   async sendView(view) {
     await this.show(view);

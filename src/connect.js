@@ -20,14 +20,16 @@ export function verifyInitData(initData, botToken, ownerId, now = Date.now()) {
 }
 
 export const send = (res, status, type = 'text/plain', body = '', headers = {}) => {
-  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
+  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...headers });
   res.end(body);
 };
-// A request's JSON body as { input }, or { status } to refuse it with: 413 above `limit` characters, 400 if not JSON.
+// A request's JSON body as { input }, or { status } to refuse it with: 413 above `limit` characters, 400 if not a JSON object.
 export async function readJson(req, limit) {
   let body = '';
   for await (const chunk of req) { body += chunk; if (body.length > limit) return { status: 413 }; }
-  try { return { input: JSON.parse(body) }; } catch { return { status: 400 }; }
+  let input;
+  try { input = JSON.parse(body); } catch { return { status: 400 }; }
+  return input && typeof input === 'object' && !Array.isArray(input) ? { input } : { status: 400 }; // Always an object of fields.
 }
 
 // "Connect with ImmoScout24": a Telegram Mini App where the owner enters the IS24 email, password and any
@@ -130,8 +132,8 @@ export class ConnectApp {
     if (!pending) return send(res, 409);
     if (path === '/connect/login' && pending.step === 'form' && typeof input.email === 'string' && typeof input.password === 'string') {
       const email = input.email.trim().toLowerCase();
-      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && input.password && input.password.length <= 200) this.login(pending, email, input.password);
-    } else if (path === '/connect/code' && pending.step === 'code' && typeof input.code === 'string') {
+      if (email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && input.password && input.password.length <= 200) this.login(pending, email, input.password);
+    } else if (path === '/connect/code' && pending.step === 'code' && typeof input.code === 'string' && /^\s*[\w-]{1,20}\s*$/.test(input.code)) {
       const resolve = pending.code;
       pending.code = null;
       this.show(pending, 'working', 'Checking the code…');
@@ -167,13 +169,13 @@ ${logo}</div>
 <h1>Connect <span class="bot">your agent</span><br>with ${name}</h1>
 <p class="sub">Log in once. <span class="bot">Your agent</span> stays connected.</p>
 <ul>${perks.map(perk => `<li><b>✓</b>${perk}</li>`).join('')}</ul>
-<form id="login" autocomplete="on"><label for="email">${name} email</label><input id="email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" required>
-<label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required><div id="error" hidden></div>
+<form id="login" autocomplete="on"><label for="email">${name} email</label><input id="email" type="email" maxlength="254" autocomplete="username" inputmode="email" autocapitalize="off" required>
+<label for="password">Password</label><input id="password" type="password" maxlength="200" autocomplete="current-password" required><div id="error" hidden></div>
 <button id="fallback" hidden>Connect</button></form>
 <p class="fine"><span>🔒</span><span>Your password goes directly to ${name}'s login and is used only for this login. It is never stored or shown to anyone.</span></p>
 </section>
 <section id="code" hidden><h1>Security code</h1><p class="sub" id="codeHint"></p>
-<form id="codeForm"><input id="codeInput" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" required><button id="codeFallback" hidden>Continue</button></form></section>
+<form id="codeForm"><input id="codeInput" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="20" pattern="[\\w\\-]{1,20}" title="Only the letters and digits of the code" required><button id="codeFallback" hidden>Continue</button></form></section>
 <section id="working" hidden><div class="spinner"></div><p class="sub" id="workingText"></p></section>
 <section id="done" hidden><div class="check">✓</div><h1>Connected</h1><p class="sub" id="doneText"></p></section>
 <section id="idle" hidden><h1>Nothing to connect</h1><p class="sub" id="idleText">Open this page from the button in your Telegram chat.</p></section>
@@ -199,7 +201,7 @@ function connect() {
   if (!$('login').reportValidity()) return;
   post('login', { email, password }); $('password').value = ''; render({ step: 'working', message: 'Connecting…' });
 }
-function sendCode() { if (!$('codeInput').value.trim()) return; post('code', { code: $('codeInput').value }); $('codeInput').value = ''; render({ step: 'working', message: 'Checking the code…' }); }
+function sendCode() { $('codeInput').value = $('codeInput').value.trim(); if (!$('codeForm').reportValidity()) return; post('code', { code: $('codeInput').value }); $('codeInput').value = ''; render({ step: 'working', message: 'Checking the code…' }); }
 function render(s) {
   if (s.bot) for (const el of document.querySelectorAll('.bot')) el.textContent = s.bot;
   if (s.email && !$('email').value) $('email').value = s.email;

@@ -28,9 +28,8 @@ function codexEnvironment(config, home) {
 }
 
 // The pinned CLI's static catalog prevents model metadata from enabling patch,
-// shell, image, or experimental tools. Feature flags also disable integrations.
-function codexArguments(config, directory) {
-  const { model, thinking } = config.llm;
+// shell, image, or experimental tools. Feature flags also disable integrations. llm: { model, thinking } of this call.
+function codexArguments(directory, { model, thinking }) {
   writeFileSync(join(directory, 'catalog.json'), JSON.stringify({ models: [{
     slug: model, display_name: model, description: null, priority: 0, base_instructions: INSTRUCTIONS,
     supported_reasoning_levels: thinking ? [{ effort: thinking, description: thinking }] : [], ...(thinking && { default_reasoning_level: thinking }),
@@ -70,10 +69,24 @@ export function codexAccount(config) {
   } catch { return { email: '', plan: '' }; }
 }
 
-// The models this ChatGPT plan offers, with the thinking levels each supports (first = its default).
-export function listCodexModels(config, { spawnImpl = spawn } = {}) {
+// Each family's newest version: gpt-6.1-sol replaces gpt-6-sol and gpt-5.6-sol. A slug without a version is its own family.
+const versioned = slug => /^(.*?)(\d+(?:\.\d+)*)(.*)$/.exec(slug);
+const newer = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0); return false; };
+function latestOnly(models) {
+  const newest = new Map(); // family -> version
+  const parsed = models.map(model => {
+    const [, before, version, after] = versioned(model.slug) ?? [null, model.slug, '', ''];
+    const family = `${before}#${after}`, numbers = version.split('.').filter(Boolean).map(Number);
+    if (!newest.has(family) || newer(numbers, newest.get(family))) newest.set(family, numbers);
+    return { model, family, numbers };
+  });
+  return parsed.filter(({ family, numbers }) => !newer(newest.get(family), numbers)).map(({ model }) => model);
+}
+
+// The models this ChatGPT plan offers (only the newest of each family), with the thinking levels each supports (first = its default).
+export function listCodexModels(config) {
   return inTempDir('depanator-codex-models-', async directory => {
-    const child = spawnImpl(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', 'debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn(codexExecutable(), ['-c', 'cli_auth_credentials_store="file"', 'debug', 'models'], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
     await new Promise((resolve, reject) => {
@@ -81,18 +94,19 @@ export function listCodexModels(config, { spawnImpl = spawn } = {}) {
       child.once('error', () => { clearTimeout(timeout); reject(new Error('Cannot start the bundled Codex CLI')); });
       child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error('Cannot read the ChatGPT model list')); });
     });
-    return JSON.parse(output).models.filter(model => model.visibility === 'list').map(model => {
+    return latestOnly(JSON.parse(output).models.filter(model => model.visibility === 'list')).map(model => {
       const levels = (model.supported_reasoning_levels || []).map(level => level.effort);
       return { id: model.slug, name: model.display_name || model.slug, thinking: levels, defaultThinking: model.default_reasoning_level || '' };
     });
   });
 }
 
-export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, signal, revision } = {}) {
+// llm: the { model, thinking } to use; the person's own (config.llm) unless given.
+export async function evaluateWithCodex(config, snapshot, { signal, revision, llm = config.llm } = {}) {
   signal?.throwIfAborted();
   return inTempDir('depanator-codex-', async directory => {
-    const args = codexArguments(config, directory);
-    const child = spawnImpl(codexExecutable(), args, { cwd: directory, env: codexEnvironment(config, directory), stdio: ['pipe', 'ignore', 'ignore'] });
+    const args = codexArguments(directory, llm);
+    const child = spawn(codexExecutable(), args, { cwd: directory, env: codexEnvironment(config, directory), stdio: ['pipe', 'ignore', 'ignore'] });
     const complete = new Promise((resolve, reject) => {
       const abort = () => { child.kill('SIGKILL'); };
       signal?.addEventListener('abort', abort, { once: true });
@@ -113,27 +127,27 @@ export async function evaluateWithCodex(config, snapshot, { spawnImpl = spawn, s
 }
 
 const LOGIN_FLAGS = ['-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"', 'login'];
-function runCodex(config, args, { spawnImpl = spawn, onOutput = () => {} } = {}) {
+function runCodex(config, args, onOutput = () => {}) {
   return inTempDir('depanator-codex-login-', directory => {
-    const child = spawnImpl(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(codexExecutable(), [...LOGIN_FLAGS, ...args], { cwd: directory, env: codexEnvironment(config, directory), stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const collect = chunk => { output += String(chunk).replace(/\x1b\[[0-9;]*m/g, ''); onOutput(output); };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
     return new Promise(resolve => {
       child.once('error', () => resolve(false));
       child.once('close', code => resolve(code === 0));
     });
   });
 }
-export function codexLoggedIn(config, options) { return runCodex(config, ['status'], options); }
+export function codexLoggedIn(config) { return runCodex(config, ['status']); }
 // Device-code login for the ChatGPT subscription: onCode({ url, code }) is called once both are printed.
-export async function loginWithCodex(config, { onCode, ...options } = {}) {
+export async function loginWithCodex(config, { onCode }) {
   let reported = false;
-  const ok = await runCodex(config, ['--device-auth'], { ...options, onOutput(output) {
+  const ok = await runCodex(config, ['--device-auth'], output => {
     const url = /https:\/\/\S+/.exec(output)?.[0];
     const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(output)?.[0];
     if (!reported && url && code) { reported = true; onCode({ url, code }); }
-  } });
+  });
   if (!ok) throw new Error('ChatGPT login did not complete (the code expires after 15 minutes)');
 }

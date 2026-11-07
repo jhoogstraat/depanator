@@ -16,10 +16,10 @@ import { acquireLock } from './lock.js';
 const HOUSEKEEPING_MS = 60_000;
 const USAGE = 'Usage: bun src/cli.js [start|status]\nstart: run the agent; configure it by chatting with your Telegram bot\nstatus: print the review history';
 
-async function boundedShutdown(action, { timeoutMs = 30000, terminate = () => process.exit(1) } = {}) {
+async function boundedShutdown(action, timeoutMs = 30000) {
   const timer = setTimeout(() => {
     console.error('Shutdown deadline reached; any interrupted submission will remain uncertain');
-    terminate();
+    process.exit(1);
   }, timeoutMs);
   try { await action(); } finally { clearTimeout(timer); }
 }

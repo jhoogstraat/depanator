@@ -168,7 +168,6 @@ export class IS24Adapter {
       const ids = data.resultListItems.map(item => cardId(card(item)));
       if (page >= data.numberOfPages || (ids.length && known(ids.at(-1)))) { complete = true; break; }
     }
-    const pages = results.length;
     const listings = new Map();
     for (const data of results) for (const item of data.resultListItems) {
       const expose = card(item);
@@ -186,7 +185,7 @@ export class IS24Adapter {
       listings.set(id, { expose_id: id, title: expose.title || `Listing ${id}`, ...facts, address, image_url: expose.titlePicture?.full || expose.titlePicture?.preview || '',
         url, published: String(expose.published || ''), earlyAccess: expose.paywallListing?.active === true });
     }
-    return { listings: [...listings.values()], complete, pages };
+    return { listings: [...listings.values()], complete };
   }
   picked() { return pickedSearches(this.catalog(), this.config.searches); }
   // Every search this person picked is in its night pause.
@@ -220,7 +219,7 @@ export class IS24Adapter {
   }
   // Why a listing with its details is outside this person's limits, or ''.
   outside(listing) { return outsideSearch(this.config.limits, listing); }
-  expose(id) { return this.api(`/expose/${new URL(listingUrl(id)).pathname.split('/').pop()}`); }
+  expose(id) { listingUrl(id); return this.api(`/expose/${id}`); } // listingUrl() refuses anything but an expose ID.
   // shared: may reuse what another person's screening just read. Never for a send's last check.
   async details(listing, { shared = false } = {}) {
     const expose = await (shared ? this.feeds.expose(listing.expose_id) : this.expose(listing.expose_id));

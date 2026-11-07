@@ -7,7 +7,8 @@ import { join } from 'node:path';
 const args = process.argv.slice(2);
 if (args.includes('login')) process.exit(0); // Logged in.
 if (args.includes('debug')) {
-  console.log(JSON.stringify({ models: [{ slug: 'gpt-e2e', display_name: 'GPT E2E', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'low' }] }));
+  console.log(JSON.stringify({ models: [{ slug: 'gpt-e2e', display_name: 'GPT E2E', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'low' },
+    { slug: 'gpt-e1e', display_name: 'GPT E1E', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }], default_reasoning_level: 'low' }] })); // Older: not offered.
   process.exit(0);
 }
 const input = JSON.parse(readFileSync(0, 'utf8'));

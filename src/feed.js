@@ -50,23 +50,27 @@ export class Feeds {
     const searches = new Map(this.searches().map(search => [search.key, search]));
     for (const [key, entry] of this.timers) {
       if (!searches.has(key)) { clearTimeout(entry.timer); this.timers.delete(key); }
-      else if (entry.intervalMs !== searches.get(key).intervalMs) { clearTimeout(entry.timer); this.arm(key, searches.get(key).intervalMs, Math.max(0, entry.at + searches.get(key).intervalMs - this.now())); }
+      else if (entry.intervalMs !== searches.get(key).intervalMs) this.arm(key, searches.get(key).intervalMs, Math.max(0, entry.at + searches.get(key).intervalMs - this.now()));
     }
     for (const key of searches.keys()) if (!this.timers.has(key)) this.arm(key, searches.get(key).intervalMs, 0);
   }
-  // ±10% jitter keeps crawls from forming an exact pattern.
+  // ±10% jitter keeps crawls from forming an exact pattern. Replaces the search's timer: one loop per search.
   arm(key, intervalMs, delay = intervalMs * (0.9 + this.random() * 0.2)) {
-    const entry = { intervalMs, at: this.timers.get(key)?.at ?? this.now(), timer: null };
+    const previous = this.timers.get(key);
+    clearTimeout(previous?.timer);
+    const entry = { intervalMs, at: previous?.at ?? this.now(), timer: null };
     entry.timer = setTimeout(() => this.loop(key), delay);
     this.timers.set(key, entry);
   }
+  // A refresh() during the crawl may have re-armed or dropped the search; its interval then is the current one.
   async loop(key) {
     const search = this.searches().find(entry => entry.key === key);
     if (!search || this.stopped) return void this.timers.delete(key);
     await this.crawl(search).catch(error => this.onError(`${search.name}: ${error.message}`));
-    if (this.stopped || !this.timers.has(key)) return;
-    this.timers.get(key).at = this.now();
-    this.arm(key, search.intervalMs);
+    const entry = this.timers.get(key);
+    if (this.stopped || !entry) return;
+    entry.at = this.now();
+    this.arm(key, entry.intervalMs);
   }
   // One crawl of one search, or why it did not run.
   async crawl(search) {

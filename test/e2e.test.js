@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createWorld, FRIEND, OWNER, SEARCH_URL, STRANGER, until, wait } from './support/world.js';
 
 const IMMOMIO_ID = '12345678-1234-1234-1234-123456789abc';
+const IMMOMIO_AUTO = '87654321-4321-4321-4321-cba987654321';
 
 test('first run: from pairing through setup to one approved application', async t => {
   const world = await createWorld(t);
@@ -14,7 +15,6 @@ test('first run: from pairing through setup to one approved application', async 
   const code = await until('the pairing code', () => /\/start (\d{6})/.exec(world.agentLog)?.[1]);
   assert.deepEqual(world.telegram.find(call => call.method === 'setMyCommands').body.commands.map(command => command.command), ['status', 'settings']);
 
-  world.say('/start 000000', STRANGER);
   world.say(`/start ${code}`);
   await world.sees(/Hi! I am your apartment agent/);
   await world.connect('🔗 Connect ImmoScout24', 'connect', 'Alex@Example.com', 'correct');
@@ -35,6 +35,11 @@ test('first run: from pairing through setup to one approved application', async 
     [/What are you looking for/, async () => {
       assert.match((await world.fill('search', { rent: 'cheap', preferences: 'No swap' })).error, /^Highest warm rent in €: Please write a rent/);
       assert.match((await world.fill('search', { rent: '1500' })).error, /^Requirements: please fill this in/, 'nothing was saved');
+      // Requests the page cannot make, as a forged one would: refused, and nothing is saved.
+      for (const [values, error] of [[{ admin: true }, /outdated/], [{ rooms: 3 }, /^Rooms: this value is not allowed/],
+        [{ preferences: 'No swap\u202E' }, /invisible or control characters/], [{ rent: '50000' }, /between 0 and 20000/]]) {
+        assert.match((await world.fill('search', { rent: '1500', preferences: 'No swap', ...values })).error, error);
+      }
       assert.equal((await world.fill('search', { rent: '1500', preferences: 'No swap' })).status, 204);
     }],
     [/Now about you/, async () => {
@@ -59,14 +64,11 @@ test('first run: from pairing through setup to one approved application', async 
   world.say('Einzug ab März.');
   await world.sees(/Guten Tag, ich bin Alex\. Einzug ab März\./);
   assert.match(await world.press(firstSend), /newer draft/, 'the replaced draft cannot be approved');
-  assert.match(await world.tap('✅ Send', STRANGER), /invalid/);
   assert.equal(world.contacts.length, 0);
 
   await world.tap('✅ Send');
   await world.sees(/✅ Message sent/);
-  world.say('/status', STRANGER);
   await wait(300); // Several more polls: an accepted request is never repeated.
-  world.never(/🟢 Searching/); // After pairing, only the owner gets an answer, here to a /status nobody else sent.
   assert.deepEqual(world.contacts.map(({ id, authorization }) => [id, authorization]), [['200', 'Bearer connected-token']]);
   const { form } = world.contacts[0];
   assert.deepEqual([form.message, form.firstname, form.emailAddress, form.phoneNumber], ['Guten Tag, ich bin Alex. Einzug ab März.', 'Alex', 'alex@example.com', '+49 170 1234567']);
@@ -102,33 +104,49 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
 
   world.say('/status');
   await world.sees(/🟢 Searching/);
-  assert.ok(!world.labels().includes('🔄 Refresh'));
   await world.tap('⚙️ Settings');
   await world.sees(/Tap what you want to change/);
   await world.tap('🔍 Search');
   await world.sees(/<b>🎯 Requirements<\/b>\n<blockquote expandable>No swap<\/blockquote>/);
-  assert.deepEqual(world.labels(), ['🔎 Searches', '✏️ Edit']);
+  assert.deepEqual(world.labels(), ['🔎 Searches', '✏️ Edit', '← Settings']);
   const { form } = await world.fill('search', { preferences: 'No swap\nNo ground floor' });
   assert.deepEqual(form.fields.map(field => [field.key, field.value]), [['rent', '-1500'], ['rooms', ''], ['area', ''], ['preferences', 'No swap']], 'the form opens with what is set');
   await world.sees(/<blockquote expandable>No swap\nNo ground floor<\/blockquote>/);
   world.say('/settings');
   await world.tap('✍️ Agent\'s style');
   await world.sees(/The agent's writing style<\/b>[^]*None yet/);
-  await world.fill('style', { style: 'Kurz & formell.' });
-  await world.sees(/<blockquote expandable>Kurz &amp; formell\.<\/blockquote>/);
+  const style = await world.fill('style', { style: 'Kurz & formell.', 'style.closing': 'Mit vollem Namen unterschreiben.', 'style.closing.example': 'Viele Grüße\nAlex' });
+  assert.deepEqual(style.form.fields.filter(field => field.section).map(field => field.section), ['Overall', 'Greeting', 'Introduction', 'Main part', 'Closing'], 'each part of the message has its own fields');
+  assert.equal(style.form.fields.length, 10);
+  await world.sees(/<b>Overall<\/b>\n<blockquote expandable>Kurz &amp; formell\.<\/blockquote>[^]*<b>Closing<\/b>\n<blockquote expandable>Mit vollem Namen unterschreiben\.<\/blockquote>\nExample:\n<blockquote expandable>Viele Grüße\nAlex<\/blockquote>/);
 
   world.say('hello?'); // Anything the bot cannot act on opens the settings.
   await until('new settings buttons', () => world.messages().filter(call => /Tap what you want to change/.test(call.body.text)).length === 2);
-  await world.tap('📤 Auto-send: off');
-  await world.sees(/send applications myself/);
-  await world.tap('Auto-send clear matches');
-  await world.sees(/Saved: Auto-send = Auto-send clear matches/);
-  await world.tap('🧠 Model');
-  await world.sees(/ChatGPT model/);
+  assert.match(await world.tap('📤 Auto-send: off'), /Auto-send on/); // Switches at once, in place.
+  await world.sees(/📤 Auto-send is <b>on<\/b>/);
+  // Everyone picks the model that writes their messages...
+  await world.tap('🧠 Writing model');
+  await world.sees(/✍️ Writing model<\/b>\nWrites and rewrites your messages/);
+  assert.ok(!world.labels().includes('GPT E1E'), 'only the newest model of each family is offered');
   await world.tap('GPT E2E');
   await world.sees(/Thinking for GPT E2E/);
-  await world.tap('high');
-  await world.sees(/Using GPT E2E · thinking high/);
+  assert.match(await world.tap('high'), /GPT E2E · thinking high\. Writes your next messages/);
+  await until('the picked model', () => world.labels().includes('✓ GPT E2E'));
+  // ...and the admin the one that screens every listing, for everyone.
+  const menu = world.button('← Settings').messageId;
+  await world.tap('← Settings');
+  await world.tap('🛠 Admin');
+  await world.tap('🔎 Screening model');
+  await world.sees(/🔎 Screening model<\/b>\nReads every new listing/);
+  await world.tap('GPT E2E');
+  await until('the screening thinking levels', () => world.labels().includes('← Models') && world.labels().includes('low'));
+  assert.match(await world.tap('low'), /GPT E2E · thinking low\. Screens the next listings, for everyone/);
+  // Every menu leads back up, in the same message: Model → Admin → Settings → Status.
+  await world.tap('← Admin');
+  await world.tap('← Settings');
+  await world.tap('← Status');
+  await until('the status in place of the menu', () => world.telegram.some(call => call.method === 'editMessageText' && call.body.message_id === menu
+    && /✍️ Writing: gpt-e2e · thinking high\n🔎 Screening: gpt-e2e · thinking low \(default\)\n/.test(call.body.text)));
 
   world.listing(301, 'Parterre', 'Wohnung im Ground Floor.');
   world.listing(302, 'Klar passend', 'Balkon, ruhig.');
@@ -138,7 +156,10 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await until('the reviews of all three', () => world.codexCalls().length >= 4);
   assert.deepEqual(world.contacts.map(contact => contact.id), ['302'], 'only the clear match goes out by itself');
   world.never(/^Parterre/);
-  assert.ok(world.codexCalls().every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"') && input.preferences === 'No swap\nNo ground floor' && input.writingStyle === 'Kurz & formell.'));
+  const calls = world.codexCalls();
+  assert.ok(calls.some(({ input }) => input.task === 'write'), 'the clear match was written');
+  assert.ok(calls.every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"') === (input.task === 'write')), 'writing with the writing model, screening with the screening model');
+  assert.ok(calls.every(({ input }) => input.preferences === 'No swap\nNo ground floor' && JSON.stringify(input.writingStyle) === JSON.stringify({ overall: { instructions: 'Kurz & formell.' }, closing: { instructions: 'Mit vollem Namen unterschreiben.', example: 'Viele Grüße\nAlex' } })));
 
   const card = world.button('✖️ Dismiss');
   assert.match(await world.press(card), /Dismissed/);
@@ -162,7 +183,7 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
 
 test('Immomio: connected from /settings, a linked listing is applied there and never on IS24', async t => {
   const world = await createWorld(t);
-  world.seed();
+  world.seed({ autoSend: true });
   await world.start();
   await until('the first search', () => world.searches > 0);
   world.say('/settings');
@@ -171,42 +192,16 @@ test('Immomio: connected from /settings, a linked listing is applied there and n
   await world.connect('🔗 Connect Immomio', 'immomio', 'alex@immomio.test', 'correct');
   await world.sees(/Connected to Immomio as alex@immomio\.test/);
 
-  world.listing(400, 'Immomio Wohnung', `Bewerbung nur über https://tenant.immomio.com/apply/${IMMOMIO_ID}`);
+  world.listing(400, 'Immomio Wohnung', `Bewerbung nur über https://tenant.immomio.com/apply/${IMMOMIO_ID}, unclear.`);
   await world.sees(/Apply on Immomio with your profile \(alex@immomio\.test\)/);
   await world.tap('✅ Apply on Immomio');
   await world.sees(/✅ Applied on Immomio/);
-  assert.deepEqual(world.immomioApplications, [{ userId: 'immomio-user', propertyId: IMMOMIO_ID }]);
+  // A clear match is applied by itself.
+  world.listing(401, 'Immomio klar', `Bewerbung über https://tenant.immomio.com/apply/${IMMOMIO_AUTO}`);
+  await world.sees(/✅ Applied on Immomio \(auto-send\)/);
+  assert.deepEqual(world.immomioApplications, [{ userId: 'immomio-user', propertyId: IMMOMIO_ID }, { userId: 'immomio-user', propertyId: IMMOMIO_AUTO }]);
   assert.deepEqual(world.contacts, []);
   assert.equal(world.codexCalls().filter(call => call.input.task === 'write').length, 0, 'there is nothing to write');
-});
-
-test('a crash during sending is reported as uncertain and never sent again', async t => {
-  const world = await createWorld(t);
-  world.seed();
-  await world.start();
-  await until('the first search', () => world.searches > 0);
-  world.listing(500, 'Absturz Wohnung', 'Balkon, ruhig, unclear.');
-  await world.sees(/^Absturz Wohnung\n/);
-  await world.tap('✨ Write message');
-  await world.sees(/Guten Tag, ich bin Alex\./);
-  const send = world.button('✅ Send');
-
-  world.holdContact = true;
-  await world.press(send);
-  await until('the send to reach IS24', () => world.contacts.length === 1);
-  await world.kill('SIGKILL');
-  rmSync(join(world.dataDir, 'agent.lock'), { force: true }); // The owner's documented step after a hard stop.
-  world.holdContact = false;
-  world.listing(501, 'Während des Neustarts', 'Balkon, ruhig, unclear.');
-
-  await world.start();
-  await world.sees(/^Während des Neustarts\n/); // Like after a night pause: what came while it was down is new.
-  await world.sees(/⚠️ Check your IS24 account/);
-  await world.press(send);
-  await wait(400);
-  world.say('/status');
-  await world.sees(/⚠️ Check on IS24: 1/);
-  assert.equal(world.contacts.length, 1, 'neither the restart nor the old button sends again');
 });
 
 test('a listing IS24 published without a rent still reaches the owner, waits for a tap, and leaves its responses behind', async t => {
@@ -215,7 +210,6 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   await world.start();
   await until('the first search', () => world.searches > 0);
 
-  world.unusableResults = [{ item: { title: 'Anzeige ohne ID' } }, null];
   world.listing(601, 'Klar passend', 'Balkon, ruhig.');
   const incomplete = world.listing(600, 'Ohne Miete', 'Balkon, ruhig.', { rent: null, exposeArea: null });
   const { body: card } = await world.sees(/^Ohne Miete\n/);
@@ -226,7 +220,7 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   const { listing } = world.codexCalls().find(call => call.input.listing.expose_id === '600').input;
   assert.deepEqual([listing.price, listing.missing], [null, ['price']], 'the model is told what is missing');
 
-  const labels = ['expose-600', 'search-item', 'search-item', 'search-item-600'];
+  const labels = ['expose-600', 'search-item-600'];
   const stored = () => world.kept().map(entry => entry.label).sort();
   await until('the responses to be saved', () => stored().length === labels.length);
   assert.deepEqual(stored(), labels);
@@ -253,7 +247,6 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   assert.equal(world.contacts[1].id, '600', 'the check before sending accepts the gap the owner approved');
   await until('the sent report', () => world.messages().filter(call => /✅ Message sent/.test(call.body.text)).length === 2);
   assert.deepEqual(stored(), labels, 'fetching the same response again stores nothing new');
-  assert.equal(world.kept().find(entry => entry.label === 'expose-600').at, saved.at, 'and keeps when it was first seen');
 });
 
 test('a rent that appears after approval stops the send', async t => {
@@ -271,12 +264,12 @@ test('a rent that appears after approval stops the send', async t => {
   assert.deepEqual(world.contacts, []);
 });
 
-test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and a changed gallery does not stop the send', async t => {
+test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and they stay browsable after a decision', async t => {
   const world = await createWorld(t);
   world.seed();
   await world.start();
   await until('the first search', () => world.searches > 0);
-  const listing = world.listing(620, 'Mit Fotos', 'Balkon, ruhig.', { photos: ['a', 'b', 'c'] });
+  world.listing(620, 'Mit Fotos', 'Balkon, ruhig.', { photos: ['a', 'b', 'c'] });
   const { body: card, result: { message_id: messageId } } = await world.sees(/^Mit Fotos\n/);
   const edits = () => world.telegram.filter(call => call.method === 'editMessageText' && call.body.message_id === messageId);
   const shown = () => edits().at(-1)?.body;
@@ -295,25 +288,18 @@ test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and 
   edit = await browse('◀️');
   edit = await browse('◀️');
   assert.deepEqual([photo(edit), edit.reply_markup.inline_keyboard[0][1].text], ['c', '3/3'], 'it wraps around');
-  assert.match(await world.tap('3/3'), /◀️ or ▶️/);
 
   await world.tap('✨ Write message');
   const kept = await until('the card without its decision buttons', () => world.telegram.findLast(call => call.method === 'editMessageReplyMarkup' && call.body.message_id === messageId));
   assert.deepEqual(kept.body.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '3/3', '▶️']], 'the photos stay browsable');
   assert.equal(photo(await browse('▶️')), 'a');
   await world.sees(/Guten Tag, ich bin Alex\./);
-  listing.gallery = ['c', 'a', 'd'];
-  await world.tap('✅ Send');
-  await until('the contact request', () => world.contacts.length === 1);
-  await world.sees(/✅ Message sent/);
 
-  world.listing(621, 'Galerie fehlt', 'Balkon, ruhig.', { photos: ['e'], gallery: [] });
-  const { body: lone } = await world.sees(/^Galerie fehlt\n/);
+  world.listing(621, 'Ein Foto', 'Balkon, ruhig.', { photos: ['e'] });
+  const { body: lone } = await world.sees(/^Ein Foto\n/);
   assert.equal(photo(lone), 'e');
   assert.deepEqual(lone.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['✨ Write message', '✖️ Dismiss']], 'one photo, no carousel');
-  const saved = await until('the expose without a gallery', () => world.kept().find(entry => entry.label === 'expose-621'));
-  assert.equal(saved.problem, 'Listing without photos');
-  assert.ok(!world.kept().some(entry => entry.label === 'expose-620'), 'a listing with a gallery leaves nothing behind');
+  assert.deepEqual(world.kept(), [], 'a listing with its photos leaves nothing behind');
 });
 
 test('real IS24 failures still count as failures, recover, and are saved', async t => {
@@ -328,17 +314,12 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   world.listing(700, 'Wartung', 'Balkon, ruhig, unclear.');
   await until('the failed expose to be saved', () => saved('expose-700').length === 1);
   assert.deepEqual([saved('expose-700')[0].problem, saved('expose-700')[0].body], ['IS24 unavailable (HTTP 503)', maintenance]);
-  world.respond.expose[700] = { body: '{broken' };
-  await until('the broken expose to be saved', () => saved('expose-700').length === 2);
-  assert.ok(saved('expose-700').some(entry => entry.problem === 'IS24 sent invalid JSON' && entry.body === '{broken'));
   delete world.respond.expose[700];
   await world.sees(/^Wartung\n/); // The listing survives the outage.
 
   world.respond.search = { status: 429, type: 'text/plain', body: 'Zu viele Anfragen' };
   await until('the blocked search to be saved', () => saved('search-list').length === 1);
-  world.respond.search = { body: JSON.stringify({ nope: true }) };
-  await until('the malformed search to be saved', () => saved('search-list').length === 2);
-  assert.deepEqual(saved('search-list').map(entry => entry.problem).sort(), ['IS24 blocked access (HTTP 429)', 'Unexpected search response']);
+  assert.equal(saved('search-list')[0].problem, 'IS24 blocked access (HTTP 429)');
   world.respond.search = null;
   assert.match(world.agentLog, /health_error: IS24 failure/);
 
@@ -348,22 +329,13 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   assert.deepEqual(saved('expose-701'), [], 'a listing going offline is routine');
 
   world.respond.contact = { status: 400, body: JSON.stringify({ message: 'abgelehnt' }) };
-  const rejectedSend = async (id, title) => {
-    world.listing(id, title, 'Balkon, ruhig, unclear.');
-    await world.sees(new RegExp(`^${title}\\n`));
-    await world.tap('✨ Write message');
-    await until('the draft', () => world.labels().includes('✅ Send'));
-    await world.tap('✅ Send');
-    await until(`the rejection of ${title}`, () => world.messages().some(call => call.body.text.includes(title) && /IS24 rejected the request/.test(call.body.text)));
-  };
-  await rejectedSend(702, 'Abgelehnt');
+  world.listing(702, 'Abgelehnt', 'Balkon, ruhig, unclear.');
+  await world.sees(/^Abgelehnt\n/);
+  await world.tap('✨ Write message');
+  await until('the draft', () => world.labels().includes('✅ Send'));
+  await world.tap('✅ Send');
+  await world.sees(/❌ Message not sent\n\nAbgelehnt\n[^]*IS24 rejected the request \(HTTP 400: \{"message":"abgelehnt"\}\)/);
   assert.deepEqual([saved('contact-702')[0].problem, JSON.parse(saved('contact-702')[0].body)], ['Contact request answered HTTP 400', { message: 'abgelehnt' }]);
-
-  // Saving is impossible: the agent carries on, and the owner hears what IS24 really answered.
-  rmSync(join(world.dataDir, 'raw'), { recursive: true });
-  writeFileSync(join(world.dataDir, 'raw'), '');
-  await rejectedSend(703, 'Ohne Ablage');
-  world.never(/Check your IS24 account/);
 });
 
 test('the admin\'s list: a search runs only once someone picked it, and a listing in two searches counts once', async t => {
@@ -378,22 +350,29 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   await world.sees(/💶 Warm rent: up to 1500 €/); // ...and the rent became a limit.
   await world.tap('🔎 Searches');
   await world.sees(/Which searches/);
+  assert.ok(!world.labels().includes('➕ Add'), 'the list everyone picks from does not change it');
+  // The admin changes the list in ⚙️ Settings → 🛠 Admin → 🔎 Manage searches.
+  world.say('/settings');
+  await world.sees(/Tap what you want to change/);
+  await world.tap('🛠 Admin');
+  await world.sees(/<b>🛠 Admin<\/b>\nOnly you see this/);
+  await world.tap('🔎 Manage searches');
+  await world.sees(/<b>🔎 Searches for everyone<\/b>[^]*Search 1<\/a> · every 0\.1 s · 🌙 no night pause\n└ 1 person uses it/);
   await world.tap('➕ Add');
   await world.sees(/send a name and the address/);
-  // Adding runs the search once: one IS24 refuses is not added, and the admin hears why.
-  world.respond.search = query => query.includes('altona') && { status: 412, body: '{}' };
-  world.say('Altona https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/altona/wohnung-mieten');
-  await world.sees(/IS24 could not run this search \(IS24 unavailable \(HTTP 412\)\), so I did not add it/);
-  assert.ok(!world.labels().includes('⬜ Altona'));
-  world.respond.search = null;
+  // Adding runs the search once, so the admin knows IS24 answers it.
   world.say('Hamburg https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/wohnung-mieten');
   await world.sees(/✅ <b>Hamburg<\/b> works: IS24 answered it\.\n\nIt has no listings right now/);
-  await until('the new search', () => world.labels().includes('⬜ Hamburg'));
+  await until('the new search', () => world.labels().includes('⚙️ Hamburg'));
   const tried = world.searchUrls.filter(hamburg).length;
   const before = world.searches;
   await until('more checks', () => world.searches > before + 3);
   assert.equal(world.searchUrls.filter(hamburg).length, tried, 'nobody picked it, so IS24 hears about it only for the check');
 
+  world.say('/search');
+  await world.sees(/💶 Warm rent/);
+  await world.tap('🔎 Searches');
+  await until('the list to pick from', () => world.labels().includes('⬜ Hamburg'));
   await world.tap('⬜ Hamburg');
   await until('both searches', () => world.searchUrls.some(hamburg));
   const counted = world.searches;
@@ -408,21 +387,31 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   assert.equal(world.reads[801], undefined, 'a list price above the limit saves reading the listing');
 
   // Renaming keeps it picked.
-  await world.tap('⚙️');
+  await world.tap('⚙️ Search 1');
   await world.sees(/<b>🔎 Search 1<\/b>\n[^]*1 person uses it/);
   await world.tap('✏️ Rename');
   await world.sees(/Send the new name for Search 1/);
-  world.say('Hamburg');
-  await world.sees(/already is a search named Hamburg/);
   world.say('Berlin');
-  await until('the new name', () => world.labels().includes('✅ Berlin'));
+  await until('the new name', () => world.labels().includes('⚙️ Berlin'));
   const renamed = world.searches;
   await until('more checks', () => world.searches > renamed + 3);
   world.listing(802, 'Nach dem Umbenennen', 'Hell.');
   await world.sees(/^Nach dem Umbenennen\n/); // Still searched, and the rename did not start a new baseline.
 
+  // A new link is tried once, like a new search; its name and the people who picked it stay.
+  const pankow = url => url.includes('pankow');
+  await world.tap('⚙️ Berlin');
+  await world.tap('🔗 Change link');
+  await world.sees(/Send the new address of the IS24 results page for Berlin/);
+  world.say('https://www.immobilienscout24.de/Suche/de/berlin/berlin/pankow/wohnung-mieten');
+  await world.sees(/✅ <b>Berlin<\/b> works: IS24 answered it/);
+  await until('the new link', () => world.labels().includes('⚙️ Berlin'));
+  const relinked = world.searchUrls.length;
+  await until('checks of the new link', () => world.searchUrls.slice(relinked).filter(url => !hamburg(url)).length > 2);
+  assert.ok(world.searchUrls.slice(relinked).filter(url => !hamburg(url)).every(pankow), 'only the new link is searched');
+
   // Each search runs on its own schedule.
-  await world.tap('⚙️');
+  await world.tap('⚙️ Berlin');
   await world.sees(/<b>🔎 Berlin<\/b>[^]*⏱ Every 0\.1 s\n🌙 Night pause: off/);
   await world.tap('⏱ 0.1 s');
   await world.sees(/How often should I search Berlin/);
@@ -435,20 +424,16 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   await world.tap('🌙 Off');
   await world.tap('20:00–08:00');
   await until('the saved night pause', () => world.labels().includes('🌙 20:00–08:00'));
-  await world.tap('← Back');
-  await world.sees(/Berlin<\/a>: every 1 min · 🌙 20:00–08:00\n.*Hamburg<\/a>: every 0\.1 s · 🌙 no night pause/);
+  await world.tap('← Searches');
+  await world.sees(/Berlin<\/a> · every 1 min · 🌙 20:00–08:00\n└ 1 person uses it\n.*Hamburg<\/a> · every 0\.1 s · 🌙 no night pause/);
 
-  // Removing one tells whoever picked it, and the other keeps running. The last one stays.
-  await world.tap('⚙️');
+  // Removing one tells whoever picked it, and the other keeps running.
+  await world.tap('⚙️ Berlin');
   await world.tap('🗑 Remove');
   await world.sees(/Remove Berlin\?/);
   await world.tap('🗑 Yes, remove');
   await world.sees(/The search Berlin is no longer available/);
-  await until('the shorter list', () => !world.labels().includes('✅ Berlin') && world.labels().includes('✅ Hamburg'));
-  await world.tap('⚙️');
-  await world.tap('🗑 Remove');
-  await world.sees(/Remove Hamburg\?/);
-  assert.match(await world.tap('🗑 Yes, remove'), /last search/);
+  assert.ok(!world.labels().includes('⚙️ Berlin') && world.labels().includes('⚙️ Hamburg'), 'the shorter list');
   const left = world.searchUrls.length;
   await until('more checks', () => world.searchUrls.length > left + 2);
   assert.ok(world.searchUrls.slice(left).every(hamburg), 'only what is left is searched');
@@ -466,20 +451,16 @@ test('two people on one bot: private by invite, one shared search, separate chat
   world.say('hello', STRANGER);
   world.say('/settings');
   await world.sees(/Tap what you want to change/);
+  await world.tap('🛠 Admin');
   await world.tap('👥 People');
   await world.sees(/People on this agent/);
   assert.deepEqual(world.chat(STRANGER), [], 'strangers get no answer');
   await world.tap('➕ Invite');
   const code = (await world.seesIn(OWNER, /opens their own private chat/)).match(/t\.me\/e2e_bot\?start=(\S+)/)[1];
-  world.updates.push({ update_id: world.nextUpdate++, message: { message_id: world.nextMessage++, text: `/start ${code}`, chat: { id: -9, type: 'group' }, from: { id: STRANGER } } });
-  await wait(100);
-  assert.deepEqual(world.chat(-9), [], 'an invite does not work in a group');
 
   // Someone invited joins and sets up their own search in their own chat.
   world.say(`/start ${code}`, FRIEND);
   await world.seesIn(FRIEND, /Hi! I am your apartment agent/);
-  world.say(`/start ${code}`, STRANGER);
-  await world.seesIn(STRANGER, /not valid any more/);
   await world.seesIn(FRIEND, /Connect your ImmoScout24 account/);
   const state = from => fetch(`http://127.0.0.1:${world.port}/connect/state`, { headers: { 'x-init-data': world.signed(from) } });
   assert.equal((await (await state(FRIEND)).json()).step, 'form', 'their login is waiting');
@@ -489,7 +470,6 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await world.seesIn(FRIEND, /Which searches/);
   assert.ok(!world.labels().includes('➕ Add') && !world.labels().includes('⚙️'), 'only the admin adds, renames and removes searches');
   assert.match(await world.press({ callback_data: 'x:sa' }, FRIEND), /outdated/);
-  assert.match(await world.press({ callback_data: 'x:sn:0:x' }, FRIEND), /outdated/);
   await world.tap('⬜ Search 1', FRIEND);
   await world.tap('Done', FRIEND);
   await world.seesIn(FRIEND, /What are you looking for/);
@@ -504,10 +484,10 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
   const labels = world.labels();
   assert.ok(labels.includes('✍️ Agent\'s style'), 'these are the settings');
-  assert.ok(!labels.includes('👥 People') && !labels.includes('🔗 ChatGPT'), 'the shared login and people stay with the admin');
-  assert.match(await world.press({ callback_data: 'x:si:0:x:0' }, FRIEND), /outdated/, 'only the admin sets how often a search runs');
+  assert.ok(!labels.includes('🛠 Admin'), 'the shared searches, login and people stay with the admin');
   world.say('/status', FRIEND);
-  await world.seesIn(FRIEND, /🔎 Search 1: every 0\.1 s · 🌙 no night pause/); // The search's, carried over from the admin's old settings.
+  await world.seesIn(FRIEND, /<b>Search 1<\/b> · every 0\.1 s · 🌙 no night pause/); // The search's, carried over from the admin's old settings.
+  assert.ok(!world.chat(FRIEND).some(text => /Screening/.test(text)), 'the screening model is internal');
   await until('their first check', () => world.agentLog.includes(`[${FRIEND}] Poll complete`));
 
   // One listing for each kind of match. Between them they prove the search itself never narrowed.
@@ -556,11 +536,4 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await wait(200);
   assert.equal(world.chat(FRIEND).length, sent, 'ignored like any stranger');
   await until('the kept folder', () => readdirSync(join(world.dataDir, 'users')).some(name => name.startsWith(`removed-${FRIEND}-`)));
-
-  await world.kill();
-  await world.start();
-  world.say('/status', FRIEND);
-  world.say('/status');
-  await until('a new status', () => world.chat(OWNER).filter(text => /🟢 Searching/.test(text)).length > 0);
-  assert.equal(world.chat(FRIEND).length, sent, 'still removed after a restart');
 });

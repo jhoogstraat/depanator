@@ -53,10 +53,10 @@ const expose = ({ title, description, rent = '900 €', rooms = '2', exposeArea 
 export async function createWorld(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-e2e-'));
   const world = {
-    dataDir, listings: [], searches: 0, searchUrls: [], reads: {}, contacts: [], immomioApplications: [], unexpected: [], telegram: [], holdContact: false, agentLog: '',
+    dataDir, listings: [], searches: 0, searchUrls: [], reads: {}, contacts: [], immomioApplications: [], unexpected: [], telegram: [], agentLog: '',
     updates: [], nextUpdate: 1, nextMessage: 1,
-    // Set to { status, type, body } to make IS24 answer exactly that; search may also be a function of the query string. unusableResults join every search result page.
-    respond: { search: null, expose: {}, contact: null }, unusableResults: [],
+    // Set to { status, type, body } to make IS24 answer exactly that.
+    respond: { search: null, expose: {}, contact: null },
     listing(id, title, description, facts) {
       const listing = { id, title, description, ...facts };
       this.listings.push(listing);
@@ -158,14 +158,13 @@ export async function createWorld(t) {
       await new Promise(resolve => free.close(resolve));
       this.agent = spawn(process.execPath, ['--preload', join(ROOT, 'test/support/intercept.js'), join(ROOT, 'src/cli.js'), 'start'], { cwd: dataDir,
         env: { PATH: process.env.PATH, HOME: dataDir, TELEGRAM_BOT_TOKEN: TOKEN, DEPANATOR_DATA_DIR: dataDir, DEPANATOR_PUBLIC_URL: 'https://agent.example', DEPANATOR_PORT: String(this.port), DEPANATOR_CODEX_BIN: FAKE_CODEX, E2E_WORLD_URL: `http://127.0.0.1:${server.address().port}` } });
-      this.agentLog = ''; // A restart waits for this run's own output.
       const collect = chunk => { this.agentLog += chunk; };
       this.agent.stdout.on('data', collect);
       this.agent.stderr.on('data', collect);
       this.exited = new Promise(resolve => this.agent.once('exit', resolve));
       await until(`the agent to start\n${this.agentLog}`, () => this.agentLog.includes('Agent running'));
     },
-    async kill(signal = 'SIGTERM') { this.agent?.kill(signal); await this.exited; },
+    async kill() { this.agent?.kill('SIGKILL'); await this.exited; },
   };
 
   const routes = {
@@ -188,14 +187,13 @@ export async function createWorld(t) {
       if (path === '/search/list') {
         world.searches++;
         world.searchUrls.push(url.search);
-        const answered = typeof world.respond.search === 'function' ? world.respond.search(url.search) : world.respond.search;
-        if (answered) return answer(res, answered);
-        return json(res, { resultListItems: [...world.listings.toReversed().map(searchItem), ...world.unusableResults], numberOfPages: 1 });
+        if (world.respond.search) return answer(res, world.respond.search);
+        return json(res, { resultListItems: world.listings.toReversed().map(searchItem), numberOfPages: 1 });
       }
       if (contact) {
         world.contacts.push({ id: contact[1], form: body['expose.contactForm'], authorization: req.headers.authorization });
         if (world.respond.contact) return answer(res, world.respond.contact);
-        return world.holdContact ? undefined : json(res, {}); // Held: the answer never arrives, as in a crash.
+        return json(res, {});
       }
       if (shown) world.reads[shown[1]] = (world.reads[shown[1]] ?? 0) + 1;
       if (shown && world.respond.expose[shown[1]]) return answer(res, world.respond.expose[shown[1]]);
@@ -243,7 +241,7 @@ export async function createWorld(t) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   chmodSync(FAKE_CODEX, 0o755);
   t.after(async () => {
-    await world.kill('SIGKILL');
+    await world.kill();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     rmSync(dataDir, { recursive: true, force: true });

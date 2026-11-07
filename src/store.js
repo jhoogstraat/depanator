@@ -61,7 +61,6 @@ export class Store {
     const rows = status ? this.db.prepare('SELECT body FROM reviews WHERE status=? ORDER BY rowid').all(status) : this.db.prepare('SELECT body FROM reviews ORDER BY rowid').all();
     return rows.map(row => JSON.parse(row.body));
   }
-  has(exposeId) { return Boolean(this.db.prepare('SELECT 1 FROM reviews WHERE expose_id=?').get(String(exposeId))); }
   settings() { return Object.fromEntries(this.db.prepare('SELECT key, value FROM settings').all().map(row => [row.key, JSON.parse(row.value)])); }
   saveSetting(key, value) { this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
   deleteSetting(key) { this.db.prepare('DELETE FROM settings WHERE key=?').run(key); }

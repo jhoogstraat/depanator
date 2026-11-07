@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Store } from './store.js';
-import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES } from './settings.js';
+import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES, SCREENING, clean } from './settings.js';
 import { FormApp } from './forms.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter, searchFilters, searchKey } from './is24.js';
@@ -23,7 +23,7 @@ const LLM_CONCURRENCY = 3;
 const SESSIONS = ['is24-session.json', 'immomio-session.json'];
 
 // At most `max` calls at once, first come first served.
-export function limiter(max) {
+function limiter(max) {
   let active = 0;
   const waiting = [];
   return async work => {
@@ -36,7 +36,7 @@ export function limiter(max) {
 
 // Runs work() one at a time. A call during a run returns that run and makes it go once more right after, so
 // nothing that arrived meanwhile is missed; onBusy() runs on such a call. stopped() ends the repeats.
-export function coalesced(work, { onBusy = () => {}, stopped = () => false } = {}) {
+function coalesced(work, { onBusy = () => {}, stopped = () => false } = {}) {
   let running = null, again = false;
   return () => {
     if (running) { again = true; onBusy(); return running; }
@@ -55,7 +55,6 @@ function ticker(workflow, settings, log) {
   const run = coalesced(() => workflow.tick().then(result => {
     const skipped = Object.keys(SKIPPED).find(reason => result?.[reason]);
     log.info(skipped ? `${SKIPPED[skipped]}; poll skipped.` : `Poll complete. ${result.tracked} listings tracked.`);
-    if (result?.warning) log.error(result.warning);
     return result;
   }).catch(failure => { log.error(`Agent: ${failure.message}`); return { error: failure.message }; }),
   { onBusy: () => workflow.reportOutcomes(), stopped: () => workflow.closed });
@@ -113,8 +112,6 @@ function migrate(dataDir, firstId) {
 }
 
 const sameSearch = (a, b) => searchKey(a) === searchKey(b);
-// Set up and not paused: their picked searches are crawled for them.
-const isSearching = user => user.settings.complete() && !user.settings.config.paused;
 // People used to paste their own search URL. Its rent, rooms and area become their limits and the rest joins the
 // admin's list, so people who differed only in those three share one search as before.
 function adoptSearchUrls(dataDir) {
@@ -187,7 +184,7 @@ export class Users {
     const connect = connector({ app: is24App, setting: 'accountEmail', name: 'ImmoScout24', path: 'connect', config, settings, send, log });
     // Optional: only listings that link to Immomio need it.
     const connectImmomio = connector({ app: immomioApp, setting: 'immomioEmail', name: 'Immomio', path: 'immomio', config, settings, send, log });
-    const evaluate = createEvaluator(config);
+    const evaluate = createEvaluator(config, { screening: () => this.screening() });
     const workflow = new Workflow({
       store, adapter, config, evaluate: (snapshot, options) => this.limit(() => evaluate(snapshot, options)),
       notify: review => telegram.notify(review),
@@ -208,7 +205,7 @@ export class Users {
       immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       catalog: () => this.catalog, feedStatus: search => feeds.status(searchKey(search.url)),
-      admin: isAdmin ? this.adminActions() : null,
+      admin: isAdmin ? this.adminActions() : null, screening: () => this.screening(),
       onReady: () => tick(), onError: error,
     });
     // Back from a pause: only what is crawled from now on is new, and what is online now counts as already online.
@@ -228,21 +225,30 @@ export class Users {
   // What only the admin's chat can do.
   adminActions() {
     return { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url),
-      renameSearch: (name, to) => this.renameSearch(name, to), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) };
+      setScreening: llm => this.setScreening(llm),
+      renameSearch: (name, to) => this.renameSearch(name, to), changeSearchUrl: (name, url) => this.changeSearchUrl(name, url), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) };
+  }
+  // The model that screens every new listing for everyone: { model, thinking ('' = the model's default) }, set by the admin.
+  screening() { return { ...SCREENING, ...this.admin?.store.settings().screening }; }
+  setScreening({ model, thinking }) {
+    if (!/^[a-zA-Z0-9._-]{1,60}$/.test(model) || !/^[a-z]{0,20}$/.test(thinking)) throw new Error('Please pick a model from the list.');
+    this.admin.store.saveSetting('screening', { model, thinking });
   }
   // Checks run as often as the most frequent search someone searching picked; each search runs on its own interval.
   interval() {
-    const picked = new Set(this.searching().flatMap(user => user.settings.config.searches));
+    const picked = this.wanted();
     const intervals = this.catalog.filter(search => picked.has(search.name)).map(search => search.intervalMs);
     return intervals.length ? Math.min(...intervals) : this.defaults().intervalMs;
   }
   // Everybody's housekeeping besides the crawls: outcome reports, approved sends, the morning cleanup.
   round() { return Promise.allSettled([...this.users.values()].map(user => user.tick())); }
-  // Everyone searching, and who picked what.
-  searching() { return [...this.users.values()].filter(isSearching); }
+  // The names of the searches someone searching (set up and not paused) picked: those are crawled.
+  wanted() {
+    return new Set([...this.users.values()].filter(user => user.settings.complete() && !user.settings.config.paused).flatMap(user => user.settings.config.searches));
+  }
   // The admin's searches as the crawlers need them. wanted: someone searching picked it.
   feedSearches() {
-    const picked = new Set(this.searching().flatMap(user => user.settings.config.searches));
+    const picked = this.wanted();
     return this.catalog.map(search => {
       const filters = searchFilters(search.url);
       return { ...search, key: feedKey(filters), filters, wanted: picked.has(search.name) };
@@ -291,7 +297,7 @@ export class Users {
   }
   // A user-facing error unless `name` can name a search. except: the search being renamed may keep its name.
   checkName(name, except = null) {
-    if (!name || name.length > 40 || /[\r\n]/.test(name)) throw new Error('Please send a name of one line, at most 40 characters.');
+    if (!name || name !== clean(name) || name.length > 40 || /[\r\n]/.test(name)) throw new Error('Please send a name of one line, at most 40 characters.');
     if (name !== except && this.catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
   }
   // Applies change(searches) to everyone who picked `name`; returns them.
@@ -311,21 +317,36 @@ export class Users {
     this.saveCatalog(catalog);
     return updated;
   }
+  // An IS24 search link as stored, or a user-facing error: one an exact search can be made of, and no other search's twin.
+  // except: the search whose link is being changed.
+  searchLink(url, except = null) {
+    let href;
+    try { href = new URL(clean(url)).href; } catch { throw new Error('Please send the address of an immobilienscout24.de results page, starting with https://'); }
+    searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
+    const twin = this.catalog.find(search => search.name !== except && sameSearch(search.url, href));
+    if (twin) throw new Error(`${twin.name} is already this search.`);
+    return href;
+  }
+  // Straight to IS24, past the feed: its own first crawl starts the search's history. -> the newest listings.
+  async tryOut(href, what) {
+    const { listings } = await this.feeds.adapter.scan(searchFilters(href), { maxPages: 1 })
+      .catch(error => { throw new Error(`IS24 could not run this search (${error.message}), so I did not ${what}. Try again, or check the link on immobilienscout24.de.`); });
+    return listings;
+  }
   // Runs the search once before saving it, so the admin knows IS24 answers it. -> the newest listings it found.
   async addSearch(name, url) {
-    const { href } = new URL(url);
-    const filters = searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
-    const duplicate = () => {
-      this.checkName(name);
-      const twin = this.catalog.find(search => sameSearch(search.url, href));
-      if (twin) throw new Error(`${twin.name} is already this search.`);
-    };
-    duplicate();
-    // Straight to IS24, past the feed: its own first crawl starts the search's history.
-    const { listings } = await this.feeds.adapter.scan(filters, { maxPages: 1 })
-      .catch(error => { throw new Error(`IS24 could not run this search (${error.message}), so I did not add it. Try again, or check the link on immobilienscout24.de.`); });
-    duplicate(); // The list may have changed while IS24 answered.
+    const check = () => { this.checkName(name); return this.searchLink(url); };
+    const listings = await this.tryOut(check(), 'add it');
+    const href = check(); // The list may have changed while IS24 answered.
     this.saveCatalog([...this.catalog, { name, url: href, ...this.defaults() }]);
+    return listings;
+  }
+  // Same name, schedule and people, a new link, tried once first like a new search. Its listings start a new history.
+  async changeSearchUrl(name, url) {
+    const check = () => { this.listed(name); return this.searchLink(url, name); };
+    const listings = await this.tryOut(check(), 'change it');
+    const href = check();
+    this.saveCatalog(this.catalog.map(search => search.name === name ? { ...search, url: href } : search));
     return listings;
   }
   // Same search, new name, for everyone who picked it.

@@ -2,6 +2,7 @@ import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.
 import { assertReconciled } from './config.js';
 import { TIME_ZONE } from './settings.js';
 import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
+import { immomioDraft, usesImmomio } from './immomio.js';
 
 // At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
@@ -42,10 +43,7 @@ export class Workflow {
     try { return this.store.dispatch(id, event); }
     catch (error) { if (error.code === 'CONFLICT') return null; throw error; }
   }
-  stop() {
-    this.controller.abort();
-    this.adapter.cancelLogin?.();
-  }
+  stop() { this.controller.abort(); }
   run(fn) {
     if (this.closed) return Promise.reject(this.closedError());
     const result = this.queue.then(async () => {
@@ -78,8 +76,7 @@ export class Workflow {
     if (this.adapter.quiet?.()) return { quiet: true };
     if (this.backoff.skip > 0) { this.backoff.skip--; return { skipped: true }; }
     await this.morningCleanup();
-    const result = await this.pollInternal();
-    return result;
+    return this.pollInternal();
   }
   // Once per German calendar day, on the first check after the night pause.
   async morningCleanup() {
@@ -167,7 +164,6 @@ export class Workflow {
       if (!outside) await this.recovered('LLM');
       if (this.changedSince(bindings)) throw new Error('Configuration changed during analysis');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
-      this.emit({ type: 'analysis', review: saved });
       if (saved.status !== 'awaiting_approval') return;
       if (this.autoSendable(review, result, snapshot) && await this.autoSend(saved, bindings)) return;
       batch.tried.add(saved.id);
@@ -205,10 +201,12 @@ export class Workflow {
   autoSendable(review, result, snapshot) {
     return this.config.autoSend === true && result.confident === true && review.fresh === true && !snapshot.missing;
   }
-  // False if writing failed; then the listing waits for the user like any other.
+  // False if writing failed; then the listing waits for the user like any other. An Immomio application has
+  // nothing to write, so it needs no ChatGPT call.
   async autoSend(review, bindings) {
     try {
-      const written = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
+      const written = usesImmomio(review.snapshot, this.config) ? { decision: 'message', draft: immomioDraft(this.config, review.snapshot) }
+        : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
       if (this.closed || written.decision !== 'message' || this.changedSince(bindings)) return false;
       const revised = this.store.dispatch(review.id, { type: 'revise', version: review.version, draft: written.draft, reasons: review.reasons, bindings });
       this.store.dispatch(review.id, { type: 'approve', version: revised.version, draftHash: revised.draftHash, bindings, by: 'auto' });

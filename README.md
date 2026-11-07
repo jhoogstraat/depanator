@@ -23,7 +23,7 @@ Everything is configured by chatting with your Telegram bot. Outside the chat yo
 4. The bot guides you through the rest, in a few minutes:
    - **ChatGPT:** it sends a link and a code; open the link on your phone, sign in, enter the code. Depanator uses your ChatGPT subscription (Codex allowance), never paid API credit.
    - **ImmoScout24:** tap **🔗 Connect ImmoScout24** and enter your IS24 email and password (and a security code, if IS24 asks). They go straight to IS24's login service, the same one the IS24 app uses, and are never stored; the agent keeps only IS24's renewable login key (`is24-session.json` in the data directory). Only your Telegram account can open the page.
-   - **Searches:** as the admin, tap ➕ Add and send a name and the results page address from immobilienscout24.de, for example `Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten`. Only apartment rentals are supported; a filter that cannot be applied exactly is rejected rather than silently widening the search. The first search runs every 2 minutes with a night pause from 22:00 to 07:00, each later one starts with what you last chose, and its ⚙️ button changes both. Then pick the searches you want listings from.
+   - **Searches:** as the admin, tap ➕ Add and send a name and the results page address from immobilienscout24.de, for example `Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten`. Only apartment rentals are supported; a filter that cannot be applied exactly is rejected rather than silently widening the search. The first search runs every 2 minutes with a night pause from 22:00 to 07:00, each later one starts with what you last chose, and its ⚙️ button changes both. Then pick the searches you want listings from. Later, the admin adds, renames, relinks and removes searches in ⚙️ Settings → 🛠 Admin → 🔎 Manage searches.
    - **What you look for:** a form with your rent, rooms and living space (each optional; rent means warm rent) and your requirements, written as one text in your own words.
    - **About you:** a second form with your contact details for IS24's contact form (salutation, name, phone, street and house number, postcode, city; the name is filled in from your IS24 account), a free text about yourself for ChatGPT (household, job, income, move-in date, pets, documents), and whether to attach your IS24 Selbstauskunft. Applications state only what you write, plus the Selbstauskunft if you attach it.
 
@@ -34,11 +34,11 @@ The bot's menu (☰ next to the message field):
 | Command | |
 | --- | --- |
 | `/status` | Overview: searching or paused, last check, ImmoScout24 and ChatGPT health, listing counts. Buttons: ⏸ Pause / ▶️ Resume (waiting drafts and approved sends still work while paused), 📬 Waiting (show a listing again), 📨 Sent, ⚙️ Settings |
-| `/settings` | Everything you can change: 🔍 Search (your 🔎 searches, and ✏️ Edit for your rent, rooms, living space and requirements; ChatGPT skips clear mismatches), 👤 About you, ✍️ Agent's style (how ChatGPT writes, and what it gets for each listing), 🧠 Model, 📤 Auto-send, and 🔗 reconnecting ImmoScout24 or Immomio. The admin also has 🔗 ChatGPT and 👥 People. ✏️ Edit opens a form inside Telegram. |
+| `/settings` | Everything you can change: 🔍 Search (your 🔎 searches, and ✏️ Edit for your rent, rooms, living space and requirements; ChatGPT skips clear mismatches), 👤 About you, ✍️ Agent's style (how ChatGPT writes each part of the message, overall, greeting, introduction, main part and closing, each with instructions and example wording; and what it gets for each listing), 🧠 Writing model (the ChatGPT model and thinking level that writes and rewrites your messages; the newest version of each model the plan offers), 📤 Auto-send (switches on tap), and 🔗 reconnecting ImmoScout24 or Immomio. The admin also has 🛠 Admin. ✏️ Edit opens a form inside Telegram. Every menu has a ← button one level up, and moving through them changes the same message. |
 
 These also work when typed, as shortcuts: `/search`, `/pause`, `/prompt`, `/model`, `/autosend`, `/connect`, `/immomio`, `/login`. A typed message the bot cannot act on opens `/settings`.
 
-Only the admin (the first person to pair) has 🔗 ChatGPT and 👥 People, which invites and removes people, and only they add, rename and remove searches and set how often and when each one runs. You approve every application at first; once you trust the drafts, auto-send in `/settings` sends clear matches without asking.
+Only the admin (the first person to pair) has ⚙️ Settings → 🛠 Admin: 🔎 Manage searches (add, rename, relink and remove searches, and set how often and when each one runs), 🔎 Screening model (the ChatGPT model that reads every new listing, for everyone), 👥 People (invite and remove people) and 🔗 ChatGPT. You approve every application at first; once you trust the drafts, auto-send in `/settings` sends clear matches without asking.
 
 ### Being early
 
@@ -85,6 +85,6 @@ bun run test
 bun run check
 ```
 
-Tests cover the guided Telegram setup, connecting IS24 (including 2FA), the complete approval workflow with simulated external services, durable restart behavior, invalid approvals, exact drafts, the IS24 listing and contact formats, and filter preservation. Tests do not contact IS24 or Telegram.
+Tests run the real agent against simulated external services and cover pairing and the guided Telegram setup, connecting IS24 and Immomio, the complete approval workflow (writing, rewriting, outdated approvals, exact drafts, auto-send), the shared searches and several people on one bot, the IS24 listing and contact formats, and IS24 failures. Tests do not contact IS24 or Telegram.
 
 The search URL translator originates from Homelander commit `b0e7283b540d853311854d5111bffc0254d5ea85`. Its MIT license and local modifications are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The original source analysis is in [docs/homelander-agent-analysis.md](docs/homelander-agent-analysis.md).
