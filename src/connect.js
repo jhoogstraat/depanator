@@ -40,10 +40,10 @@ export async function readJson(req, limit) {
 export const BRANDS = {
   is24: { name: 'ImmoScout24', path: 'connect', email: config => config.accountEmail,
     logo: '<div class="logo is24"><svg width="42" height="42" viewBox="0 0 42 42" fill="none" stroke="#1a1a1a" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"><path d="M7 20 21 8l14 12"/><path d="M11 17v16h20V17"/><path d="M18 33v-8h6v8"/></svg></div>',
-    perks: ['Read new listings of your search', 'Send the applications you approve', 'Use your name and contact details in them'] },
+    perks: ['Neue Inserate deiner Suche lesen', 'Die Bewerbungen senden, die du freigibst', 'Deinen Namen und deine Kontaktdaten darin verwenden'] },
   immomio: { name: 'Immomio', path: 'immomio', email: config => config.immomioEmail,
     logo: '<div class="logo immomio">im</div>',
-    perks: ['Apply on Immomio when an approved listing links there', 'Read and answer your Immomio messages in this chat', 'Never send applications you did not approve'] },
+    perks: ['Auf Immomio bewerben, wenn ein freigegebenes Inserat dorthin verlinkt', 'Deine Immomio-Nachrichten in diesem Chat lesen und beantworten', 'Nie Bewerbungen senden, die du nicht freigegeben hast'] },
 };
 
 // The connect flow. FLOW below is complete: `flow` changes only through these events, and any other
@@ -66,14 +66,14 @@ const open = (state, { request }) => ({ step: 'form', message: '', request });
 const close = () => ({ step: 'idle', message: '' });
 const FLOW = {
   idle: { request: open },
-  form: { submit: state => ({ ...state, step: 'working', message: 'Connecting…' }), close },
+  form: { submit: state => ({ ...state, step: 'working', message: 'Verbinde…' }), close },
   working: {
     ask: (state, { message, answer }) => ({ ...state, step: 'code', message, answer }),
     succeed: (state, { email }, now) => ({ step: 'done', message: email, at: now }),
     fail: (state, { message }) => ({ ...state, step: 'form', message }),
     close,
   },
-  code: { answer: ({ answer, ...state }) => ({ ...state, step: 'working', message: 'Checking the code…' }), close },
+  code: { answer: ({ answer, ...state }) => ({ ...state, step: 'working', message: 'Prüfe den Code…' }), close },
   done: { request: open },
 };
 
@@ -98,7 +98,7 @@ export class ConnectApp {
   close() {
     for (const app of this.apps) app.close();
     const { request } = this.flow;
-    if (this.go({ type: 'close' })) request.reject(new Error('Shutting down'));
+    if (this.go({ type: 'close' })) request.reject(new Error('Der Agent wird gerade beendet.'));
     return new Promise(resolve => (this.server ? this.server.close(() => resolve()) : resolve()));
   }
   // Applies an event to the flow and wakes every open page. False if it does not apply at this step.
@@ -123,7 +123,7 @@ export class ConnectApp {
   async login(email, password) {
     const { request } = this.flow;
     const go = event => this.flow.request === request && this.go(event);
-    const askCode = message => new Promise((answer, refuse) => { if (!go({ type: 'ask', message, answer })) refuse(new Error('The login was cancelled')); });
+    const askCode = message => new Promise((answer, refuse) => { if (!go({ type: 'ask', message, answer })) refuse(new Error('Die Anmeldung wurde abgebrochen.')); });
     try {
       const account = await this.session.login({ email, password, askCode });
       if (go({ type: 'succeed', email: account })) request.resolve(account);
@@ -154,7 +154,7 @@ export class ConnectApp {
       if (this.flow.request && this.version <= Number(url.searchParams.get('after') || 0)) {
         await new Promise(resolve => { const timer = setTimeout(resolve, 10_000); this.waiters.add(() => { clearTimeout(timer); resolve(); }); });
       }
-      const name = await this.profile().then(profile => profile.name, () => 'Your agent');
+      const name = await this.profile().then(profile => profile.name, () => 'Dein Agent');
       return send(res, 200, 'application/json', JSON.stringify({ ...this.state(), bot: name, email: this.brand.email(this.config) || '' }));
     }
     if (req.method !== 'POST') return send(res, 405);
@@ -173,8 +173,8 @@ export class ConnectApp {
   }
 }
 
-const page = ({ name, path, logo, perks }) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<title>Connect ${name}</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+const page = ({ name, path, logo, perks }) => `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>${name} verbinden</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{--bg:var(--tg-theme-bg-color,#fff);--text:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#8a8a8e);--card:var(--tg-theme-secondary-bg-color,#f2f2f7);--accent:var(--tg-theme-button-color,#2481cc);--danger:var(--tg-theme-destructive-text-color,#e5484d)}
 *{box-sizing:border-box}body{margin:0;font:16px/1.4 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:28px 20px calc(24px + env(safe-area-inset-bottom))}
@@ -196,19 +196,19 @@ input:focus{border-color:var(--accent)}#error{color:var(--danger);font-size:14px
 <div class="logos"><div class="logo" id="avatar">🤖</div><div class="link"><i></i><i></i><i></i></div>
 ${logo}</div>
 <section id="form" hidden>
-<h1>Connect <span class="bot">your agent</span><br>with ${name}</h1>
-<p class="sub">Log in once. <span class="bot">Your agent</span> stays connected.</p>
+<h1>Verbinde <span class="bot">deinen Agenten</span><br>mit ${name}</h1>
+<p class="sub">Einmal anmelden. <span class="bot">Dein Agent</span> bleibt verbunden.</p>
 <ul>${perks.map(perk => `<li><b>✓</b>${perk}</li>`).join('')}</ul>
-<form id="login" autocomplete="on"><label for="email">${name} email</label><input id="email" type="email" maxlength="254" autocomplete="username" inputmode="email" autocapitalize="off" required>
-<label for="password">Password</label><input id="password" type="password" maxlength="200" autocomplete="current-password" required><div id="error" hidden></div>
-<button id="fallback" hidden>Connect</button></form>
-<p class="fine"><span>🔒</span><span>Your password goes directly to ${name}'s login and is used only for this login. It is never stored or shown to anyone.</span></p>
+<form id="login" autocomplete="on"><label for="email">${name}-E-Mail</label><input id="email" type="email" maxlength="254" autocomplete="username" inputmode="email" autocapitalize="off" required>
+<label for="password">Passwort</label><input id="password" type="password" maxlength="200" autocomplete="current-password" required><div id="error" hidden></div>
+<button id="fallback" hidden>Verbinden</button></form>
+<p class="fine"><span>🔒</span><span>Dein Passwort geht direkt an die Anmeldung von ${name} und wird nur dafür verwendet. Es wird nie gespeichert oder jemandem gezeigt.</span></p>
 </section>
-<section id="code" hidden><h1>Security code</h1><p class="sub" id="codeHint"></p>
-<form id="codeForm"><input id="codeInput" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="20" pattern="[\\w\\-]{1,20}" title="Only the letters and digits of the code" required><button id="codeFallback" hidden>Continue</button></form></section>
+<section id="code" hidden><h1>Sicherheitscode</h1><p class="sub" id="codeHint"></p>
+<form id="codeForm"><input id="codeInput" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="20" pattern="[\\w\\-]{1,20}" title="Nur die Buchstaben und Ziffern des Codes" required><button id="codeFallback" hidden>Weiter</button></form></section>
 <section id="working" hidden><div class="spinner"></div><p class="sub" id="workingText"></p></section>
-<section id="done" hidden><div class="check">✓</div><h1>Connected</h1><p class="sub" id="doneText"></p></section>
-<section id="idle" hidden><h1>Nothing to connect</h1><p class="sub" id="idleText">Open this page from the button in your Telegram chat.</p></section>
+<section id="done" hidden><div class="check">✓</div><h1>Verbunden</h1><p class="sub" id="doneText"></p></section>
+<section id="idle" hidden><h1>Nichts zu verbinden</h1><p class="sub" id="idleText">Öffne diese Seite über den Button in deinem Telegram-Chat.</p></section>
 </main><script>
 const tg = window.Telegram.WebApp; tg.ready(); tg.expand();
 const $ = id => document.getElementById(id);
@@ -229,18 +229,18 @@ $('codeForm').onsubmit = e => { e.preventDefault(); submit?.(); };
 function connect() {
   const email = $('email').value.trim(), password = $('password').value;
   if (!$('login').reportValidity()) return;
-  post('login', { email, password }); $('password').value = ''; render({ step: 'working', message: 'Connecting…' });
+  post('login', { email, password }); $('password').value = ''; render({ step: 'working', message: 'Verbinde…' });
 }
-function sendCode() { $('codeInput').value = $('codeInput').value.trim(); if (!$('codeForm').reportValidity()) return; post('code', { code: $('codeInput').value }); $('codeInput').value = ''; render({ step: 'working', message: 'Checking the code…' }); }
+function sendCode() { $('codeInput').value = $('codeInput').value.trim(); if (!$('codeForm').reportValidity()) return; post('code', { code: $('codeInput').value }); $('codeInput').value = ''; render({ step: 'working', message: 'Prüfe den Code…' }); }
 function render(s) {
   if (s.bot) for (const el of document.querySelectorAll('.bot')) el.textContent = s.bot;
   if (s.email && !$('email').value) $('email').value = s.email;
   const changed = s.step !== step; step = s.step;
   for (const id of ['form', 'code', 'working', 'done', 'idle']) $(id).hidden = id !== step;
-  if (step === 'form') { $('error').hidden = !s.message; $('error').textContent = s.message; if (s.message) tg.HapticFeedback?.notificationOccurred('error'); button('Connect', connect); if (changed) ($('email').value ? $('password') : $('email')).focus(); }
-  else if (step === 'code') { $('codeHint').textContent = s.message; button('Continue', sendCode); if (changed) $('codeInput').focus(); }
+  if (step === 'form') { $('error').hidden = !s.message; $('error').textContent = s.message; if (s.message) tg.HapticFeedback?.notificationOccurred('error'); button('Verbinden', connect); if (changed) ($('email').value ? $('password') : $('email')).focus(); }
+  else if (step === 'code') { $('codeHint').textContent = s.message; button('Weiter', sendCode); if (changed) $('codeInput').focus(); }
   else if (step === 'working') { $('workingText').textContent = s.message; button(''); }
-  else if (step === 'done') { $('doneText').textContent = 'Signed in as ' + s.message + '. You can close this page.'; button(''); if (changed) { tg.HapticFeedback?.notificationOccurred('success'); setTimeout(() => tg.close(), 1800); } }
+  else if (step === 'done') { $('doneText').textContent = 'Angemeldet als ' + s.message + '. Du kannst diese Seite schließen.'; button(''); if (changed) { tg.HapticFeedback?.notificationOccurred('success'); setTimeout(() => tg.close(), 1800); } }
   else button('');
 }
 async function poll() {

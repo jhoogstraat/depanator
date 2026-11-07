@@ -15,11 +15,11 @@ export const feedKey = filters => JSON.stringify(filters);
 // only proves a rent too high (warm is never below cold). That still saves reading the listing.
 export function outsideSearch(filters, listing, { priced = true } = {}) {
   const rent = priced ? filters.price : { min: null, max: filters.price.max };
-  const checks = [['Rent', rent, listing.price, ' €'], ['Rooms', filters.rooms, listing.rooms, ''], ['Area', filters.livingSpace, listing.area, ' m²']];
+  const checks = [['Miete', rent, listing.price, ' €'], ['Zimmer', filters.rooms, listing.rooms, ''], ['Wohnfläche', filters.livingSpace, listing.area, ' m²']];
   for (const [label, { min, max }, value, unit] of checks) {
     if (!value) continue;
-    if (min !== null && value < min) return `${label} ${value}${unit} is below your search minimum of ${min}${unit}`;
-    if (max !== null && value > max) return `${label} ${value}${unit} is above your search maximum of ${max}${unit}`;
+    if (min !== null && value < min) return `${label} ${value}${unit} liegt unter deinem Minimum von ${min}${unit}`;
+    if (max !== null && value > max) return `${label} ${value}${unit} liegt über deinem Maximum von ${max}${unit}`;
   }
   return '';
 }
@@ -80,7 +80,7 @@ export class Feeds {
     const health = this.health.get(key) ?? new Health({ advice: IS24_ADVICE });
     this.health.set(key, health);
     if (health.backingOff) { health.record({ type: 'waited' }); return { skipped: true }; }
-    const what = `IS24 search ${search.name}`;
+    const what = `IS24-Suche ${search.name}`;
     const baseline = this.feedRow(key).baseline === 1;
     const known = this.db.prepare('SELECT 1 FROM listings WHERE search=? AND expose_id=?');
     let result;

@@ -5,9 +5,11 @@ import { ALERT_AFTER, IS24_ADVICE, Health } from './health.js';
 
 // At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
+// A component as alerts name it.
+const NAME = { IS24: 'IS24', LLM: 'ChatGPT' };
 const ADVICE = {
   IS24: IS24_ADVICE,
-  LLM: 'Analysis is paused and retries every check. Check your ChatGPT plan, or send /login to reconnect it.',
+  LLM: 'Die Analyse pausiert und wird bei jeder Prüfung neu versucht. Prüfe dein ChatGPT-Abo oder verbinde es mit /login neu.',
 };
 
 // Moves reviews through the review.js state machine: search → analyze → deliver → (user decides) → send.
@@ -106,12 +108,12 @@ export class Workflow {
   }
   async failure(component, error) {
     const health = this.health[component];
-    const alert = health.record({ type: 'failed', error, intervalMs: component === 'IS24' ? this.interval() : 0 }, component);
+    const alert = health.record({ type: 'failed', error, intervalMs: component === 'IS24' ? this.interval() : 0 }, NAME[component]);
     this.emit({ type: 'health_error', detail: `${component} failure ${health.failures}: ${error.message}` });
     if (alert) await this.raise(alert);
   }
   async recovered(component) {
-    const alert = this.health[component].record({ type: 'succeeded' }, component);
+    const alert = this.health[component].record({ type: 'succeeded' }, NAME[component]);
     if (alert) await this.raise(alert);
   }
 
@@ -127,7 +129,7 @@ export class Workflow {
     const noted = this.store.discover(search.baseline ?? [], { existing: true });
     this.store.discover(search.listings, { fresh: true });
     search.commit?.();
-    if (noted.length) await this.raise(`👀 Watching your search. ${noted.length} listings are already online; I skip those and message you only about new ones.`);
+    if (noted.length) await this.raise(`👀 Ich beobachte deine Suche. ${noted.length === 1 ? '1 Inserat ist' : `${noted.length} Inserate sind`} schon online; die überspringe ich und melde mich nur bei neuen.`);
     const batch = { stop: false, is24Failed: false, llmFailed: false, tried: new Set() }; // tried: delivered once this poll
     const queue = this.store.list('discovered');
     const worker = async () => { while (!batch.stop && queue.length) await this.analyze(queue.shift(), batch); };
@@ -158,7 +160,7 @@ export class Workflow {
       const result = outside ? { decision: 'dismiss', reasons: [outside], draft: '', confident: false } : await this.evaluate(snapshot, { signal: this.controller.signal });
       this.assertRunning();
       if (!outside) await this.recovered('LLM');
-      if (this.changedSince(bindings)) throw new Error('Configuration changed during analysis');
+      if (this.changedSince(bindings)) throw new Error('Einstellungen haben sich während der Analyse geändert');
       const saved = this.store.dispatch(review.id, { type: 'analyzed', snapshot, result, bindings });
       if (saved.status !== 'awaiting_approval') return;
       if (this.autoSendable(review, result, snapshot) && await this.autoSend(saved, bindings)) return;
@@ -170,7 +172,7 @@ export class Workflow {
       const failed = this.store.dispatch(review.id, { type: 'fail', detail: error.message, systemic });
       if (this.closed) throw error;
       this.emit({ type: 'analysis_error', id: review.id, detail: error.message });
-      if (failed.status === 'analysis_failed') await this.raise(`🛑 Gave up on "${review.snapshot.title}" (${review.exposeId}).\n${failed.detail}`);
+      if (failed.status === 'analysis_failed') await this.raise(`🛑 Aufgegeben: „${review.snapshot.title}“ (${review.exposeId}).\n${failed.detail}`);
       if (stage === 'IS24' && error.code !== 'LISTING_GONE') {
         batch.stop = true;
         if (!batch.is24Failed) { batch.is24Failed = true; await this.failure('IS24', error); }
@@ -187,7 +189,7 @@ export class Workflow {
       this.assertRunning();
       try { await this.adapter.feeds.expose(review.exposeId); continue; }
       catch (error) { if (error.code !== 'LISTING_GONE') { this.emit({ type: 'prune_error', detail: error.message }); return; } } // Retry tomorrow.
-      const dismissed = this.tryDispatch(review.id, { type: 'dismiss', version: review.version, detail: 'Listing no longer available' });
+      const dismissed = this.tryDispatch(review.id, { type: 'dismiss', version: review.version, detail: 'Inserat nicht mehr verfügbar' });
       if (dismissed) await this.withdraw(dismissed).catch(error => this.emit({ type: 'notification_error', id: review.id, detail: error.message }));
     }
   }
@@ -217,21 +219,21 @@ export class Workflow {
     } catch (error) {
       const failed = this.tryDispatch(review.id, { type: 'deliveryFailed', version: review.version, detail: error.message });
       this.emit({ type: 'notification_error', id: review.id, detail: error.message });
-      if (failed?.deliveryFailures === ALERT_AFTER) await this.raise(`⚠️ A draft for "${review.snapshot.title}" (${review.exposeId}) failed to reach Telegram ${ALERT_AFTER} times: ${error.message}. It is retried every poll.`);
+      if (failed?.deliveryFailures === ALERT_AFTER) await this.raise(`⚠️ Ein Entwurf für „${review.snapshot.title}“ (${review.exposeId}) kam ${ALERT_AFTER}-mal nicht bei Telegram an: ${error.message}. Ich versuche es bei jeder Prüfung erneut.`);
       return false;
     }
   }
   async reviseInternal(id, version, instructions, manual) {
     const review = this.store.get(id);
-    if (review?.status !== 'awaiting_approval' || review.version !== version) throw new Error('This draft was already handled or changed');
+    if (review?.status !== 'awaiting_approval' || review.version !== version) throw new Error('Dieser Entwurf wurde schon bearbeitet oder geändert');
     const bindings = this.bindings();
     const result = manual ? { decision: 'message', draft: instructions, reasons: review.reasons }
       : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: review.draft, instructions } });
     this.assertRunning();
-    if (result.decision !== 'message') throw new Error('The agent did not produce a revised draft');
-    if (this.changedSince(bindings)) throw new Error('Configuration changed during revision; tap ✏️ Rewrite again');
+    if (result.decision !== 'message') throw new Error('Es kam kein überarbeiteter Entwurf zurück');
+    if (this.changedSince(bindings)) throw new Error('Deine Einstellungen haben sich währenddessen geändert; tippe noch einmal auf ✏️ Umschreiben');
     const revised = this.store.dispatch(id, { type: 'revise', version, draft: result.draft, reasons: result.reasons.length ? result.reasons : review.reasons, bindings });
-    if (!await this.deliver(revised)) throw new Error('Draft revised, but delivering it failed; it will be resent on the next poll');
+    if (!await this.deliver(revised)) throw new Error('Entwurf überarbeitet, aber das Zustellen schlug fehl; er kommt bei der nächsten Prüfung erneut');
     return this.store.get(id);
   }
   async sendInternal() {
@@ -282,16 +284,16 @@ export class Workflow {
       try { snapshot = await this.adapter.details(review.snapshot); }
       catch (error) { if (error.code !== 'LISTING_GONE') return { retry: error }; throw error; }
       // New or reordered photos are not a change to what was approved.
-      if (hash({ ...snapshot, images: review.snapshot.images }) !== review.snapshotHash) return { outcome: 'failed', detail: 'Listing details changed; approval invalidated' };
+      if (hash({ ...snapshot, images: review.snapshot.images }) !== review.snapshotHash) return { outcome: 'failed', detail: 'Das Inserat hat sich geändert; deine Freigabe ist ungültig' };
       const beforeSubmit = async () => {
         this.assertRunning();
-        if (!authorizes(this.store.get(review.id), review, this.bindings())) throw new Error('Approval binding changed before submission');
+        if (!authorizes(this.store.get(review.id), review, this.bindings())) throw new Error('Freigabe hat sich vor dem Senden geändert');
         return true;
       };
       await beforeSubmit();
       sending = true;
       const result = await this.adapter.send(review, { beforeSubmit, assertCanSubmit: () => this.assertRunning() });
-      return OUTCOMES.includes(result?.outcome) ? { outcome: result.outcome, detail: result.detail } : { outcome: 'unknown_outcome', detail: 'Adapter returned no reliable submission outcome' };
+      return OUTCOMES.includes(result?.outcome) ? { outcome: result.outcome, detail: result.detail } : { outcome: 'unknown_outcome', detail: 'Kein verlässliches Ergebnis des Sendens' };
     } catch (error) { return { outcome: sending ? 'unknown_outcome' : 'failed', detail: error.message }; }
   }
   async close() {

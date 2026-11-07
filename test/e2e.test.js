@@ -16,58 +16,58 @@ test('first run: from pairing through setup to one approved application', async 
   assert.deepEqual(world.telegram.find(call => call.method === 'setMyCommands').body.commands.map(command => command.command), ['status', 'settings']);
 
   world.say(`/start ${code}`);
-  await world.sees(/Hi! I am your apartment agent/);
-  await world.connect('🔗 Connect ImmoScout24', 'connect', 'Alex@Example.com', 'correct');
-  await world.sees(/Connected to ImmoScout24 as alex@example\.com/);
+  await world.sees(/Hallo! Ich bin dein Wohnungsagent/);
+  await world.connect('🔗 ImmoScout24 verbinden', 'connect', 'Alex@Example.com', 'correct');
+  await world.sees(/Mit ImmoScout24 verbunden als alex@example\.com/);
   for (const [question, answer] of [
-    [/Which searches/, () => world.tap('➕ Add')],
-    [/send a name and the address/, async () => {
+    [/Aus welchen Suchen/, () => world.tap('➕ Hinzufügen')],
+    [/sende dann einen Namen und die Adresse/, async () => {
       world.say('no link');
-      await world.sees(/Please send a name/);
+      await world.sees(/Bitte sende einen Namen/);
       world.say('Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-kaufen');
-      await world.sees(/Only apartment rental searches/);
+      await world.sees(/Nur Suchen nach Mietwohnungen/);
       world.say(`Berlin ${SEARCH_URL}`);
       await until('the new search', () => world.labels().includes('⬜ Berlin'));
-      assert.match(await world.tap('Done'), /at least one/);
+      assert.match(await world.tap('Fertig'), /mindestens eine/);
       await world.tap('⬜ Berlin');
-      await world.tap('Done');
+      await world.tap('Fertig');
     }],
-    [/What are you looking for/, async () => {
-      assert.match((await world.fill('search', { rent: 'cheap', preferences: 'No swap' })).error, /^Highest warm rent in €: Please write a rent/);
-      assert.match((await world.fill('search', { rent: '1500' })).error, /^Requirements: please fill this in/, 'nothing was saved');
+    [/Was suchst du/, async () => {
+      assert.match((await world.fill('search', { rent: 'cheap', preferences: 'No swap' })).error, /^Warmmiete in €: Bitte gib die Miete als Zahlen an/);
+      assert.match((await world.fill('search', { rent: '1500' })).error, /^AI-Filter: bitte ausfüllen/, 'nothing was saved');
       // Requests the page cannot make, as a forged one would: refused, and nothing is saved.
-      for (const [values, error] of [[{ admin: true }, /outdated/], [{ rooms: 3 }, /^Rooms: this value is not allowed/],
-        [{ preferences: 'No swap\u202E' }, /invisible or control characters/], [{ rent: '50000' }, /between 0 and 20000/]]) {
+      for (const [values, error] of [[{ admin: true }, /veraltet/], [{ rooms: 3 }, /^Zimmer: dieser Wert ist nicht erlaubt/],
+        [{ preferences: 'No swap\u202E' }, /unsichtbare Zeichen oder Steuerzeichen/], [{ rent: '50000' }, /zwischen 0 und 20000/]]) {
         assert.match((await world.fill('search', { rent: '1500', preferences: 'No swap', ...values })).error, error);
       }
       assert.equal((await world.fill('search', { rent: '1500', preferences: 'No swap' })).status, 204);
     }],
-    [/Now about you/, async () => {
+    [/Jetzt zu dir/, async () => {
       const contact = { 'persona.anrede': 'FEMALE', 'persona.telefon': '+49 170 1234567', address: 'Musterstraße', 'persona.plz': '10115', 'persona.ort': 'Berlin', 'persona.about': 'Nichtraucher.' };
       const { form, error } = await world.fill('profile', contact);
       assert.deepEqual(form.fields.filter(field => field.prefilled).map(field => [field.key, field.value]), [['persona.vorname', 'Alex'], ['persona.nachname', 'Doe']], 'the name comes from the IS24 account');
-      assert.match(error, /^Street and house number: Please write the street and then the house number/);
+      assert.match(error, /^Straße und Hausnummer: Bitte schreib erst die Straße, dann die Hausnummer/);
       assert.equal((await world.fill('profile', { ...contact, address: 'Straße des 17. Juni 12a' })).status, 204);
     }],
   ]) { await world.sees(question); await answer(); }
-  await world.sees(/All set/);
-  await world.sees(/1 listings are already online/);
+  await world.sees(/Alles eingerichtet/);
+  await world.sees(/1 Inserat ist schon online/);
 
   world.listing(200, 'Sonnige Wohnung', 'Balkon, ruhig.');
   await world.sees(/Sonnige Wohnung\n📍 Teststraße 1, 10115 Berlin/);
-  await world.tap('✨ Write message');
+  await world.tap('✨ Schreiben');
   await world.sees(/Guten Tag, ich bin Alex\.$/);
-  assert.deepEqual(world.button('📋 Copy').copy_text, { text: 'Guten Tag, ich bin Alex.' }, 'a short draft copies with one tap');
-  const firstSend = world.button('✅ Send');
-  await world.tap('✏️ Rewrite');
-  await world.sees(/How should I rewrite it/);
+  assert.deepEqual(world.button('📋 Kopieren').copy_text, { text: 'Guten Tag, ich bin Alex.' }, 'a short draft copies with one tap');
+  const firstSend = world.button('✅ Senden');
+  await world.tap('✏️ Umschreiben');
+  await world.sees(/Wie soll ich ihn umschreiben/);
   world.say('Einzug ab März.');
   await world.sees(/Guten Tag, ich bin Alex\. Einzug ab März\./);
-  assert.match(await world.press(firstSend), /newer draft/, 'the replaced draft cannot be approved');
+  assert.match(await world.press(firstSend), /neuerer Entwurf/, 'the replaced draft cannot be approved');
   assert.equal(world.contacts.length, 0);
 
-  await world.tap('✅ Send');
-  await world.sees(/✅ Message sent/);
+  await world.tap('✅ Senden');
+  await world.sees(/✅ Nachricht gesendet/);
   await wait(300); // Several more polls: an accepted request is never repeated.
   assert.deepEqual(world.contacts.map(({ id, authorization }) => [id, authorization]), [['200', 'Bearer connected-token']]);
   const { form } = world.contacts[0];
@@ -83,14 +83,14 @@ test('a draft too long for a copy button is copied from a code block', async t =
   await until('the first search', () => world.searches > 0);
   world.listing(250, 'Lange Wohnung', 'Balkon, ruhig, unclear.');
   await world.sees(/^Lange Wohnung\n/);
-  await world.tap('✨ Write message');
+  await world.tap('✨ Schreiben');
   await world.sees(/Guten Tag, ich bin Alex\.$/);
-  await world.tap('📝 Write myself');
-  await world.sees(/exactly as it should go out/);
+  await world.tap('📝 Eigener Text');
+  await world.sees(/genau so, wie sie rausgehen soll/);
   const long = `Guten Tag, ${'ich möchte die Wohnung gerne besichtigen. '.repeat(10)}`.trim();
   world.say(long);
   await world.sees(new RegExp(`${long.slice(-40).replace(/[.]/g, '\\.')}$`));
-  assert.match(await world.tap('📋 Copy'), /Tap the code block/);
+  assert.match(await world.tap('📋 Kopieren'), /Tippe auf den Code-Block/);
   const copy = await until('the code block', () => world.messages().find(call => call.body.text === long));
   assert.deepEqual(copy.body.entities, [{ type: 'pre', offset: 0, length: long.length }]);
   assert.ok(copy.body.reply_parameters, 'the code block sits under its draft');
@@ -103,48 +103,51 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await until('the first search', () => world.searches > 0);
 
   world.say('/status');
-  await world.sees(/🟢 Searching/);
-  await world.tap('⚙️ Settings');
-  await world.sees(/Tap what you want to change/);
-  await world.tap('🔍 Search');
-  await world.sees(/<b>🎯 Requirements<\/b>\n<blockquote expandable>No swap<\/blockquote>/);
-  assert.deepEqual(world.labels(), ['🔎 Searches', '✏️ Edit', '← Settings']);
+  await world.sees(/🟢 Suche läuft/);
+  await world.tap('⚙️ Einstellungen');
+  await world.sees(/Tippe auf das, was du ändern möchtest/);
+  await world.tap('🔍 Suche');
+  await world.sees(/<b>🎯 AI-Filter<\/b>\n<blockquote expandable>No swap<\/blockquote>/);
+  assert.deepEqual(world.labels(), ['🔎 Suchen', '✏️ Bearbeiten', '← Einstellungen']);
   const { form } = await world.fill('search', { preferences: 'No swap\nNo ground floor' });
   assert.deepEqual(form.fields.map(field => [field.key, field.value]), [['rent', '-1500'], ['rooms', ''], ['area', ''], ['preferences', 'No swap']], 'the form opens with what is set');
   await world.sees(/<blockquote expandable>No swap\nNo ground floor<\/blockquote>/);
   world.say('/settings');
-  await world.tap('✍️ Agent\'s style');
-  await world.sees(/The agent's writing style<\/b>[^]*None yet/);
-  const style = await world.fill('style', { style: 'Kurz & formell.', 'style.closing': 'Mit vollem Namen unterschreiben.', 'style.closing.example': 'Viele Grüße\nAlex' });
-  assert.deepEqual(style.form.fields.filter(field => field.section).map(field => field.section), ['Overall', 'Greeting', 'Introduction', 'Main part', 'Closing'], 'each part of the message has its own fields');
-  assert.equal(style.form.fields.length, 10);
-  await world.sees(/<b>Overall<\/b>\n<blockquote expandable>Kurz &amp; formell\.<\/blockquote>[^]*<b>Closing<\/b>\n<blockquote expandable>Mit vollem Namen unterschreiben\.<\/blockquote>\nExample:\n<blockquote expandable>Viele Grüße\nAlex<\/blockquote>/);
+  await world.tap('✍️ Schreibstil');
+  await world.sees(/✍️ Schreibstil<\/b>[^]*Noch keiner/);
+  const style = await world.fill('style', { style: 'Kurz & formell.', 'style.example': 'Viele Grüße\nAlex' });
+  assert.deepEqual(style.form.fields.map(field => field.key), ['style', 'style.example'], 'one style text and one example');
+  await world.sees(/<blockquote expandable>Kurz &amp; formell\.<\/blockquote>\nBeispielnachricht:\n<blockquote expandable>Viele Grüße\nAlex<\/blockquote>/);
 
   world.say('hello?'); // Anything the bot cannot act on opens the settings.
-  await until('new settings buttons', () => world.messages().filter(call => /Tap what you want to change/.test(call.body.text)).length === 2);
-  assert.match(await world.tap('📤 Auto-send: off'), /Auto-send on/); // Switches at once, in place.
-  await world.sees(/📤 Auto-send is <b>on<\/b>/);
+  await until('new settings buttons', () => world.messages().filter(call => /Tippe auf das, was du ändern möchtest/.test(call.body.text)).length === 2);
+  assert.match(await world.tap('📤 Auto-Senden: aus'), /Auto-Senden an/); // Switches at once, in place.
+  await world.sees(/📤 Auto-Senden ist <b>an<\/b>/);
   // The admin picks the one model that screens and writes for everyone.
   const menu = world.button('🛠 Admin').messageId;
   await world.tap('🛠 Admin');
-  await world.tap('🧠 Model');
-  await world.sees(/🧠 Model<\/b>\nReads every new listing/);
+  await world.tap('🧠 Modell');
+  await world.sees(/🧠 Modell<\/b>\nLiest für alle bei diesem Agenten jedes neue Inserat/);
   assert.ok(!world.labels().includes('GPT E1E'), 'only the newest model of each family is offered');
   await world.tap('GPT E2E');
-  await world.sees(/Thinking for GPT E2E/);
-  assert.match(await world.tap('high'), /GPT E2E · thinking high\. Screens and writes from now on, for everyone/);
+  await world.sees(/Denken für GPT E2E/);
+  assert.match(await world.tap('high'), /GPT E2E · Denken high\. Prüft und schreibt ab jetzt für alle/);
   await until('the picked model', () => world.labels().includes('✓ GPT E2E'));
-  // Every menu leads back up, in the same message: Model → Admin → Settings → Status.
+  // Every menu leads back up, in the same message: Model → Admin → Settings, the root.
   await world.tap('← Admin');
-  await world.tap('← Settings');
-  await world.tap('← Status');
-  await until('the status in place of the menu', () => world.telegram.some(call => call.method === 'editMessageText' && call.body.message_id === menu
-    && /🧠 Model: gpt-e2e · thinking high\n/.test(call.body.text)));
+  await world.tap('← Einstellungen');
+  await until('the settings in place of the menu', () => world.telegram.some(call => call.method === 'editMessageText' && call.body.message_id === menu
+    && /Tippe auf das, was du ändern möchtest/.test(call.body.text)));
+  assert.ok(!world.labels().includes('← Status'), '/settings is a root: nothing above it');
+  await world.tap('✖️ Schließen'); // A root closes instead.
+  await until('the menu to be deleted', () => world.telegram.some(call => call.method === 'deleteMessage' && call.body.message_id === menu));
+  world.say('/status');
+  await world.sees(/🧠 Modell: gpt-e2e · Denken high\n/);
 
   world.listing(301, 'Parterre', 'Wohnung im Ground Floor.');
   world.listing(302, 'Klar passend', 'Balkon, ruhig.');
   world.listing(303, 'Vielleicht', 'Etage unclear.');
-  await world.sees(/✅ Message sent \(auto-send\)/);
+  await world.sees(/✅ Nachricht gesendet \(Auto-Senden\)/);
   await world.sees(/^Vielleicht\n/);
   await until('the reviews of all three', () => world.codexCalls().length >= 4);
   assert.deepEqual(world.contacts.map(contact => contact.id), ['302'], 'only the clear match goes out by itself');
@@ -152,21 +155,21 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   const calls = world.codexCalls();
   assert.ok(calls.some(({ input }) => input.task === 'write'), 'the clear match was written');
   assert.ok(calls.every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"')), 'screening and writing with the one model');
-  assert.ok(calls.every(({ input }) => input.preferences === 'No swap\nNo ground floor' && JSON.stringify(input.writingStyle) === JSON.stringify({ overall: { instructions: 'Kurz & formell.' }, closing: { instructions: 'Mit vollem Namen unterschreiben.', example: 'Viele Grüße\nAlex' } })));
+  assert.ok(calls.every(({ input }) => input.preferences === 'No swap\nNo ground floor' && JSON.stringify(input.writingStyle) === JSON.stringify({ instructions: 'Kurz & formell.', example: 'Viele Grüße\nAlex' })));
 
-  const card = world.button('✖️ Dismiss');
-  assert.match(await world.press(card), /Dismissed/);
+  const card = world.button('✖️ Verwerfen');
+  assert.match(await world.press(card), /Verworfen/);
   await until('the card to disappear', () => world.telegram.some(call => call.method === 'deleteMessage' && call.body.message_id === card.messageId));
   world.say('/status');
-  await world.sees(/Not a match: 2/);
-  await world.tap('⏸ Pause');
-  await world.sees(/⏸ Paused/);
+  await world.sees(/Passt nicht: 2/);
+  await world.tap('⏸ Pausieren');
+  await world.sees(/⏸ Pausiert/);
   await wait(300);
   const searches = world.searches;
   await wait(400);
   assert.equal(world.searches, searches, 'paused: no searching');
   world.listing(304, 'Während der Pause', 'Etage unclear.');
-  await world.tap('▶️ Resume');
+  await world.tap('▶️ Fortsetzen');
   await until('searching to resume', () => world.searches > searches + 2);
   world.listing(305, 'Nach der Pause', 'Etage unclear.');
   await world.sees(/^Nach der Pause\n/);
@@ -182,21 +185,21 @@ test('Immomio: connected from /settings, a linked listing is applied there with 
   await world.start();
   await until('the first search', () => world.searches > 0);
   world.say('/settings');
-  await world.sees(/Tap what you want to change/);
+  await world.sees(/Tippe auf das, was du ändern möchtest/);
   await world.tap('🔗 Immomio');
-  await world.connect('🔗 Connect Immomio', 'immomio', 'alex@immomio.test', 'correct');
-  await world.sees(/Connected to Immomio as alex@immomio\.test/);
+  await world.connect('🔗 Immomio verbinden', 'immomio', 'alex@immomio.test', 'correct');
+  await world.sees(/Mit Immomio verbunden als alex@immomio\.test/);
 
   world.listing(400, 'Immomio Wohnung', `Bewerbung nur über https://tenant.immomio.com/apply/${IMMOMIO_ID.toUpperCase()}, unclear.`);
-  await world.sees(/^Immomio Wohnung\n[\s\S]*🏢 Applies on Immomio/);
-  await world.tap('✨ Write message');
-  await until('the draft', () => world.labels().includes('✅ Apply + send'));
-  await world.tap('✅ Apply + send');
-  const { body: applied } = await world.sees(/✅ Applied on Immomio/);
-  assert.match(applied.text, /Your message went to the landlord/);
+  await world.sees(/^Immomio Wohnung\n[\s\S]*🏢 Bewerbung über Immomio/);
+  await world.tap('✨ Schreiben');
+  await until('the draft', () => world.labels().includes('✅ Bewerben'));
+  await world.tap('✅ Bewerben');
+  const { body: applied } = await world.sees(/✅ Bei Immomio beworben/);
+  assert.match(applied.text, /Deine Nachricht ging im Immomio-Messenger an den Vermieter/);
   // A clear match is applied by itself, with a written message.
   world.listing(401, 'Immomio klar', 'Bewerbung über tenant.immomio.com/de/apply/p8FkQ2 bitte.');
-  await world.sees(/✅ Applied on Immomio \(auto-send\)/);
+  await world.sees(/✅ Bei Immomio beworben \(Auto-Senden\)/);
   assert.deepEqual(world.immomioApplications, [{ userId: 'immomio-user', propertyId: IMMOMIO_ID }, { userId: 'immomio-user', propertyId: IMMOMIO_AUTO }]);
   assert.deepEqual(world.immomio.sent, [{ applicationId: 'application-1', message: 'Guten Tag, ich bin Alex.' }, { applicationId: 'application-2', message: 'Guten Tag, ich bin Alex.' }]);
   assert.deepEqual(world.contacts, []);
@@ -216,7 +219,7 @@ test('Immomio messages: new landlord messages reach the chat once, and a reply g
   await world.start();
   await until('the first search', () => world.searches > 0);
   world.say('/immomio');
-  await world.connect('🔗 Connect Immomio', 'immomio', 'alex@immomio.test', 'correct');
+  await world.connect('🔗 Immomio verbinden', 'immomio', 'alex@immomio.test', 'correct');
 
   // The first check shows what is still unread, not the history.
   const forwarded = await world.sees(/^📨 Immomio · Wohnung Kreuzberg\nKim Vermieter:\nBesichtigung am Montag um 18 Uhr\?/);
@@ -232,13 +235,13 @@ test('Immomio messages: new landlord messages reach the chat once, and a reply g
   await world.sees(/^📨 Immomio · Altbau Mitte\nKim Vermieter:\nIst die Wohnung noch frei\?/);
 
   // ↩️ Reply opens a prompt; the reply to it is sent as written.
-  assert.match(await world.press(world.button('↩️ Reply')), /Reply to the prompt/);
-  const { result: prompt } = await world.sees(/^↩️ Your reply to Altbau Mitte on Immomio/);
+  assert.match(await world.press(world.button('↩️ Antworten')), /Antworte auf die Frage/);
+  const { result: prompt } = await world.sees(/^↩️ Deine Antwort an Altbau Mitte bei Immomio/);
   world.reply('Ja, ich komme gern.', prompt.message_id);
-  await world.sees(/✅ Sent on Immomio to Altbau Mitte/);
+  await world.sees(/✅ Bei Immomio an Altbau Mitte gesendet/);
   // Replying to the forwarded message itself works too.
   world.reply('Montag passt.', forwarded.result.message_id);
-  await world.sees(/✅ Sent on Immomio to Wohnung Kreuzberg/);
+  await world.sees(/✅ Bei Immomio an Wohnung Kreuzberg gesendet/);
   assert.deepEqual(world.immomio.sent, [{ conversationId: 'conv-old', message: 'Ja, ich komme gern.' }, { conversationId: 'conv-1', message: 'Montag passt.' }]);
 
   // Active again: read often. Nothing is shown twice, and the own replies are not shown back.
@@ -258,7 +261,7 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   const { body: card } = await world.sees(/^Ohne Miete\n/);
   assert.match(card.text, /💶 \? €/);
   assert.match(card.text, /📐 50 m²/, 'the search result fills the gap it can');
-  await world.sees(/✅ Message sent \(auto-send\)/);
+  await world.sees(/✅ Nachricht gesendet \(Auto-Senden\)/);
   assert.deepEqual(world.contacts.map(contact => contact.id), ['601'], 'the model calls both clear matches, but only the complete one goes out by itself');
   const { listing } = world.codexCalls().find(call => call.input.listing.expose_id === '600').input;
   assert.deepEqual([listing.price, listing.missing], [null, ['price']], 'the model is told what is missing');
@@ -276,19 +279,19 @@ test('a listing IS24 published without a rent still reaches the owner, waits for
   world.listing(602, 'Später', 'Balkon, ruhig, unclear.');
   await world.sees(/^Später\n/); // The gap did not pause the search.
   assert.ok(!/health_error|analysis_error/.test(world.agentLog), 'a gap is not a failure');
-  world.never(/IS24 failed/);
+  world.never(/Fehler in Folge/);
 
   incomplete.published = 'vor 4 Minuten'; // A new body each poll; known listings are not saved again.
   const searches = world.searches;
   await until('more searches', () => world.searches > searches + 3);
   assert.deepEqual(stored(), labels);
 
-  await world.press({ ...card.reply_markup.inline_keyboard.flat().find(button => button.text === '✨ Write message'), messageId: (world.messages().find(call => call.body === card)).result.message_id });
-  await until('the draft', () => world.labels().includes('✅ Send'));
-  await world.tap('✅ Send');
+  await world.press({ ...card.reply_markup.inline_keyboard.flat().find(button => button.text === '✨ Schreiben'), messageId: (world.messages().find(call => call.body === card)).result.message_id });
+  await until('the draft', () => world.labels().includes('✅ Senden'));
+  await world.tap('✅ Senden');
   await until('the contact request', () => world.contacts.length === 2);
   assert.equal(world.contacts[1].id, '600', 'the check before sending accepts the gap the owner approved');
-  await until('the sent report', () => world.messages().filter(call => /✅ Message sent/.test(call.body.text)).length === 2);
+  await until('the sent report', () => world.messages().filter(call => /✅ Nachricht gesendet/.test(call.body.text)).length === 2);
   assert.deepEqual(stored(), labels, 'fetching the same response again stores nothing new');
 });
 
@@ -299,11 +302,11 @@ test('a rent that appears after approval stops the send', async t => {
   await until('the first search', () => world.searches > 0);
   const listing = world.listing(610, 'Miete folgt', 'Balkon, ruhig.', { rent: null });
   await world.sees(/^Miete folgt\n/);
-  await world.tap('✨ Write message');
+  await world.tap('✨ Schreiben');
   await world.sees(/Guten Tag, ich bin Alex\./);
   listing.rent = '1.900 €';
-  await world.tap('✅ Send');
-  await world.sees(/approval invalidated/);
+  await world.tap('✅ Senden');
+  await world.sees(/deine Freigabe ist ungültig/);
   assert.deepEqual(world.contacts, []);
 });
 
@@ -319,7 +322,7 @@ test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and 
   const photo = body => /listings\/(\w+)\.jpg/.exec(body.link_preview_options.url)[1];
   assert.equal(photo(card), 'a', 'the title picture first');
   assert.match(card.link_preview_options.url, /\/format\/jpg\//);
-  assert.deepEqual(card.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '1/3', '▶️'], ['✨ Write message', '✖️ Dismiss']]);
+  assert.deepEqual(card.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '1/3', '▶️'], ['✨ Schreiben', '✖️ Verwerfen']]);
   assert.ok(!('images' in world.codexCalls().at(-1).input.listing), 'ChatGPT is not sent the photo links');
 
   // The tap is answered before the card is edited, so wait for the edit itself.
@@ -332,7 +335,7 @@ test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and 
   edit = await browse('◀️');
   assert.deepEqual([photo(edit), edit.reply_markup.inline_keyboard[0][1].text], ['c', '3/3'], 'it wraps around');
 
-  await world.tap('✨ Write message');
+  await world.tap('✨ Schreiben');
   const kept = await until('the card without its decision buttons', () => world.telegram.findLast(call => call.method === 'editMessageReplyMarkup' && call.body.message_id === messageId));
   assert.deepEqual(kept.body.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['◀️', '3/3', '▶️']], 'the photos stay browsable');
   assert.equal(photo(await browse('▶️')), 'a');
@@ -341,7 +344,7 @@ test('a listing\'s photos: one card, ◀️ ▶️ swap the photo in place, and 
   world.listing(621, 'Ein Foto', 'Balkon, ruhig.', { photos: ['e'] });
   const { body: lone } = await world.sees(/^Ein Foto\n/);
   assert.equal(photo(lone), 'e');
-  assert.deepEqual(lone.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['✨ Write message', '✖️ Dismiss']], 'one photo, no carousel');
+  assert.deepEqual(lone.reply_markup.inline_keyboard.map(row => row.map(button => button.text)), [['✨ Schreiben', '✖️ Verwerfen']], 'one photo, no carousel');
   assert.deepEqual(world.kept(), [], 'a listing with its photos leaves nothing behind');
 });
 
@@ -356,28 +359,28 @@ test('real IS24 failures still count as failures, recover, and are saved', async
   world.respond.expose[700] = { status: 503, type: 'text/html', body: maintenance };
   world.listing(700, 'Wartung', 'Balkon, ruhig, unclear.');
   await until('the failed expose to be saved', () => saved('expose-700').length === 1);
-  assert.deepEqual([saved('expose-700')[0].problem, saved('expose-700')[0].body], ['IS24 unavailable (HTTP 503)', maintenance]);
+  assert.deepEqual([saved('expose-700')[0].problem, saved('expose-700')[0].body], ['IS24 nicht erreichbar (HTTP 503)', maintenance]);
   delete world.respond.expose[700];
   await world.sees(/^Wartung\n/); // The listing survives the outage.
 
   world.respond.search = { status: 429, type: 'text/plain', body: 'Zu viele Anfragen' };
   await until('the blocked search to be saved', () => saved('search-list').length === 1);
-  assert.equal(saved('search-list')[0].problem, 'IS24 blocked access (HTTP 429)');
+  assert.equal(saved('search-list')[0].problem, 'IS24 blockiert den Zugriff (HTTP 429)');
   world.respond.search = null;
   assert.match(world.agentLog, /health_error: IS24 failure/);
 
   world.respond.expose[701] = { status: 404, body: '{}' };
   world.listing(701, 'Offline', 'Balkon, ruhig.');
-  await until('the offline listing to be noticed', () => world.agentLog.includes('Listing is no longer available'));
+  await until('the offline listing to be noticed', () => world.agentLog.includes('Inserat ist nicht mehr verfügbar'));
   assert.deepEqual(saved('expose-701'), [], 'a listing going offline is routine');
 
   world.respond.contact = { status: 400, body: JSON.stringify({ message: 'abgelehnt' }) };
   world.listing(702, 'Abgelehnt', 'Balkon, ruhig, unclear.');
   await world.sees(/^Abgelehnt\n/);
-  await world.tap('✨ Write message');
-  await until('the draft', () => world.labels().includes('✅ Send'));
-  await world.tap('✅ Send');
-  await world.sees(/❌ Message not sent\n\nAbgelehnt\n[^]*IS24 rejected the request \(HTTP 400: \{"message":"abgelehnt"\}\)/);
+  await world.tap('✨ Schreiben');
+  await until('the draft', () => world.labels().includes('✅ Senden'));
+  await world.tap('✅ Senden');
+  await world.sees(/❌ Nachricht nicht gesendet\n\nAbgelehnt\n[^]*IS24 hat die Anfrage abgelehnt \(HTTP 400: \{"message":"abgelehnt"\}\)/);
   assert.deepEqual([saved('contact-702')[0].problem, JSON.parse(saved('contact-702')[0].body)], ['Contact request answered HTTP 400', { message: 'abgelehnt' }]);
 });
 
@@ -390,22 +393,22 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   const hamburg = url => url.includes('hamburg');
 
   world.say('/search');
-  await world.sees(/💶 Warm rent: up to 1500 €/); // ...and the rent became a limit.
-  await world.tap('🔎 Searches');
-  await world.sees(/Which searches/);
-  assert.ok(!world.labels().includes('➕ Add'), 'the list everyone picks from does not change it');
+  await world.sees(/💶 Warmmiete: bis 1500 €/); // ...and the rent became a limit.
+  await world.tap('🔎 Suchen');
+  await world.sees(/Aus welchen Suchen/);
+  assert.ok(!world.labels().includes('➕ Hinzufügen'), 'the list everyone picks from does not change it');
   // The admin changes the list in ⚙️ Settings → 🛠 Admin → 🔎 Manage searches.
   world.say('/settings');
-  await world.sees(/Tap what you want to change/);
+  await world.sees(/Tippe auf das, was du ändern möchtest/);
   await world.tap('🛠 Admin');
-  await world.sees(/<b>🛠 Admin<\/b>\nOnly you see this/);
-  await world.tap('🔎 Manage searches');
-  await world.sees(/<b>🔎 Searches for everyone<\/b>[^]*Search 1<\/a> · every 0\.1 s · 🌙 no night pause\n└ 1 person uses it/);
-  await world.tap('➕ Add');
-  await world.sees(/send a name and the address/);
+  await world.sees(/<b>🛠 Admin<\/b>\nNur du siehst das/);
+  await world.tap('🔎 Suchen verwalten');
+  await world.sees(/<b>🔎 Suchen für alle<\/b>[^]*Search 1<\/a> · alle 0\.1 Sek\. · 🌙 keine Nachtpause\n└ 1 Person nutzt sie/);
+  await world.tap('➕ Hinzufügen');
+  await world.sees(/sende dann einen Namen und die Adresse/);
   // Adding runs the search once, so the admin knows IS24 answers it.
   world.say('Hamburg https://www.immobilienscout24.de/Suche/de/hamburg/hamburg/wohnung-mieten');
-  await world.sees(/✅ <b>Hamburg<\/b> works: IS24 answered it\.\n\nIt has no listings right now/);
+  await world.sees(/✅ <b>Hamburg<\/b> funktioniert: IS24 hat geantwortet\.\n\nGerade gibt es keine Inserate/);
   await until('the new search', () => world.labels().includes('⚙️ Hamburg'));
   const tried = world.searchUrls.filter(hamburg).length;
   const before = world.searches;
@@ -413,8 +416,8 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   assert.equal(world.searchUrls.filter(hamburg).length, tried, 'nobody picked it, so IS24 hears about it only for the check');
 
   world.say('/search');
-  await world.sees(/💶 Warm rent/);
-  await world.tap('🔎 Searches');
+  await world.sees(/💶 Warmmiete/);
+  await world.tap('🔎 Suchen');
   await until('the list to pick from', () => world.labels().includes('⬜ Hamburg'));
   await world.tap('⬜ Hamburg');
   await until('both searches', () => world.searchUrls.some(hamburg));
@@ -431,9 +434,9 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
 
   // Renaming keeps it picked.
   await world.tap('⚙️ Search 1');
-  await world.sees(/<b>🔎 Search 1<\/b>\n[^]*1 person uses it/);
-  await world.tap('✏️ Rename');
-  await world.sees(/Send the new name for Search 1/);
+  await world.sees(/<b>🔎 Search 1<\/b>\n[^]*1 Person nutzt sie/);
+  await world.tap('✏️ Umbenennen');
+  await world.sees(/Sende den neuen Namen für Search 1/);
   world.say('Berlin');
   await until('the new name', () => world.labels().includes('⚙️ Berlin'));
   const renamed = world.searches;
@@ -444,10 +447,10 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
   // A new link is tried once, like a new search; its name and the people who picked it stay.
   const pankow = url => url.includes('pankow');
   await world.tap('⚙️ Berlin');
-  await world.tap('🔗 Change link');
-  await world.sees(/Send the new address of the IS24 results page for Berlin/);
+  await world.tap('🔗 Link ändern');
+  await world.sees(/Sende die neue Adresse der IS24-Ergebnisseite für Berlin/);
   world.say('https://www.immobilienscout24.de/Suche/de/berlin/berlin/pankow/wohnung-mieten');
-  await world.sees(/✅ <b>Berlin<\/b> works: IS24 answered it/);
+  await world.sees(/✅ <b>Berlin<\/b> funktioniert: IS24 hat geantwortet/);
   await until('the new link', () => world.labels().includes('⚙️ Berlin'));
   const relinked = world.searchUrls.length;
   await until('checks of the new link', () => world.searchUrls.slice(relinked).filter(url => !hamburg(url)).length > 2);
@@ -455,27 +458,27 @@ test('the admin\'s list: a search runs only once someone picked it, and a listin
 
   // Each search runs on its own schedule.
   await world.tap('⚙️ Berlin');
-  await world.sees(/<b>🔎 Berlin<\/b>[^]*⏱ Every 0\.1 s\n🌙 Night pause: off/);
-  await world.tap('⏱ 0.1 s');
-  await world.sees(/How often should I search Berlin/);
-  assert.match(await world.tap('1 min'), /applies to everyone/);
-  await until('the saved interval', () => world.labels().includes('⏱ 1 min'));
+  await world.sees(/<b>🔎 Berlin<\/b>[^]*⏱ Alle 0\.1 Sek\.\n🌙 Nachtpause: aus/);
+  await world.tap('⏱ 0.1 Sek.');
+  await world.sees(/Wie oft soll ich Berlin durchsuchen/);
+  assert.match(await world.tap('alle 1 Min.'), /Gilt für alle/);
+  await until('the saved interval', () => world.labels().includes('⏱ 1 Min.'));
   const berlin = () => world.searchUrls.filter(url => !hamburg(url)).length;
   const [berlinBefore, hamburgBefore] = [berlin(), world.searchUrls.filter(hamburg).length];
   await until('more Hamburg checks', () => world.searchUrls.filter(hamburg).length > hamburgBefore + 5);
   assert.ok(berlin() <= berlinBefore + 1, 'Berlin waits for its minute while Hamburg keeps its pace');
-  await world.tap('🌙 Off');
+  await world.tap('🌙 Aus');
   await world.tap('20:00–08:00');
   await until('the saved night pause', () => world.labels().includes('🌙 20:00–08:00'));
-  await world.tap('← Searches');
-  await world.sees(/Berlin<\/a> · every 1 min · 🌙 20:00–08:00\n└ 1 person uses it\n.*Hamburg<\/a> · every 0\.1 s · 🌙 no night pause/);
+  await world.tap('← Suchen');
+  await world.sees(/Berlin<\/a> · alle 1 Min\. · 🌙 20:00–08:00\n└ 1 Person nutzt sie\n.*Hamburg<\/a> · alle 0\.1 Sek\. · 🌙 keine Nachtpause/);
 
   // Removing one tells whoever picked it, and the other keeps running.
   await world.tap('⚙️ Berlin');
-  await world.tap('🗑 Remove');
-  await world.sees(/Remove Berlin\?/);
-  await world.tap('🗑 Yes, remove');
-  await world.sees(/The search Berlin is no longer available/);
+  await world.tap('🗑 Entfernen');
+  await world.sees(/Berlin entfernen\?/);
+  await world.tap('🗑 Ja, entfernen');
+  await world.sees(/Die Suche Berlin gibt es nicht mehr/);
   assert.ok(!world.labels().includes('⚙️ Berlin') && world.labels().includes('⚙️ Hamburg'), 'the shorter list');
   const left = world.searchUrls.length;
   await until('more checks', () => world.searchUrls.length > left + 2);
@@ -493,51 +496,51 @@ test('two people on one bot: private by invite, one shared search, separate chat
   world.say('/start', STRANGER);
   world.say('hello', STRANGER);
   world.say('/settings');
-  await world.sees(/Tap what you want to change/);
+  await world.sees(/Tippe auf das, was du ändern möchtest/);
   await world.tap('🛠 Admin');
-  await world.tap('👥 People');
-  await world.sees(/People on this agent/);
+  await world.tap('👥 Personen');
+  await world.sees(/Personen bei diesem Agenten/);
   assert.deepEqual(world.chat(STRANGER), [], 'strangers get no answer');
-  await world.tap('➕ Invite');
-  const code = (await world.seesIn(OWNER, /opens their own private chat/)).match(/t\.me\/e2e_bot\?start=(\S+)/)[1];
+  await world.tap('➕ Einladen');
+  const code = (await world.seesIn(OWNER, /öffnet ihren eigenen privaten Chat/)).match(/t\.me\/e2e_bot\?start=(\S+)/)[1];
 
   // Someone invited joins and sets up their own search in their own chat.
   world.say(`/start ${code}`, FRIEND);
-  await world.seesIn(FRIEND, /Hi! I am your apartment agent/);
-  await world.seesIn(FRIEND, /Connect your ImmoScout24 account/);
+  await world.seesIn(FRIEND, /Hallo! Ich bin dein Wohnungsagent/);
+  await world.seesIn(FRIEND, /Verbinde dein ImmoScout24-Konto/);
   const state = from => fetch(`http://127.0.0.1:${world.port}/connect/state`, { headers: { 'x-init-data': world.signed(from) } });
   assert.equal((await (await state(FRIEND)).json()).step, 'form', 'their login is waiting');
   assert.equal((await (await state(OWNER)).json()).step, 'idle', 'it is not someone else\'s');
   assert.equal((await state(STRANGER)).status, 403, 'a valid signature from a stranger gets nothing');
-  await world.connect('🔗 Connect ImmoScout24', 'connect', 'friend@example.com', 'correct', FRIEND);
-  await world.seesIn(FRIEND, /Which searches/);
-  assert.ok(!world.labels().includes('➕ Add') && !world.labels().includes('⚙️'), 'only the admin adds, renames and removes searches');
-  assert.match(await world.press({ callback_data: 'x:sa' }, FRIEND), /outdated/);
+  await world.connect('🔗 ImmoScout24 verbinden', 'connect', 'friend@example.com', 'correct', FRIEND);
+  await world.seesIn(FRIEND, /Aus welchen Suchen/);
+  assert.ok(!world.labels().includes('➕ Hinzufügen') && !world.labels().includes('⚙️'), 'only the admin adds, renames and removes searches');
+  assert.match(await world.press({ callback_data: 'x:sa' }, FRIEND), /veraltet/);
   await world.tap('⬜ Search 1', FRIEND);
-  await world.tap('Done', FRIEND);
-  await world.seesIn(FRIEND, /What are you looking for/);
+  await world.tap('Fertig', FRIEND);
+  await world.seesIn(FRIEND, /Was suchst du/);
   const save = from => fetch(`http://127.0.0.1:${world.port}/form/save`, { method: 'POST', headers: { 'x-init-data': world.signed(from) }, body: JSON.stringify({ part: 'search', values: { preferences: 'Stranger' } }) });
   assert.equal((await save(STRANGER)).status, 403, 'a stranger cannot change anybody\'s settings');
   assert.equal((await world.fill('search', { rent: '800', rooms: '2', preferences: 'No cellar' }, FRIEND)).status, 204);
-  await world.seesIn(FRIEND, /Now about you/);
+  await world.seesIn(FRIEND, /Jetzt zu dir/);
   const { form } = await world.fill('profile', { 'persona.anrede': 'MALE', 'persona.nachname': 'Roe', 'persona.about': 'Nichtraucher.' }, FRIEND);
   assert.equal(form.fields.find(field => field.key === 'persona.vorname').value, 'Robin', 'their own account, not the admin\'s');
-  await world.seesIn(FRIEND, /All set/);
+  await world.seesIn(FRIEND, /Alles eingerichtet/);
   world.say('/settings', FRIEND);
-  await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
+  await until('their settings', () => world.chat(FRIEND).filter(text => /Tippe auf das, was du ändern möchtest/.test(text)).length);
   const labels = world.labels();
-  assert.ok(labels.includes('✍️ Agent\'s style'), 'these are the settings');
-  assert.ok(!labels.includes('🛠 Admin') && !labels.some(label => /model/.test(label)), 'the shared searches, model, login and people stay with the admin');
+  assert.ok(labels.includes('✍️ Schreibstil'), 'these are the settings');
+  assert.ok(!labels.includes('🛠 Admin') && !labels.some(label => /modell/i.test(label)), 'the shared searches, model, login and people stay with the admin');
   world.say('/status', FRIEND);
-  await world.seesIn(FRIEND, /<b>Search 1<\/b> · every 0\.1 s · 🌙 no night pause/); // The search's, carried over from the admin's old settings.
-  assert.ok(!world.chat(FRIEND).some(text => /Model:/.test(text)), 'the model is internal');
+  await world.seesIn(FRIEND, /<b>Search 1<\/b> · alle 0\.1 Sek\. · 🌙 keine Nachtpause/); // The search's, carried over from the admin's old settings.
+  assert.ok(!world.chat(FRIEND).some(text => /Modell:/.test(text)), 'the model is internal');
   await until('their first check', () => world.agentLog.includes(`[${FRIEND}] Poll complete`));
 
   // The model the admin picks is everyone's: it screens and writes for Robin too.
   world.say('/model');
-  await world.sees(/🧠 Model<\/b>/);
+  await world.sees(/🧠 Modell<\/b>/);
   await world.tap('GPT E2E');
-  await world.sees(/Thinking for GPT E2E/);
+  await world.sees(/Denken für GPT E2E/);
   await world.tap('high');
 
   // One listing for each kind of match. Between them they prove the search itself never narrowed.
@@ -557,7 +560,7 @@ test('two people on one bot: private by invite, one shared search, separate chat
   assert.equal(world.codexCalls().filter(({ input }) => input.preferences === 'No cellar' && /Zu (teuer|klein)/.test(input.listing.title)).length, 0, 'outside the hard filters, no ChatGPT call');
   assert.ok(world.searchUrls.every(url => url === world.searchUrls[0] && !/[?&](price|numberofrooms)=/.test(url)), 'one broad query for both');
   assert.deepEqual([world.reads[300], world.reads[304]], [1, 1], 'each listing is read once for both');
-  world.never(/IS24 failed/); // A listing without a warm rent is that listing's problem, not an outage.
+  world.never(/Fehler in Folge/); // A listing without a warm rent is that listing's problem, not an outage.
   assert.ok(world.kept().some(({ label }) => label === 'search-item-303'), 'the shared search saves what went wrong, too');
 
   const polls = () => world.agentLog.match(/Poll complete/g)?.length ?? 0;
@@ -566,24 +569,24 @@ test('two people on one bot: private by invite, one shared search, separate chat
   assert.ok(world.searches - before[1] <= (polls() - before[0]) * 0.75, 'two people do not mean two searches a round');
 
   // Each applies from their own account, with their own details.
-  await world.tap('✨ Write message', FRIEND);
+  await world.tap('✨ Schreiben', FRIEND);
   await world.seesIn(FRIEND, /Guten Tag, ich bin Robin\.$/);
-  await world.tap('✅ Send', FRIEND);
-  await world.seesIn(FRIEND, /✅ Message sent/);
+  await world.tap('✅ Senden', FRIEND);
+  await world.seesIn(FRIEND, /✅ Nachricht gesendet/);
   assert.deepEqual(world.contacts.map(({ authorization, form }) => [authorization, form.firstname, form.emailAddress]), [['Bearer connected-token', 'Robin', 'friend@example.com']]);
-  assert.ok(!world.chat(OWNER).some(text => /Guten Tag, ich bin Robin|Message sent/.test(text)), 'their draft and outcome stay in their chat');
+  assert.ok(!world.chat(OWNER).some(text => /Guten Tag, ich bin Robin|Nachricht gesendet/.test(text)), 'their draft and outcome stay in their chat');
   const robins = world.codexCalls().filter(({ input }) => input.preferences === 'No cellar');
   assert.ok(robins.some(({ input }) => input.task === 'screen') && robins.some(({ input }) => input.task === 'write'));
   assert.ok(robins.every(({ args }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"')), 'the admin\'s model screens and writes for them');
 
   // Removing someone ends it for them, for good, and keeps their folder.
   world.say('/users');
-  await world.sees(/🗑|People on this agent/);
+  await world.sees(/🗑|Personen bei diesem Agenten/);
   await until('the remove button', () => world.labels().some(label => label.startsWith('🗑')));
   await world.tap(world.labels().find(label => label.startsWith('🗑')));
-  await world.sees(/<b>Remove <code>/);
-  await world.tap('🗑 Yes, remove');
-  await world.seesIn(FRIEND, /access to this apartment agent has ended/);
+  await world.sees(/<b><code>[^<]*<\/code> entfernen\?/);
+  await world.tap('🗑 Ja, entfernen');
+  await world.seesIn(FRIEND, /Zugang zu diesem Wohnungsagenten wurde beendet/);
   const sent = world.chat(FRIEND).length;
   world.say('/status', FRIEND);
   await wait(200);

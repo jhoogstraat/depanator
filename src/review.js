@@ -68,15 +68,15 @@ export function authorizes(current, claimed, bindings) {
 }
 
 function sameVersion(review, version) {
-  if (review.version !== version) conflict('A newer draft replaced this one');
+  if (review.version !== version) conflict('Ein neuerer Entwurf hat diesen ersetzt.');
 }
 function giveUpOr(review, detail) {
   return review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS
-    ? { ...review, status: 'analysis_failed', detail: `Gave up after ${review.analysisAttempts} attempts: ${detail}` }
+    ? { ...review, status: 'analysis_failed', detail: `Nach ${review.analysisAttempts} Versuchen aufgegeben: ${detail}` }
     : { ...review, detail };
 }
 
-const dismiss = (review, { version, detail = 'Dismissed by user' }) => {
+const dismiss = (review, { version, detail = 'Von dir verworfen' }) => {
   sameVersion(review, version);
   return { ...review, status: 'dismissed', detail };
 };
@@ -85,12 +85,12 @@ const MACHINE = {
   discovered: {
     // Counted before the work, so a crash mid-analysis still uses up the attempt.
     start: review => review.analysisAttempts >= MAX_ANALYSIS_ATTEMPTS
-      ? giveUpOr(review, review.detail || 'Analysis interrupted')
+      ? giveUpOr(review, review.detail || 'Analyse unterbrochen')
       : { ...review, analysisAttempts: review.analysisAttempts + 1, detail: undefined },
     // systemic: shutdown or an outage, not the listing's fault, so the attempt is refunded.
     fail: (review, { detail, systemic }) => giveUpOr({ ...review, analysisAttempts: review.analysisAttempts - (systemic ? 1 : 0) }, detail),
     analyzed: (review, { snapshot, result, bindings }) => {
-      if (String(snapshot.expose_id) !== review.exposeId) conflict('Listing identity changed');
+      if (String(snapshot.expose_id) !== review.exposeId) conflict('Das Inserat hat sich geändert');
       if (!['message', 'dismiss'].includes(result.decision) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string') || typeof result.draft !== 'string') throw new Error('Invalid analysis result');
       return { ...review, status: result.decision === 'message' ? 'awaiting_approval' : 'dismissed', snapshot: structuredClone(snapshot), snapshotHash: hash(snapshot),
         reasons: result.reasons, draft: result.draft, draftHash: hash(result.draft), accountBinding: bindings.accountBinding, configHash: bindings.configHash };
@@ -112,9 +112,9 @@ const MACHINE = {
     },
     // by: 'user' (a Telegram tap) or 'auto' (auto-send on, and the LLM was confident).
     approve: (review, { version, draftHash, bindings, by = 'user' }, now) => {
-      if (review.version !== version || review.draftHash !== draftHash) conflict('A newer draft replaced this one');
-      if (!review.draft.trim()) conflict('Tap ✨ Write message first.');
-      if (!intact(review, bindings)) conflict('Settings changed since this draft was written. Tap ✏️ Rewrite to renew it, or Dismiss.');
+      if (review.version !== version || review.draftHash !== draftHash) conflict('Ein neuerer Entwurf hat diesen ersetzt.');
+      if (!review.draft.trim()) conflict('Tippe zuerst auf ✨ Schreiben.');
+      if (!intact(review, bindings)) conflict('Deine Einstellungen haben sich seit diesem Entwurf geändert. Tippe auf ✏️ Umschreiben, um ihn zu erneuern, oder verwirf ihn.');
       return { ...review, status: 'approved', approvedAt: now, approvedBy: by };
     },
     dismiss,
@@ -122,7 +122,7 @@ const MACHINE = {
   approved: {
     claim: (review, { bindings }, now) => intact(review, bindings)
       ? { ...review, status: 'submitting', claimedAt: now }
-      : { ...review, status: 'failed', detail: 'Settings changed after approval; nothing was sent', finishedAt: now, reportedAt: null },
+      : { ...review, status: 'failed', detail: 'Einstellungen nach der Freigabe geändert; nichts wurde gesendet', finishedAt: now, reportedAt: null },
     dismiss,
   },
   submitting: {
@@ -138,6 +138,6 @@ const MACHINE = {
 // Pure: returns the next review or throws. Persisting it is the store's job.
 export function transition(review, event, now) {
   const handler = MACHINE[review.status]?.[event.type];
-  if (!handler) conflict(`This review was already handled (${review.status.replaceAll('_', ' ')})`);
+  if (!handler) conflict('Dieses Inserat wurde schon bearbeitet');
   return handler(review, event, now);
 }

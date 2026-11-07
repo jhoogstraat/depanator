@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { ALERT_AFTER, HEALTHY, Health, transition } from '../src/health.js';
 import { ConnectApp } from '../src/connect.js';
 import { Store } from '../src/store.js';
+import { Settings } from '../src/settings.js';
 import { Workflow } from '../src/workflow.js';
 import { coded } from '../src/errors.js';
 
-const blockedError = () => coded('IS24 blocked access (HTTP 429)', 'BLOCKED');
+const blockedError = () => coded('IS24 blockiert den Zugriff (HTTP 429)', 'BLOCKED');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('health: a streak backs off, alerts once, counts its wait down and recovers', () => {
@@ -16,12 +17,12 @@ test('health: a streak backs off, alerts once, counts its wait down and recovers
 
   const alerts = Array.from({ length: ALERT_AFTER + 1 }, () => health.record({ type: 'failed', error: blockedError(), intervalMs: 60_000 }, 'IS24'));
   assert.deepEqual(alerts.map(Boolean), [false, false, true, false], 'alerted once, on the third failure in a row');
-  assert.match(alerts[2], /IS24 failed 3 times in a row[^]*Wait\./);
+  assert.match(alerts[2], /IS24: 3 Fehler in Folge[^]*Wait\./);
   assert.deepEqual(health.state, { status: 'failing', failures: 4, wait: 7, blocked: true });
 
   health.record({ type: 'waited' });
   assert.equal(health.state.wait, 6);
-  assert.match(health.record({ type: 'succeeded' }, 'IS24'), /IS24 recovered/);
+  assert.match(health.record({ type: 'succeeded' }, 'IS24'), /IS24 läuft wieder normal/);
   assert.equal(health.state, HEALTHY);
   const llm = new Health({});
   llm.record({ type: 'failed', error: new Error('x') }, 'LLM');
@@ -57,7 +58,7 @@ test('connect: form → working → code → working → done, a failure returns
   const second = app.request();
   assert.equal(second.fresh, true, 'done: the next request starts over');
   await app.close();
-  await assert.rejects(second.done, /Shutting down/);
+  await assert.rejects(second.done, /wird gerade beendet/);
   assert.equal(app.state().step, 'idle');
 });
 
@@ -87,4 +88,12 @@ test('an approval held back by an IS24 block goes out while searching is paused'
   assert.equal(store.get(review.id).status, 'sent');
   assert.equal(workflow.health.IS24.failures, 0, 'the send showed IS24 answers again');
   await workflow.close();
+});
+
+test('settings: a style stored in parts is folded into one text and one example', () => {
+  const store = new Store(':memory:');
+  for (const [key, value] of Object.entries({ style: 'Kurz.', 'style.greeting': 'Mit Namen.', 'style.closing.example': 'Viele Grüße', 'style.example': 'Hallo,' })) store.saveSetting(key, value);
+  const settings = new Settings(store, { llm: {} });
+  assert.deepEqual(settings.config.style, { instructions: 'Kurz.\n\nAnrede: Mit Namen.', example: 'Hallo,\nViele Grüße' });
+  assert.deepEqual(Object.keys(store.settings()).sort(), ['style', 'style.example'], 'the parts are gone from the store');
 });

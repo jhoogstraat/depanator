@@ -1,9 +1,9 @@
-import { DEFAULT_LLM, INTERVALS, NIGHT_PAUSES, STYLE_SECTIONS, allQuiet, isQuiet, pickedSearches } from './settings.js';
+import { DEFAULT_LLM, INTERVALS, NIGHT_PAUSES, allQuiet, isQuiet, pickedSearches } from './settings.js';
 import { expandId } from './review.js';
 import { MENU_HINT, plural, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchAddedView, searchView, scheduleView, removeSearchView, catalogView, adminView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
-const STALE = { text: 'These buttons are outdated; send /settings for new ones.' };
-const BUSY = 'One moment, I am still on the previous step.';
+const STALE = { text: 'Diese Buttons sind veraltet; sende /settings für neue.' };
+const BUSY = 'Einen Moment, ich bin noch beim vorherigen Schritt.';
 const RECONNECT = { '/connect': 'connectIS24', '/immomio': 'connectImmomio', '/login': 'chatgptLogin' };
 // Buttons that work during setup, which includes choosing searches.
 const SETUP_ACTIONS = ['searches', 'catalog', 'st', 'sd', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr', 'cancel'];
@@ -11,8 +11,8 @@ const SETUP_ACTIONS = ['searches', 'catalog', 'st', 'sd', 'sa', 'se', 'si', 'sq'
 const ADMIN_ACTIONS = ['admin', 'users', 'invite', 'rm', 'model', 'm', 't', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr'];
 // What a setup form is for, with its button.
 const FORM_INTRO = {
-  search: ['🔍 What are you looking for? Fill in rent, rooms, living space and, in your own words, what else matters to you.', '✏️ Fill in your search'],
-  profile: ['👤 Now about you, for your applications: your contact details for IS24\'s form, and a few words about yourself for ChatGPT.', '✏️ Fill in about you'],
+  search: ['🔍 Was suchst du? Trag Miete, Zimmer und Wohnfläche ein und beschreib im AI-Filter in eigenen Worten, worauf es dir sonst ankommt.', '✏️ Suche ausfüllen'],
+  profile: ['👤 Jetzt zu dir, für deine Bewerbungen: deine Kontaktdaten für das IS24-Formular und ein paar Worte über dich für ChatGPT.', '✏️ Über dich ausfüllen'],
 };
 
 // What the chat waits for: the next plain message answers it. One question at a time; asking anything new
@@ -43,7 +43,7 @@ const ANSWERS = {
   },
   newSearch(question, message) {
     const [, name, url] = /^(.{1,40}?)\s+(https:\/\/\S+)$/.exec(message.trim()) ?? [];
-    if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
+    if (!name) return this.send('Bitte sende einen Namen mit höchstens 40 Zeichen und dann den Link, zum Beispiel: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
     return this.changeSearches(async () => searchAddedView(name, await this.admin.addSearch(name, url)));
   },
   renameSearch({ name }, message) { return this.changeSearches(() => this.admin.renameSearch(name, message.trim())); },
@@ -54,34 +54,36 @@ const ANSWERS = {
 // Moving through the menus edits the tapped message (navigate), so the chat keeps one menu; /commands start a new one.
 const navigate = view => ({ text: '', edit: view });
 // Under a question that waits for a typed answer.
-const CANCEL = { reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'x:cancel' }]] } };
+const CANCEL = { reply_markup: { inline_keyboard: [[{ text: 'Abbrechen', callback_data: 'x:cancel' }]] } };
 const ACTIONS = {
   async status() { return navigate(await this.statusView()); },
-  async pause() { return { text: this.togglePause() ? '⏸ Paused' : '▶️ Searching again', edit: await this.statusView() }; },
+  // ✖️ Close on a root menu: the menu message is deleted.
+  close() { return { text: '', close: true }; },
+  async pause() { return { text: this.togglePause() ? '⏸ Pausiert' : '▶️ Suche läuft wieder', edit: await this.statusView() }; },
   requirements() { return navigate(this.requirementsView()); },
   settings() { return navigate(this.settingsView()); },
   style() { return navigate(this.styleView()); },
   // 📤 switches at once; the settings show what it means now.
   autosend() {
     const on = this.settings.set('autoSend', !this.settings.config.autoSend);
-    return { text: on ? '📤 Auto-send on' : '📤 Auto-send off', edit: this.settingsView() };
+    return { text: on ? '📤 Auto-Senden an' : '📤 Auto-Senden aus', edit: this.settingsView() };
   },
   // Step 1 of the 🧠 Model menu (admin only): the one model that screens and writes for everyone.
   async model() {
     let list;
-    try { list = await this.models(); } catch (error) { return { text: `⚠️ I could not read the plan's models (${error.message}).` }; }
+    try { list = await this.models(); } catch (error) { return { text: `⚠️ Ich konnte die Modelle des Abos nicht lesen (${error.message}).` }; }
     const { model, thinking } = this.llm();
     return navigate(modelView(list, model, thinking));
   },
   // Cancel on a question that waits for a typed answer (a search's name or link): back to the searches.
   cancel() {
     this.awaiting = null;
-    return { text: 'Cancelled.', edit: this.searchList() };
+    return { text: 'Abgebrochen.', edit: this.searchList() };
   },
-  // 🗑 Remove: every section of the writing style.
+  // 🗑 Remove: the writing style and its example.
   clearStyle() {
-    for (const { key } of STYLE_SECTIONS) for (const setting of [key, `${key}.example`]) if (this.settings.values[setting]) this.settings.set(setting, '');
-    return { text: 'Removed.', edit: this.styleView() };
+    for (const key of ['style', 'style.example']) if (this.settings.values[key]) this.settings.set(key, '');
+    return { text: 'Entfernt.', edit: this.styleView() };
   },
   reconnect(command) {
     if (!Object.hasOwn(RECONNECT, command)) return STALE;
@@ -93,17 +95,17 @@ const ACTIONS = {
   // Without count: ask to confirm. With it: dismiss exactly the listings that were waiting when confirmed.
   clear(count) {
     const waiting = this.store.list('awaiting_approval');
-    if (!waiting.length) return { text: 'Nothing is waiting.', edit: waitingView(waiting) };
+    if (!waiting.length) return { text: 'Es wartet nichts.', edit: waitingView(waiting) };
     if (!count) return { text: '', edit: clearView(waiting.length) };
-    if (Number(count) !== waiting.length) return { text: 'The list changed; check it again.', edit: waitingView(waiting) };
+    if (Number(count) !== waiting.length) return { text: 'Die Liste hat sich geändert; sieh sie dir noch einmal an.', edit: waitingView(waiting) };
     let cleared = 0;
     for (const review of waiting) { try { this.workflow.dismiss(review.id, review.version); cleared++; } catch (error) { if (error.code !== 'CONFLICT') throw error; } }
-    return { text: `🧹 Cleared ${plural(cleared, 'waiting listing')}. No messages were sent.`, edit: waitingView(this.store.list('awaiting_approval')) };
+    return { text: `🧹 ${plural(cleared, 'wartendes Inserat', 'wartende Inserate')} verworfen. Es wurden keine Nachrichten gesendet.`, edit: waitingView(this.store.list('awaiting_approval')) };
   },
   // Shows a waiting listing again with its buttons.
   async show(compact) {
     const review = /^[a-f0-9]{32}$/.test(compact || '') && this.store.get(expandId(compact));
-    if (review?.status !== 'awaiting_approval') return { text: 'This listing is no longer waiting.' };
+    if (review?.status !== 'awaiting_approval') return { text: 'Dieses Inserat wartet nicht mehr.' };
     await this.redeliver(review);
     return { text: '' };
   },
@@ -120,20 +122,20 @@ const ACTIONS = {
     if (!model?.thinking.includes(level)) return STALE;
     const thinking = level === model.defaultThinking ? '' : level;
     this.admin.setLlm({ model: model.id, thinking });
-    return { text: `✅ ${model.name} · thinking ${level}. Screens and writes from now on, for everyone.`, edit: modelView(this.modelCache.list, model.id, thinking) };
+    return { text: `✅ ${model.name} · Denken ${level}. Prüft und schreibt ab jetzt für alle.`, edit: modelView(this.modelCache.list, model.id, thinking) };
   },
   admin() { return navigate(adminView()); },
   // 🛠 Admin → 🔎 Manage searches; during setup, the list the admin adds the first ones to.
   catalog() { return navigate(this.searchList()); },
   users() { return navigate(usersView(this.admin.users())); },
   invite() {
-    return this.sendView({ text: `🔗 Send this link to the person you want to invite. It works once, within 24 hours, and opens their own private chat with me:\n${this.admin.invite()}` });
+    return this.sendView({ text: `🔗 Schick diesen Link der Person, die du einladen möchtest. Er funktioniert einmal, innerhalb von 24 Stunden, und öffnet ihren eigenen privaten Chat mit mir:\n${this.admin.invite()}` });
   },
   // Without sure: ask to confirm.
   async rm(id, sure) {
     if (!sure) return { text: '', edit: removeUserView(id) };
     await this.admin.remove(id);
-    return { text: 'Removed.', edit: usersView(this.admin.users()) };
+    return { text: 'Entfernt.', edit: usersView(this.admin.users()) };
   },
   searches() { return navigate(this.searchesView()); },
   // Pick or unpick a search.
@@ -146,15 +148,15 @@ const ACTIONS = {
   },
   // Done (during setup) or ← Search: each tap already saved its pick.
   async sd() {
-    if (!this.settings.config.searches.length) return { text: 'Pick at least one search.' };
+    if (!this.settings.config.searches.length) return { text: 'Wähle mindestens eine Suche.' };
     if (this.settings.complete()) return navigate(this.requirementsView());
     await this.saved('searches');
-    return { text: 'Saved.', used: true };
+    return { text: 'Gespeichert.', used: true };
   },
   // Add a search to the shared list: the next typed message names it.
   async sa() {
     this.awaiting = { kind: 'newSearch' };
-    return this.sendView({ extra: CANCEL, text: 'Set the area and any filters on immobilienscout24.de, then send a name and the address of the results page, for example:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nEvery search costs one more request per check, and everyone can pick it. Their own rent, rooms and living space are matched on the results, so leave those out of the link unless they hold for everybody.' });
+    return this.sendView({ extra: CANCEL, text: 'Stell auf immobilienscout24.de das Gebiet und eventuelle Filter ein und sende dann einen Namen und die Adresse der Ergebnisseite, zum Beispiel:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nJede Suche kostet pro Prüfung eine Anfrage mehr, und alle können sie wählen. Miete, Zimmer und Wohnfläche jeder Person werden auf die Ergebnisse angewendet; lass sie also aus dem Link heraus, außer sie gelten für alle.' });
   },
   // One search of the list: rename or remove it.
   se(index, mark) {
@@ -170,14 +172,14 @@ const ACTIONS = {
     const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     this.awaiting = { kind: 'renameSearch', name: search.name };
-    return this.sendView({ extra: CANCEL, text: `✏️ Send the new name for ${search.name}, at most 40 characters. Everyone who picked it keeps it.` });
+    return this.sendView({ extra: CANCEL, text: `✏️ Sende den neuen Namen für ${search.name}, höchstens 40 Zeichen. Alle, die sie gewählt haben, behalten sie.` });
   },
   // Change a search's link: the next typed message is its new address.
   async su(index, mark) {
     const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
     this.awaiting = { kind: 'relinkSearch', name: search.name };
-    return this.sendView({ extra: CANCEL, text: `🔗 Send the new address of the IS24 results page for ${search.name}. I try it once before I save it; its name, schedule and everyone who picked it stay.\n\nNow: ${search.url}` });
+    return this.sendView({ extra: CANCEL, text: `🔗 Sende die neue Adresse der IS24-Ergebnisseite für ${search.name}. Ich probiere sie einmal aus, bevor ich sie speichere; Name, Zeitplan und alle, die sie gewählt haben, bleiben.\n\nJetzt: ${search.url}` });
   },
   // Without sure: ask to confirm.
   async sr(index, mark, sure) {
@@ -185,7 +187,7 @@ const ACTIONS = {
     if (!search) return STALE;
     if (!sure) return { text: '', edit: removeSearchView(search, index, this.using(search.name)) };
     await this.admin.removeSearch(search.name);
-    return { text: 'Removed.', edit: this.searchList() };
+    return { text: 'Entfernt.', edit: this.searchList() };
   },
 };
 
@@ -216,7 +218,7 @@ export class Assistant {
     if (!field) {
       if (this.ready) return;
       this.ready = true;
-      await this.send(`✅ All set. I check your searches as shown in 🔍 Search → 🔎 Searches and send new matches here. You approve every application; once you trust the drafts, auto-send in /settings lets me send clear matches myself.\n\n${MENU_HINT}`);
+      await this.send(`✅ Alles eingerichtet. Ich prüfe deine Suchen wie unter 🔍 Suche → 🔎 Suchen angezeigt und schicke neue Treffer hierher. Du gibst jede Bewerbung frei; sobald du den Entwürfen vertraust, kann ich mit 📤 Auto-Senden in /settings eindeutige Treffer selbst senden.\n\n${MENU_HINT}`);
       return this.onReady();
     }
     if (field.key === 'is24') return this.track(() => this.connectIS24());
@@ -239,7 +241,7 @@ export class Assistant {
   track(step, retry = '/setup') {
     if (this.busy) return false;
     this.busy = (async () => {
-      try { await step(); } catch (error) { await this.send(`⚠️ ${error.message}\nSend ${retry} to try again.`); return false; }
+      try { await step(); } catch (error) { await this.send(`⚠️ ${error.message}\nSende ${retry}, um es noch einmal zu versuchen.`); return false; }
       return true;
     })().then(ok => { this.busy = null; if (ok) return this.continue(); }).catch(error => { this.busy = null; this.onError(error.message); });
     return true;
@@ -248,12 +250,12 @@ export class Assistant {
     const field = this.settings.field(key);
     const choices = this.settings.choices(key);
     this.awaiting = choices.length ? null : { kind: 'setting', key };
-    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : [])];
-    const current = this.settings.values[key] !== undefined ? `\n\nCurrently: ${this.settings.display(key)}` : '';
+    const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Überspringen', callback_data: `c:${key}:-` }] : [])];
+    const current = this.settings.values[key] !== undefined ? `\n\nAktuell: ${this.settings.display(key)}` : '';
     await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: fit(buttons) } } : {});
   }
   async saved(key) {
-    if (this.ready && this.settings.complete()) return this.send(`Saved: ${this.settings.field(key)?.label ?? key} = ${this.settings.display(key)}`);
+    if (this.ready && this.settings.complete()) return this.send(`Gespeichert: ${this.settings.field(key)?.label ?? key} = ${this.settings.display(key)}`);
     return this.continue(); // During setup: the next question, or "All set" after the last one.
   }
   // A typed message that is not a command or a draft edit: the answer to the open question.
@@ -290,17 +292,17 @@ export class Assistant {
     if (kind === 'x') return this.action(...data.split(':').slice(1));
     const field = this.settings.field(key);
     if (kind === 'k') {
-      if (!field || (field.form && key !== 'style')) return { text: 'Unknown setting.' };
+      if (!field || (field.form && key !== 'style')) return { text: 'Unbekannte Einstellung.' };
       if (key === 'style') return ACTIONS.style.call(this);
       await this.ask(key);
-      return { text: 'Choose or send the new value.' };
+      return { text: 'Wähle oder sende den neuen Wert.' };
     }
     const values = field && this.answer(field, index, mark);
     if (!values) return STALE;
     for (const [setting, value] of Object.entries(values)) this.settings.set(setting, value);
     if (this.awaiting?.kind === 'setting' && this.awaiting.key === key) this.awaiting = null;
     await this.saved(key);
-    return { text: 'Saved.', used: true };
+    return { text: 'Gespeichert.', used: true };
   }
   // The { setting: value } a question's button stands for; null if the button is outdated.
   answer(field, index, mark) {
@@ -318,13 +320,13 @@ export class Assistant {
   // The Mini App address of a settings form (forms.js).
   formUrl(part) { return `${this.settings.config.publicUrl}/form?part=${part}`; }
   async command(name) {
-    if (name === '/start' || name === '/setup') return this.settings.complete() ? this.send(`Setup is complete. ${MENU_HINT}`) : this.continue();
+    if (name === '/start' || name === '/setup') return this.settings.complete() ? this.send(`Die Einrichtung ist abgeschlossen. ${MENU_HINT}`) : this.continue();
     // Reconnecting works during setup too: setup may be waiting for it.
-    if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Let us finish the setup first.').then(() => this.continue());
+    if (!this.settings.complete() && !['/connect', '/login'].includes(name)) return this.send('Lass uns zuerst die Einrichtung abschließen.').then(() => this.continue());
     if (Object.hasOwn(RECONNECT, name)) return this.reconnect(name) ? undefined : this.send(BUSY);
     const commands = {
       '/status': async () => this.show(await this.statusView()),
-      '/pause': () => this.send(this.togglePause() ? '⏸ Paused. I stop searching; waiting drafts and sending still work. Send /pause again to resume.' : '▶️ Searching again.'),
+      '/pause': () => this.send(this.togglePause() ? '⏸ Pausiert. Ich suche nicht mehr; wartende Entwürfe und das Senden funktionieren weiter. Sende /pause noch einmal, um fortzufahren.' : '▶️ Suche läuft wieder.'),
       '/settings': () => this.show(this.settingsView()),
       '/search': () => this.show(this.requirementsView()),
       '/prompt': () => this.show(this.styleView()),
@@ -334,7 +336,7 @@ export class Assistant {
         '/model': () => this.modelMenu(),
       }),
     };
-    return Object.hasOwn(commands, name) ? commands[name]() : this.send(`I do not know ${name}. ${MENU_HINT}`);
+    return Object.hasOwn(commands, name) ? commands[name]() : this.send(`${name} kenne ich nicht. ${MENU_HINT}`);
   }
   // Starts a reconnect from a command or a /settings button; false if a long step is running.
   reconnect(name) { return this.track(() => this[RECONNECT[name]](), name); }
@@ -350,7 +352,7 @@ export class Assistant {
     const value = (what === 'si' ? INTERVALS : NIGHT_PAUSES)[Number(choice)];
     if (value === undefined) return STALE;
     const updated = this.admin.scheduleSearch(search.name, what === 'si' ? { intervalMs: value } : { quietHours: value });
-    return { text: 'Saved. It applies to everyone who picked it.', edit: searchView(updated, index, this.using(search.name)) };
+    return { text: 'Gespeichert. Gilt für alle, die diese Suche gewählt haben.', edit: searchView(updated, index, this.using(search.name)) };
   }
   requirementsView() { return requirementsView(this.settings.config.preferences, this.settings.config, this.formUrl('search')); }
   aboutView() { return aboutView(this.settings.config.persona, this.settings.config.accountEmail, this.formUrl('profile')); }
@@ -383,7 +385,7 @@ export class Assistant {
     const list = this.admin ? await this.models().catch(() => []) : [];
     const level = ({ model, thinking }) => {
       const fallback = list.find(entry => entry.id === model)?.defaultThinking;
-      return thinking || (fallback ? `${fallback} (default)` : '');
+      return thinking || (fallback ? `${fallback} (Standard)` : '');
     };
     return statusView({ counts, failures: { IS24: this.workflow?.health.IS24.failures ?? 0, LLM: this.workflow?.health.LLM.failures ?? 0 }, blocked: this.workflow?.health.IS24.blocked,
       paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail,
@@ -397,13 +399,13 @@ export class Assistant {
   }
   async modelMenu() {
     let list;
-    try { list = await this.models(); } catch (error) { return this.send(`⚠️ I could not read the plan's models (${error.message}).`); }
+    try { list = await this.models(); } catch (error) { return this.send(`⚠️ Ich konnte die Modelle des Abos nicht lesen (${error.message}).`); }
     const { model, thinking } = this.llm();
     return this.show(modelView(list, model, thinking));
   }
   // Menu buttons: x:<name>:<arguments>, see ACTIONS.
   async action(name, ...args) {
-    if (!this.settings.complete() && !SETUP_ACTIONS.includes(name)) return { text: 'Finish the setup first.' };
+    if (!this.settings.complete() && !SETUP_ACTIONS.includes(name)) return { text: 'Schließ zuerst die Einrichtung ab.' };
     return Object.hasOwn(ACTIONS, name) && (this.admin || !ADMIN_ACTIONS.includes(name)) ? ACTIONS[name].apply(this, args) : STALE;
   }
   // Shows a view as a new message; the tapped one stays.
@@ -417,19 +419,19 @@ export class Assistant {
     return model && fingerprint(model.id) === mark ? model : null;
   }
   async chatgptLogin() {
-    if (!this.admin) throw new Error('ChatGPT is shared on this agent. If it stops working, the admin can reconnect it with /login.');
-    await this.send('First, connect your ChatGPT subscription. It reviews listings and writes your applications.');
-    await this.codex.login({ onCode: ({ url, code }) => this.send(`1. Open ${url}\n2. Sign in to ChatGPT\n3. Enter this code: ${code}\n\nThe code expires in 15 minutes. If ChatGPT asks, allow device code login in its security settings.`).catch(error => this.onError(error.message)) });
+    if (!this.admin) throw new Error('ChatGPT wird bei diesem Agenten geteilt. Wenn es nicht mehr funktioniert, kann der Admin es mit /login neu verbinden.');
+    await this.send('Verbinde zuerst dein ChatGPT-Abo. Es prüft Inserate und schreibt deine Bewerbungen.');
+    await this.codex.login({ onCode: ({ url, code }) => this.send(`1. Öffne ${url}\n2. Melde dich bei ChatGPT an\n3. Gib diesen Code ein: ${code}\n\nDer Code läuft in 15 Minuten ab. Falls ChatGPT fragt, erlaube in den Sicherheitseinstellungen die Anmeldung per Gerätecode.`).catch(error => this.onError(error.message)) });
     this.chatgpt = true;
-    await this.send('✅ ChatGPT connected.');
+    await this.send('✅ ChatGPT verbunden.');
   }
   async connectImmomio() {
     const email = await this.immomio.connect();
-    await this.send(`✅ Connected to Immomio as ${email}. When a listing's IS24 description links to an Immomio application, I apply there with your Immomio profile and your message once you approve (or by itself with auto-send). New Immomio messages from landlords show up here; reply to one to answer. Keep your profile complete on tenant.immomio.com.`);
+    await this.send(`✅ Mit Immomio verbunden als ${email}. Wenn die IS24-Beschreibung eines Inserats auf eine Immomio-Bewerbung verweist, bewerbe ich mich dort mit deinem Immomio-Profil und deiner Nachricht, sobald du sie freigibst (oder von selbst mit Auto-Senden). Neue Immomio-Nachrichten von Vermietern erscheinen hier; antworte auf eine, um zu antworten. Halte dein Profil auf tenant.immomio.com vollständig.`);
   }
   // Sends the "Connect ImmoScout24" button and waits until the person connected their account there.
   async connectIS24() {
     const email = await this.is24.connect();
-    await this.send(`✅ Connected to ImmoScout24 as ${email}.`);
+    await this.send(`✅ Mit ImmoScout24 verbunden als ${email}.`);
   }
 }

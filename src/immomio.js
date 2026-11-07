@@ -64,29 +64,29 @@ async function keycloakLogin({ email, password, askCode, fetchImpl = fetch }) {
       const url = new URL(location, SSO);
       if (url.href.startsWith(REDIRECT_URI)) {
         const code = url.searchParams.get('code');
-        if (!code || url.searchParams.get('state') !== state) throw new Error(`Immomio login returned no code: ${url.searchParams.get('error_description') || url.searchParams.get('error') || 'unknown error'}`);
+        if (!code || url.searchParams.get('state') !== state) throw new Error(`Die Immomio-Anmeldung lieferte keinen Code: ${url.searchParams.get('error_description') || url.searchParams.get('error') || 'unbekannter Fehler'}`);
         return token(fetchImpl, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI });
       }
-      if (url.origin !== new URL(SSO).origin) throw new Error('Immomio login sent me to an unexpected page');
+      if (url.origin !== new URL(SSO).origin) throw new Error('Die Immomio-Anmeldung führte auf eine unerwartete Seite');
       res = await request(url.href);
       continue;
     }
-    if (!res.ok) throw new Error(`Immomio login failed (HTTP ${res.status})`);
+    if (!res.ok) throw new Error(`Immomio-Anmeldung fehlgeschlagen (HTTP ${res.status})`);
     const form = loginForm(await res.text());
-    if (!form || new URL(form.action, SSO).origin !== new URL(SSO).origin) throw new Error('Immomio asks for a login step I cannot do. Log in once on tenant.immomio.com, then try again.');
+    if (!form || new URL(form.action, SSO).origin !== new URL(SSO).origin) throw new Error('Immomio verlangt einen Anmeldeschritt, den ich nicht kann. Melde dich einmal auf tenant.immomio.com an und versuch es dann erneut.');
     const fields = {};
     if (form.names.has('otp')) {
-      fields.otp = String(await askCode(retry || 'Immomio asks for a security code. Please enter it.')).trim();
-      retry = 'That code did not work. Please enter it again.';
+      fields.otp = String(await askCode(retry || 'Immomio verlangt einen Sicherheitscode. Bitte gib ihn ein.')).trim();
+      retry = 'Der Code hat nicht funktioniert. Bitte gib ihn noch einmal ein.';
     } else if (form.names.has('password')) {
       // The password form again means the first try was rejected.
-      if (passwordSent) throw new Error('Immomio did not accept the email or password.');
+      if (passwordSent) throw new Error('Immomio hat E-Mail oder Passwort nicht akzeptiert.');
       Object.assign(fields, { username: email, password });
       passwordSent = true;
     } else fields.username = email;
     res = await request(new URL(form.action, SSO).href, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ...form.hidden, ...fields }) });
   }
-  throw new Error('Immomio login did not finish');
+  throw new Error('Die Immomio-Anmeldung wurde nicht abgeschlossen');
 }
 
 // The connected Immomio account, stored and renewed like the IS24 one.
@@ -94,7 +94,7 @@ export class ImmomioSession extends IS24Session {
   async login({ email, password, askCode }) {
     const tokens = await keycloakLogin({ email, password, askCode, fetchImpl: this.fetch });
     const account = String(claims(tokens.id_token || '').email || claims(tokens.access_token).email || '').toLowerCase();
-    if (!account) throw new Error('Immomio did not tell which account this is');
+    if (!account) throw new Error('Immomio hat nicht verraten, welches Konto das ist');
     this.save(tokens, account);
     return account;
   }
@@ -106,8 +106,8 @@ export function immomioClient(accessToken, fetchImpl = fetch) {
     const res = await fetchImpl(GRAPHQL, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ query, variables }) });
     const body = await res.json().catch(() => null);
-    if (res.status === 401) throw loginRequired('Immomio ended my login; send /immomio to connect it again');
-    if (!res.ok || !body?.data || body.errors?.length) throw new Error(`Immomio request failed (HTTP ${res.status}${body?.errors?.[0]?.message ? `: ${String(body.errors[0].message).slice(0, 200)}` : ''})`);
+    if (res.status === 401) throw loginRequired('Immomio hat meine Anmeldung beendet; verbinde es mit /immomio neu');
+    if (!res.ok || !body?.data || body.errors?.length) throw new Error(`Immomio-Anfrage fehlgeschlagen (HTTP ${res.status}${body?.errors?.[0]?.message ? `: ${String(body.errors[0].message).slice(0, 200)}` : ''})`);
     return body.data;
   };
 }
@@ -115,35 +115,35 @@ export function immomioClient(accessToken, fetchImpl = fetch) {
 // One application with the account's profile, after every check that can fail without sending anything, then the
 // approved message as the first one to the landlord. The application counts as sent even if the message fails.
 export async function applyOnImmomio(gql, linkId, { accountEmail, message = '', beforeSubmit, onSubmitAttempt }) {
-  const manual = `apply yourself: ${immomioUrl(linkId)}`;
+  const manual = `bewirb dich selbst: ${immomioUrl(linkId)}`;
   const { user } = await gql('query { user { id email } }');
-  if (!user?.id || String(user.email || '').toLowerCase() !== accountEmail) throw new Error('The connected Immomio account differs from the approved one');
+  if (!user?.id || String(user.email || '').toLowerCase() !== accountEmail) throw new Error('Das verbundene Immomio-Konto ist nicht das freigegebene');
   const { property } = await gql('query($id: ID!) { property(id: $id) { id rented captchaSettings { applicationSubmissionActive } smsVerificationRequired } }', { id: linkId });
   // The link may carry a public ID; the app then continues with the ID Immomio answers with, and so does this.
   const propertyId = property?.id ? String(property.id) : '';
-  if (!propertyId) throw new Error(`Immomio does not know this listing; ${manual}`);
-  if (property.rented) throw new Error('This Immomio listing is no longer available');
+  if (!propertyId) throw new Error(`Immomio kennt dieses Inserat nicht; ${manual}`);
+  if (property.rented) throw new Error('Dieses Immomio-Inserat ist nicht mehr verfügbar');
   // ponytail: captcha/SMS listings are handed to the owner; automating them needs a browser.
-  if (property.captchaSettings?.applicationSubmissionActive) throw new Error(`Immomio asks for a captcha on this listing; ${manual}`);
-  if (property.smsVerificationRequired) throw new Error(`Immomio asks for SMS verification on this listing; ${manual}`);
+  if (property.captchaSettings?.applicationSubmissionActive) throw new Error(`Immomio verlangt bei diesem Inserat ein Captcha; ${manual}`);
+  if (property.smsVerificationRequired) throw new Error(`Immomio verlangt bei diesem Inserat eine SMS-Bestätigung; ${manual}`);
   const { checkApplicationExist } = await gql('query($propertyId: ID!) { checkApplicationExist(propertyId: $propertyId) { id } }', { propertyId });
-  if (checkApplicationExist?.id) throw new Error('You already applied to this listing on Immomio; nothing was sent');
-  if (await beforeSubmit() === false) throw new Error('Approval no longer valid');
+  if (checkApplicationExist?.id) throw new Error('Du hast dich auf Immomio schon auf dieses Inserat beworben; nichts wurde gesendet');
+  if (await beforeSubmit() === false) throw new Error('Freigabe nicht mehr gültig');
   onSubmitAttempt();
   const { createApplication } = await gql('mutation($userId: ID!, $propertyId: ID!) { createApplication(userId: $userId, propertyId: $propertyId) { id status } }', { userId: user.id, propertyId });
-  if (!createApplication?.id) throw new Error('Immomio did not confirm the application');
-  let detail = 'Immomio accepted your application.';
+  if (!createApplication?.id) throw new Error('Immomio hat die Bewerbung nicht bestätigt');
+  let detail = 'Immomio hat deine Bewerbung angenommen.';
   if (message.trim()) {
     try {
       const { sendMessageInNewConversation: sent } = await gql(`mutation($input: SendMessageInput!) { sendMessageInNewConversation(input: $input) { ${MESSAGE} } }`, { input: { applicationId: createApplication.id, message } });
-      detail += sent?.id ? ' Your message went to the landlord in Immomio\'s messenger.' : ' Immomio did not confirm your message; check your Immomio messages.';
-    } catch (error) { detail += ` Your message was not sent (${error.message}); the landlord sees your profile only.`; }
+      detail += sent?.id ? ' Deine Nachricht ging im Immomio-Messenger an den Vermieter.' : ' Immomio hat deine Nachricht nicht bestätigt; prüfe deine Immomio-Nachrichten.';
+    } catch (error) { detail += ` Deine Nachricht wurde nicht gesendet (${error.message}); der Vermieter sieht nur dein Profil.`; }
   }
   try {
     const { customQuestionsByProperty: questions } = await gql('query($id: ID!) { customQuestionsByProperty(id: $id) { customQuestions { id } questions { rootQuestion { id } } } }', { id: propertyId });
     const count = (questions?.customQuestions?.length || 0) + (questions?.questions?.length || 0);
-    if (count) detail += ` The landlord asks ${count} question${count === 1 ? '' : 's'}; answer them on ${immomioUrl(propertyId)}`;
-  } catch { detail += ` Check ${immomioUrl(propertyId)} for landlord questions.`; }
+    if (count) detail += ` Der Vermieter stellt ${count === 1 ? 'eine Frage' : `${count} Fragen`}; beantworte sie auf ${immomioUrl(propertyId)}`;
+  } catch { detail += ` Schau auf ${immomioUrl(propertyId)} nach Fragen des Vermieters.`; }
   return { detail };
 }
 
@@ -230,7 +230,7 @@ export class ImmomioInbox {
   async reply(conversationId, message) {
     const gql = await this.client();
     const { sendMessage } = await gql(SEND, { input: { conversationId, message } });
-    if (!sendMessage?.id) throw new Error('Immomio did not confirm the message');
+    if (!sendMessage?.id) throw new Error('Immomio hat die Nachricht nicht bestätigt');
     // The own message is not shown back, and it does not move the conversation past a landlord's reply.
     const state = this.state();
     this.save({ ...state, seen: [...state.seen, sendMessage.id].slice(-KEEP_SEEN), active: Date.now() });

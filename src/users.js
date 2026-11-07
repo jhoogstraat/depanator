@@ -104,7 +104,7 @@ function connector({ app, setting, name, path, config, settings, send, log }) {
     const { fresh, done } = app.request();
     if (fresh) {
       log.info(`Waiting for them to connect ${name}.`);
-      await send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 Connect ${name}`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(failure => log.error(failure.message));
+      await send(intro, { reply_markup: { inline_keyboard: [[{ text: `🔗 ${name} verbinden`, web_app: { url: `${config.publicUrl}/${path}` } }]] } }).catch(failure => log.error(failure.message));
     }
     const email = await done;
     if (email !== config[setting]) settings.set(setting, email);
@@ -219,7 +219,7 @@ export class Users {
       report: review => telegram.notifyOutcome(review),
       withdraw: review => telegram.withdraw(review),
       alert: text => { error(text); return send(text); }, interval: () => this.interval(),
-      beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
+      beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 hat meine Anmeldung beendet. Bitte verbinde dein Konto erneut; bis dahin pausieren die Prüfungen.')),
       onEvent: event => {
         if (event.type === 'submission') log.info(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
         // A landlord may answer an Immomio application soon: read the messages often again.
@@ -241,8 +241,8 @@ export class Users {
     const tick = ticker(workflow, settings, log);
     telegram.assistant = new Assistant({
       settings, store, send, codex: codexFor(config),
-      is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
-      immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio, and show you your Immomio messages.') },
+      is24: { connect: () => connect('🔗 Verbinde dein ImmoScout24-Konto, damit ich Inserate lesen und die Bewerbungen senden kann, die du freigibst.') },
+      immomio: { connect: () => connectImmomio('🔗 Verbinde dein Immomio-Konto, damit ich mich dort auf freigegebene Inserate bewerben kann, die auf Immomio verlinken, und dir deine Immomio-Nachrichten zeige.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       catalog: () => this.catalog, feedStatus: search => feeds.status(searchKey(search.url)),
       admin: isAdmin ? this.adminActions() : null, llm: () => this.llm(),
@@ -278,7 +278,7 @@ export class Users {
     return { ...DEFAULT_LLM, ...(saved.llm ?? saved.screening) };
   }
   setLlm({ model, thinking }) {
-    if (!/^[a-zA-Z0-9._-]{1,60}$/.test(model) || !/^[a-z]{0,20}$/.test(thinking)) throw new Error('Please pick a model from the list.');
+    if (!/^[a-zA-Z0-9._-]{1,60}$/.test(model) || !/^[a-z]{0,20}$/.test(thinking)) throw new Error('Bitte wähle ein Modell aus der Liste.');
     this.admin.store.saveSetting('llm', { model, thinking });
   }
   // Checks run as often as the most frequent search someone searching picked; each search runs on its own interval.
@@ -339,13 +339,13 @@ export class Users {
   // The search of that name on the list, or a user-facing error.
   listed(name) {
     const search = this.catalog.find(entry => entry.name === name);
-    if (!search) throw new Error(`${name} is no longer on the list.`);
+    if (!search) throw new Error(`${name} ist nicht mehr auf der Liste.`);
     return search;
   }
   // A user-facing error unless `name` can name a search. except: the search being renamed may keep its name.
   checkName(name, except = null) {
-    if (!name || name !== clean(name) || name.length > 40 || /[\r\n]/.test(name)) throw new Error('Please send a name of one line, at most 40 characters.');
-    if (name !== except && this.catalog.some(search => search.name === name)) throw new Error(`There already is a search named ${name}.`);
+    if (!name || name !== clean(name) || name.length > 40 || /[\r\n]/.test(name)) throw new Error('Bitte schick einen einzeiligen Namen mit höchstens 40 Zeichen.');
+    if (name !== except && this.catalog.some(search => search.name === name)) throw new Error(`Es gibt schon eine Suche namens ${name}.`);
   }
   // Applies change(searches) to everyone who picked `name`; returns them.
   repick(name, change) {
@@ -355,8 +355,8 @@ export class Users {
   }
   // A search's interval and/or night pause; also what the next new search starts with.
   scheduleSearch(name, change) {
-    if (change.intervalMs !== undefined && !INTERVALS.includes(change.intervalMs)) throw new Error('Please pick one of the intervals.');
-    if (change.quietHours !== undefined && !NIGHT_PAUSES.includes(change.quietHours)) throw new Error('Please pick one of the night pauses.');
+    if (change.intervalMs !== undefined && !INTERVALS.includes(change.intervalMs)) throw new Error('Bitte wähle eines der Intervalle.');
+    if (change.quietHours !== undefined && !NIGHT_PAUSES.includes(change.quietHours)) throw new Error('Bitte wähle eine der Nachtpausen.');
     const updated = { ...this.listed(name), ...change };
     // The list before the new defaults: other searches without their own schedule keep theirs.
     const catalog = this.catalog.map(entry => entry.name === name ? updated : entry);
@@ -368,22 +368,22 @@ export class Users {
   // except: the search whose link is being changed.
   searchLink(url, except = null) {
     let href;
-    try { href = new URL(clean(url)).href; } catch { throw new Error('Please send the address of an immobilienscout24.de results page, starting with https://'); }
+    try { href = new URL(clean(url)).href; } catch { throw new Error('Bitte schick die Adresse einer Ergebnisseite von immobilienscout24.de, beginnend mit https://'); }
     searchFilters(href); // A filter that cannot be applied exactly is refused here, with the reason.
     const twin = this.catalog.find(search => search.name !== except && sameSearch(search.url, href));
-    if (twin) throw new Error(`${twin.name} is already this search.`);
+    if (twin) throw new Error(`${twin.name} ist schon genau diese Suche.`);
     return href;
   }
   // Straight to IS24, past the feed: its own first crawl starts the search's history. -> the newest listings.
   async tryOut(href, what) {
     const { listings } = await this.feeds.adapter.scan(searchFilters(href), { maxPages: 1 })
-      .catch(error => { throw new Error(`IS24 could not run this search (${error.message}), so I did not ${what}. Try again, or check the link on immobilienscout24.de.`); });
+      .catch(error => { throw new Error(`IS24 konnte diese Suche nicht ausführen (${error.message}), deshalb habe ich sie nicht ${what}. Versuch es noch einmal oder prüfe den Link auf immobilienscout24.de.`); });
     return listings;
   }
   // Runs the search once before saving it, so the admin knows IS24 answers it. -> the newest listings it found.
   async addSearch(name, url) {
     const check = () => { this.checkName(name); return this.searchLink(url); };
-    const listings = await this.tryOut(check(), 'add it');
+    const listings = await this.tryOut(check(), 'hinzugefügt');
     const href = check(); // The list may have changed while IS24 answered.
     this.saveCatalog([...this.catalog, { name, url: href, ...this.defaults() }]);
     return listings;
@@ -391,7 +391,7 @@ export class Users {
   // Same name, schedule and people, a new link, tried once first like a new search. Its listings start a new history.
   async changeSearchUrl(name, url) {
     const check = () => { this.listed(name); return this.searchLink(url, name); };
-    const listings = await this.tryOut(check(), 'change it');
+    const listings = await this.tryOut(check(), 'geändert');
     const href = check();
     this.saveCatalog(this.catalog.map(search => search.name === name ? { ...search, url: href } : search));
     return listings;
@@ -405,10 +405,10 @@ export class Users {
   }
   // Whoever had picked it hears so; someone with nothing left gets the list again.
   async removeSearch(name) {
-    if (this.catalog.length < 2) throw new Error('This is the last search. Add another one first.');
+    if (this.catalog.length < 2) throw new Error('Das ist die letzte Suche. Füge zuerst eine andere hinzu.');
     this.saveCatalog(this.catalog.filter(search => search.name !== name));
     for (const user of this.repick(name, searches => searches.filter(picked => picked !== name))) {
-      await user.telegram.send(`🔎 The search ${name} is no longer available.`).then(() => user.telegram.assistant.continue()).catch(error => this.log.error(`[${user.id}] ${error.message}`));
+      await user.telegram.send(`🔎 Die Suche ${name} gibt es nicht mehr.`).then(() => user.telegram.assistant.continue()).catch(error => this.log.error(`[${user.id}] ${error.message}`));
     }
   }
   invite() {
@@ -433,9 +433,9 @@ export class Users {
   }
   async remove(id) {
     const user = this.get(id);
-    if (!user || user.settings.values.admin) throw new Error('This person cannot be removed.');
+    if (!user || user.settings.values.admin) throw new Error('Diese Person kann nicht entfernt werden.');
     this.users.delete(user.id);
-    await user.telegram.send('Your access to this apartment agent has ended.').catch(() => {});
+    await user.telegram.send('Dein Zugang zu diesem Wohnungsagenten wurde beendet.').catch(() => {});
     await user.close();
     // Kept for the admin to delete: sent applications may still need looking up.
     renameSync(user.folder, join(this.runtime.dataDir, 'users', `removed-${user.id}-${Date.now()}`));
@@ -446,7 +446,7 @@ export class Users {
     const query = update.callback_query;
     const user = this.get(message?.chat?.id ?? query?.message?.chat?.id ?? '');
     if (user) return user.telegram.handleUpdate(update);
-    if (query) return this.bot.api('answerCallbackQuery', { callback_query_id: query.id, text: 'This approval is invalid.' });
+    if (query) return this.bot.api('answerCallbackQuery', { callback_query_id: query.id, text: 'Diese Freigabe ist ungültig.' });
     if (message) return this.join(message);
   }
   // The bot stays private: the first person joins with the pairing code from the log, everyone else with an
@@ -457,7 +457,7 @@ export class Users {
     if (message.chat?.type !== 'private' || String(message.from?.id) !== id || command !== '/start') return;
     const reply = text => this.bot.api('sendMessage', { chat_id: id, text });
     if (!this.size) {
-      if (!this.pairingCode || code !== this.pairingCode) return reply('To connect, send /start followed by the code shown in the agent log, for example: /start 123456');
+      if (!this.pairingCode || code !== this.pairingCode) return reply('Zum Verbinden schick /start und danach den Code aus dem Log des Agenten, zum Beispiel: /start 123456');
       this.pairingCode = null;
       migrate(this.runtime.dataDir, id); // Settings stored before anyone paired are theirs.
       adoptSearchUrls(this.runtime.dataDir);
@@ -466,7 +466,7 @@ export class Users {
       return user.telegram.welcome();
     }
     if (!code) return;
-    if (!this.redeem(code)) return reply('This invite is not valid any more. Please ask for a new one.');
+    if (!this.redeem(code)) return reply('Diese Einladung ist nicht mehr gültig. Bitte frag nach einer neuen.');
     return this.open(id).telegram.welcome();
   }
   stop() { for (const user of this.users.values()) { user.workflow.stop(); user.telegram.close(); } }

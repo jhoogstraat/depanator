@@ -2,13 +2,13 @@
 // runs first; the user hears only about streaks it cannot fix.
 export const ALERT_AFTER = 3;
 const MAX_BACKOFF_MS = 3_600_000;
-export const IS24_ADVICE = 'I keep retrying with longer pauses. If it continues, IS24 may be blocking this connection.';
+export const IS24_ADVICE = 'Ich versuche es mit immer längeren Pausen weiter. Hält es an, blockiert IS24 vielleicht diese Verbindung.';
 
 // Checks to skip after the nth failure in a row: the pause doubles (0, 1, 3, 7...), capped near one hour.
 export const backoffSkip = (failures, intervalMs) => Math.min(2 ** (failures - 1), Math.max(1, Math.floor(MAX_BACKOFF_MS / intervalMs))) - 1;
 
-export const failedAlert = (what, failures, error, advice) => `⚠️ ${what} failed ${failures} times in a row.\nLast error: ${error.message}\n${advice}`;
-export const recoveredAlert = what => `✅ ${what} recovered; normal operation resumed.`;
+export const failedAlert = (what, failures, error, advice) => `⚠️ ${what}: ${failures} Fehler in Folge.\nLetzter Fehler: ${error.message}\n${advice}`;
+export const recoveredAlert = what => `✅ ${what} läuft wieder normal.`;
 
 // One dependency's health (IS24, ChatGPT, one search's crawler). MACHINE below is complete: the state changes
 // only through these events, and any other (status, event) pair leaves it as it is.

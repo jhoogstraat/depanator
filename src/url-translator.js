@@ -78,7 +78,7 @@ export function parseRange(raw, label) {
   const m = value.match(/^(\d+(?:\.\d+)?)?-(\d+(?:\.\d+)?)?$/);
   const min = m?.[1] ? Number(m[1]) : null;
   const max = m?.[2] ? Number(m[2]) : null;
-  if (!m || (min === null && max === null) || (min !== null && max !== null && min > max)) throw new Error(`Invalid ${label} range: ${value}`);
+  if (!m || (min === null && max === null) || (min !== null && max !== null && min > max)) throw new Error(`Ungültiger Bereich für ${label}: ${value}`);
   return { min, max };
 }
 
@@ -104,13 +104,13 @@ function splitValues(value) {
 // An IS24 apartment-rental search URL as its canonical filters; throws the reason it cannot be translated exactly.
 export function parseSearchUrl(webUrl) {
   const input = String(webUrl || '').trim();
-  if (!input) throw new Error('Invalid URL');
+  if (!input) throw new Error('Ungültiger Link');
   const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
-  if (!['www.immobilienscout24.de', 'immobilienscout24.de'].includes(url.hostname)) throw new Error('URL is not an immobilienscout24.de search link');
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) throw new Error('HTTPS without credentials, port or fragment required');
+  if (!['www.immobilienscout24.de', 'immobilienscout24.de'].includes(url.hostname)) throw new Error('Das ist kein Suchlink von immobilienscout24.de');
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) throw new Error('Der Link muss mit https:// beginnen, ohne Zugangsdaten, Port oder #-Anker');
   const pathParts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   const sucheIdx = pathParts.findIndex(p => p.toLowerCase() === 'suche');
-  if (sucheIdx === -1) throw new Error('URL does not contain /Suche/ path');
+  if (sucheIdx === -1) throw new Error('Der Link enthält keinen /Suche/-Pfad');
 
   // Last segment = type slug; segments between /Suche/ and it = geocode,
   // optionally prefixed by 'radius' or 'shape'.
@@ -118,10 +118,10 @@ export function parseSearchUrl(webUrl) {
   const typeSlug = afterSuche.at(-1) || '';
   const seo = Object.hasOwn(SEO_PATH_FILTERS, typeSlug) ? SEO_PATH_FILTERS[typeSlug] : null;
   const warmrent = typeSlug.match(SEO_MAX_WARMRENT_PATH);
-  if (!Object.hasOwn(RENT_TYPE_SLUGS, typeSlug) && !seo && !warmrent) throw new Error(`Only apartment rental searches (wohnung-mieten) are supported, not: ${typeSlug || 'none'}`);
+  if (!Object.hasOwn(RENT_TYPE_SLUGS, typeSlug) && !seo && !warmrent) throw new Error(`Nur Suchen nach Mietwohnungen (wohnung-mieten) werden unterstützt, nicht: ${typeSlug || 'keine Angabe'}`);
   let geocodeParts = afterSuche.slice(0, -1);
   const searchPrefix = geocodeParts[0];
-  if (searchPrefix === 'shape') throw new Error('Map-drawn (shape) searches are not supported. Switch to a radius or district search on immobilienscout24.de and copy that URL.');
+  if (searchPrefix === 'shape') throw new Error('Auf der Karte gezeichnete Suchen (shape) werden nicht unterstützt. Wechsle auf immobilienscout24.de zu einer Umkreis- oder Stadtteilsuche und kopiere diesen Link.');
   if (searchPrefix === 'radius') geocodeParts = geocodeParts.slice(1);
 
   const canonical = {
@@ -143,13 +143,13 @@ export function parseSearchUrl(webUrl) {
     const key = rawKey.toLowerCase();
     if (SAFE_IGNORED_PARAM.test(key)) continue;
     if (key === 'centerofsearchaddress') continue; // display-only
-    if (seen.has(key) || !value.trim()) { rejected.push(`${rawKey}=Duplicate or empty filter`); continue; }
+    if (seen.has(key) || !value.trim()) { rejected.push(`${rawKey}=doppelter oder leerer Filter`); continue; }
     seen.add(key);
     // A path filter and a parameter for the same thing: one would silently replace the other.
-    if ((warmrent && (key === 'price' || key === 'pricetype')) || (seo?.apartmentTypes && key === 'apartmenttypes')) rejected.push(`${rawKey}=Conflicts with the search path filter`);
-    else if (key === 'price') canonical.price = { ...parseRange(value, 'price'), type: canonical.price.type };
-    else if (key === 'numberofrooms') canonical.rooms = parseRange(value, 'number of rooms');
-    else if (key === 'livingspace') canonical.livingSpace = parseRange(value, 'living space');
+    if ((warmrent && (key === 'price' || key === 'pricetype')) || (seo?.apartmentTypes && key === 'apartmenttypes')) rejected.push(`${rawKey}=widerspricht dem Filter im Suchpfad`);
+    else if (key === 'price') canonical.price = { ...parseRange(value, 'Miete'), type: canonical.price.type };
+    else if (key === 'numberofrooms') canonical.rooms = parseRange(value, 'Zimmer');
+    else if (key === 'livingspace') canonical.livingSpace = parseRange(value, 'Wohnfläche');
     else if (key === 'pricetype') canonical.price.type = value;
     else if (Object.hasOwn(LIST_FILTERS, key)) {
       const [field, accept] = LIST_FILTERS[key];
@@ -173,9 +173,9 @@ export function parseSearchUrl(webUrl) {
   }
 
   if (searchPrefix === 'radius' && !canonical.center && !rejected.length) {
-    throw new Error('This radius link is missing its map coordinates. Open the search on immobilienscout24.de and copy the URL from the results page again.');
+    throw new Error('Diesem Umkreis-Link fehlen die Kartenkoordinaten. Öffne die Suche auf immobilienscout24.de und kopiere den Link der Ergebnisseite noch einmal.');
   }
-  if (rejected.length) throw new Error(`Unsupported IS24 search filters: ${rejected.join(', ')}`);
+  if (rejected.length) throw new Error(`Nicht unterstützte IS24-Suchfilter: ${rejected.join(', ')}`);
   canonical.heatingTypes = [...new Set(canonical.heatingTypes)];
   canonical.equipment = [...new Set(canonical.equipment)];
   return canonical;

@@ -81,23 +81,23 @@ function readPictures(expose, title = '') {
 // Contact fields by the name IS24's per-listing form configuration uses: [what it asks for, persona value].
 // Fields without a value function have no documented format, so the agent never fills them.
 const FIELDS = {
-  firstnameField: ['your first name', persona => persona.vorname], lastnameField: ['your last name', persona => persona.nachname],
-  emailAddressField: ['your email', persona => persona.email], phoneNumberField: ['a phone number', persona => persona.telefon],
-  salutationField: ['a salutation', persona => persona.anrede], messageField: ['a message', (persona, message) => message],
-  addressField: ['your full address', persona => persona.strasse && persona.hausnummer && persona.plz && persona.ort],
-  moveInDateField: ['a move-in date'], petsInHouseholdField: ['pets'], numberOfPersonsField: ['the number of people'],
-  employmentRelationshipField: ['employment'], incomeField: ['income'], applicationPackageCompletedField: ['application documents'],
+  firstnameField: ['deinen Vornamen', persona => persona.vorname], lastnameField: ['deinen Nachnamen', persona => persona.nachname],
+  emailAddressField: ['deine E-Mail', persona => persona.email], phoneNumberField: ['eine Telefonnummer', persona => persona.telefon],
+  salutationField: ['eine Anrede', persona => persona.anrede], messageField: ['eine Nachricht', (persona, message) => message],
+  addressField: ['deine vollständige Adresse', persona => persona.strasse && persona.hausnummer && persona.plz && persona.ort],
+  moveInDateField: ['ein Einzugsdatum'], petsInHouseholdField: ['Angaben zu Haustieren'], numberOfPersonsField: ['die Anzahl der Personen'],
+  employmentRelationshipField: ['Angaben zur Beschäftigung'], incomeField: ['dein Einkommen'], applicationPackageCompletedField: ['Bewerbungsunterlagen'],
 };
 
 // The request body, or a reason why this listing cannot be contacted with the approved data.
 function contactRequest(expose, persona, message, ssoId) {
   const contact = expose?.contact || {};
-  if (String(contact.premiumProfileRequiredForContacting) === 'true') return { reason: 'This landlord only accepts requests from IS24 Premium members' };
+  if (String(contact.premiumProfileRequiredForContacting) === 'true') return { reason: 'Dieser Vermieter nimmt nur Anfragen von IS24-Premium-Mitgliedern an' };
   for (const [field, state] of Object.entries(contact.contactData?.formFieldConfig || {})) {
     if (state !== 'MANDATORY') continue;
     const [asks = field.replace(/Field$/, ''), value] = FIELDS[field] || [];
-    if (!value) return { reason: `This listing requires ${asks}, which I cannot fill in. Apply on IS24 yourself.` };
-    if (!value(persona, message)) return { reason: `This listing requires ${asks}. Add it in /settings → 👤 About you.` };
+    if (!value) return { reason: `Dieses Inserat verlangt ${asks}, das kann ich nicht ausfüllen. Bewirb dich selbst auf IS24.` };
+    if (!value(persona, message)) return { reason: `Dieses Inserat verlangt ${asks}. Trag es unter /settings → 👤 Über dich ein.` };
   }
   const address = { street: persona.strasse, houseNumber: persona.hausnummer, postcode: persona.plz, city: persona.ort };
   const form = {
@@ -136,15 +136,15 @@ export class IS24Adapter {
     const timeout = AbortSignal.timeout(30000);
     const response = await this.fetch(`${API}${path}`, { redirect: 'error', ...request,
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', ...request.headers }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-    if ([404, 410].includes(response.status)) throw coded('Listing is no longer available', 'LISTING_GONE');
+    if ([404, 410].includes(response.status)) throw coded('Inserat ist nicht mehr verfügbar', 'LISTING_GONE');
     const text = await response.text().catch(() => '');
     const refuse = (problem, code) => {
       this.keep(path.split('?')[0].slice(1).replaceAll('/', '-'), problem, text);
       throw coded(problem, code);
     };
-    if ([401, 403, 429].includes(response.status)) refuse(`IS24 blocked access (HTTP ${response.status})`, 'BLOCKED');
-    if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) refuse(`IS24 unavailable (HTTP ${response.status})`);
-    try { return JSON.parse(text); } catch { refuse('IS24 sent invalid JSON'); }
+    if ([401, 403, 429].includes(response.status)) refuse(`IS24 blockiert den Zugriff (HTTP ${response.status})`, 'BLOCKED');
+    if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) refuse(`IS24 nicht erreichbar (HTTP ${response.status})`);
+    try { return JSON.parse(text); } catch { refuse('IS24 hat ungültiges JSON geschickt'); }
   }
   async searchPage(page, signal, filters) {
     signal?.throwIfAborted();
@@ -255,31 +255,31 @@ export class IS24Adapter {
     } catch (error) { return { outcome: attempted ? 'unknown_outcome' : 'failed', detail: error.message }; }
   }
   async sendImmomio(review, beforeSubmit, attempt) {
-    if (this.immomio?.email !== this.config.immomioEmail) throw new Error('The connected Immomio account differs from the approved one');
-    const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio ended my login; send /immomio to connect again, or apply yourself: ${review.snapshot.immomio.url}`); });
+    if (this.immomio?.email !== this.config.immomioEmail) throw new Error('Das verbundene Immomio-Konto ist nicht das freigegebene');
+    const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio hat meine Anmeldung beendet; verbinde es mit /immomio neu oder bewirb dich selbst: ${review.snapshot.immomio.url}`); });
     // Approvals from before Immomio took a message carry a placeholder, not a message for the landlord.
     const message = /^Apply on Immomio with your profile \(/.test(review.draft) ? '' : review.draft;
     const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, message, beforeSubmit, onSubmitAttempt: attempt });
     return { outcome: 'sent', detail };
   }
   async sendContact(review, beforeSubmit, attempt) {
-    if (this.session.email !== this.config.accountEmail) throw loginRequired('The connected IS24 account differs from the approved one');
+    if (this.session.email !== this.config.accountEmail) throw loginRequired('Das verbundene IS24-Konto ist nicht das freigegebene');
     const id = review.snapshot.expose_id;
     const { body, reason } = contactRequest(await this.expose(id), this.config.persona, review.draft, this.session.ssoId);
     if (reason) return { outcome: 'failed', detail: reason };
     const token = await this.session.accessToken();
-    if (await beforeSubmit() === false) throw new Error('Approval no longer valid');
+    if (await beforeSubmit() === false) throw new Error('Freigabe nicht mehr gültig');
     attempt();
     const response = await this.fetch(`${API}/expose/${id}/contact?referrer=resultlist`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
       headers: { 'User-Agent': CONTACT_USER_AGENT, Accept: 'application/json', 'Content-Type': 'application/json; charset=UTF-8', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
-    if (response.ok) return { outcome: 'sent', detail: 'IS24 accepted the request' };
+    if (response.ok) return { outcome: 'sent', detail: 'IS24 hat die Anfrage angenommen' };
     const raw = await response.text().catch(() => '');
     this.keep(`contact-${id}`, `Contact request answered HTTP ${response.status}`, raw);
     const answer = raw.replace(/\s+/g, ' ').slice(0, 200);
     // IS24 answers delivered contact requests with HTTP 500 (confirmed live in the account's messages).
-    if (response.status === 500) return { outcome: 'sent', detail: 'IS24 delivered the request' };
+    if (response.status === 500) return { outcome: 'sent', detail: 'IS24 hat die Anfrage zugestellt' };
     // Other server errors may come after IS24 already forwarded the request.
-    if (response.status > 500) return { outcome: 'unknown_outcome', detail: `IS24 answered HTTP ${response.status}${answer && `: ${answer}`}; check your IS24 messages whether it arrived` };
-    return { outcome: 'failed', detail: `IS24 rejected the request (HTTP ${response.status}${answer && `: ${answer}`})` };
+    if (response.status > 500) return { outcome: 'unknown_outcome', detail: `IS24 antwortete mit HTTP ${response.status}${answer && `: ${answer}`}; prüfe in deinen IS24-Nachrichten, ob sie angekommen ist` };
+    return { outcome: 'failed', detail: `IS24 hat die Anfrage abgelehnt (HTTP ${response.status}${answer && `: ${answer}`})` };
   }
 }

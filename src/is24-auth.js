@@ -9,16 +9,16 @@ const REDIRECT_URI = 'immobilienscout24.de:/loginCallback';
 const HEADERS = { 'User-Agent': 'okta-oauth2-kotlin/2.0.3 Android/34', Accept: 'application/json' };
 // Supported 2FA methods, in order of preference, with the question for the owner.
 const FACTORS = {
-  'token:software:totp': 'Please enter the code from your authenticator app.',
-  email: 'IS24 sent a security code to your email. Please enter it.',
-  sms: 'IS24 sent a security code by SMS. Please enter it.',
+  'token:software:totp': 'Bitte gib den Code aus deiner Authenticator-App ein.',
+  email: 'IS24 hat dir einen Sicherheitscode per E-Mail geschickt. Bitte gib ihn ein.',
+  sms: 'IS24 hat dir einen Sicherheitscode per SMS geschickt. Bitte gib ihn ein.',
 };
 
 async function call(fetchImpl, url, body) {
   const res = await fetchImpl(url, { method: 'POST', headers: { ...HEADERS, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (res.ok) return data;
-  const error = new Error(res.status === 401 ? 'IS24 did not accept the email or password.' : `IS24 login failed: ${data.errorSummary || `HTTP ${res.status}`}`);
+  const error = new Error(res.status === 401 ? 'IS24 hat E-Mail oder Passwort nicht akzeptiert.' : `IS24-Anmeldung fehlgeschlagen: ${data.errorSummary || `HTTP ${res.status}`}`);
   error.status = res.status;
   throw error;
 }
@@ -31,26 +31,26 @@ async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
   let state = await call(fetchImpl, `${BASE}/api/v1/authn`, { username: email, password });
   let retry = '';
   for (let steps = 0; state.status !== 'SUCCESS'; steps++) {
-    if (steps > 8) throw new Error('IS24 login did not finish');
+    if (steps > 8) throw new Error('Die IS24-Anmeldung wurde nicht abgeschlossen.');
     let href, type;
     if (state.status === 'MFA_REQUIRED') {
       const factor = Object.keys(FACTORS).map(kind => state._embedded?.factors?.find(entry => entry.factorType === kind)).find(Boolean);
-      if (!factor) throw new Error('IS24 asks for a 2FA method I do not support yet');
+      if (!factor) throw new Error('IS24 verlangt eine Zwei-Faktor-Methode, die ich noch nicht unterstütze.');
       // Email and SMS codes are sent by a first verify call without a code.
       if (factor.factorType !== 'token:software:totp') { state = await call(fetchImpl, factor._links.verify.href, { stateToken: state.stateToken }); continue; }
       [href, type] = [factor._links.verify.href, factor.factorType];
     } else if (state.status === 'MFA_CHALLENGE') [href, type] = [state._links.next.href, state._embedded.factor.factorType];
-    else throw new Error(`IS24 login stopped at step ${state.status}`);
+    else throw new Error(`Die IS24-Anmeldung blieb bei Schritt ${state.status} stehen.`);
     const passCode = String(await askCode(retry || FACTORS[type])).trim();
     try { state = await call(fetchImpl, href, { stateToken: state.stateToken, passCode }); retry = ''; }
-    catch (error) { if (error.status !== 403) throw error; retry = 'That code did not work. Please enter it again.'; }
+    catch (error) { if (error.status !== 403) throw error; retry = 'Dieser Code hat nicht funktioniert. Bitte gib ihn noch einmal ein.'; }
   }
   const { verifier, state: expected, params } = pkce();
   const query = new URLSearchParams({ client_id: CLIENT_ID, response_type: 'code', scope: 'openid profile offline_access', redirect_uri: REDIRECT_URI, sessionToken: state.sessionToken, ...params });
   const res = await fetchImpl(`${ISSUER}/v1/authorize?${query}`, { headers: HEADERS, redirect: 'manual' });
   const location = new URL(res.headers.get('location') || 'about:blank');
   const code = location.searchParams.get('code');
-  if (!code || location.searchParams.get('state') !== expected) throw new Error(`IS24 login returned no code: ${location.searchParams.get('error_description') || `HTTP ${res.status}`}`);
+  if (!code || location.searchParams.get('state') !== expected) throw new Error(`Die IS24-Anmeldung lieferte keinen Code: ${location.searchParams.get('error_description') || `HTTP ${res.status}`}`);
   return token(fetchImpl, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI });
 }
 
@@ -58,7 +58,7 @@ async function appLogin({ email, password, askCode, fetchImpl = fetch }) {
 async function accountInfo(accessToken, fetchImpl = fetch) {
   const res = await fetchImpl(`${ISSUER}/v1/userinfo`, { headers: { ...HEADERS, Authorization: `Bearer ${accessToken}` } });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`IS24 account check failed: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`IS24-Kontoprüfung fehlgeschlagen: HTTP ${res.status}`);
   const name = value => typeof value === 'string' ? value.trim().slice(0, 60) : '';
   return { email: String(data.email || data.preferred_username || '').toLowerCase(), firstname: name(data.given_name), lastname: name(data.family_name) };
 }
@@ -81,7 +81,7 @@ export class IS24Session {
   async login({ email, password, askCode }) {
     const tokens = await appLogin({ email, password, askCode, fetchImpl: this.fetch });
     const { email: account, ...profile } = await accountInfo(tokens.access_token, this.fetch);
-    if (!account) throw new Error('IS24 did not tell which account this is');
+    if (!account) throw new Error('IS24 hat nicht gesagt, welches Konto das ist.');
     this.save(tokens, account, profile);
     return account;
   }

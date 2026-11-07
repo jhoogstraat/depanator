@@ -90,9 +90,9 @@ export function listCodexModels(config) {
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Codex model list timed out')); }, 30000);
-      child.once('error', () => { clearTimeout(timeout); reject(new Error('Cannot start the bundled Codex CLI')); });
-      child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error('Cannot read the ChatGPT model list')); });
+      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Die Modellliste von ChatGPT kam nicht rechtzeitig')); }, 30000);
+      child.once('error', () => { clearTimeout(timeout); reject(new Error('Die mitgelieferte Codex-CLI startet nicht')); });
+      child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error('Die Modellliste von ChatGPT ist nicht lesbar')); });
     });
     return latestOnly(JSON.parse(output).models.filter(model => model.visibility === 'list')).map(model => {
       const levels = (model.supported_reasoning_levels || []).map(level => level.effort);
@@ -113,7 +113,7 @@ export async function evaluateWithCodex(config, snapshot, { signal, revision, ll
       const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(unavailable('Codex review timed out; nothing was sent')); }, 120000);
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); };
       child.once('error', () => { cleanup(); reject(unavailable('Cannot start bundled Codex CLI')); });
-      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('ChatGPT review failed; if this repeats, send /login in Telegram to reconnect your subscription')); });
+      child.once('close', code => { cleanup(); code === 0 && !signal?.aborted ? resolve() : reject(signal?.aborted ? new Error('Codex review cancelled') : unavailable('ChatGPT-Prüfung fehlgeschlagen; wenn das wieder passiert, sende /login in Telegram, um das Abo neu zu verbinden')); });
       if (signal?.aborted) abort();
     });
     child.stdin.on('error', () => {});
@@ -149,5 +149,5 @@ export async function loginWithCodex(config, { onCode }) {
     const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(output)?.[0];
     if (!reported && url && code) { reported = true; onCode({ url, code }); }
   });
-  if (!ok) throw new Error('ChatGPT login did not complete (the code expires after 15 minutes)');
+  if (!ok) throw new Error('Die ChatGPT-Anmeldung wurde nicht abgeschlossen (der Code läuft nach 15 Minuten ab)');
 }
