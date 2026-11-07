@@ -54,7 +54,7 @@ const photoRow = row => row.some(button => button.callback_data?.startsWith('g:'
 
 // A listing as one message, with native entities: an optional outcome heading and note, its facts and links,
 // as much of the description as fits, and under draftLabel the draft. URLs are built here, never taken from listing data.
-function listingMessage(review, { heading, note, draftLabel }) {
+function listingMessage(review, { heading, note, draftLabel, immomio }) {
   const listing = review.snapshot;
   let text = '';
   const entities = [];
@@ -69,6 +69,7 @@ function listingMessage(review, { heading, note, draftLabel }) {
   const facts = [`📐 ${listing.area ?? '?'} m²`, `🚪 ${listing.rooms ?? '?'} Zi.`,
     listing.earlyAccess && '🔒 Suchen+'].filter(Boolean);
   append(` · ${facts.join(' · ')}\n`);
+  if (immomio) append('🏢 Applies on Immomio with your profile and this message\n');
   const query = encodeURIComponent(address);
   const links = [
     /^\d+$/.test(review.exposeId) && ['Listing', `https://www.immobilienscout24.de/expose/${review.exposeId}`],
@@ -180,8 +181,10 @@ export class Bot {
 // One person's interface. Reads reviews to verify signed buttons; every decision goes to the workflow,
 // every configuration message to the assistant.
 export class Telegram {
-  constructor({ config, store, workflow, bot, assistant = null, onError = () => {} }) {
-    Object.assign(this, { config, store, workflow, bot, assistant, onError });
+  // inbox: the person's Immomio conversations (immomio.js ImmomioInbox), or null.
+  constructor({ config, store, workflow, bot, assistant = null, inbox = null, onError = () => {} }) {
+    Object.assign(this, { config, store, workflow, bot, assistant, inbox, onError });
+    this.onReplied = () => {}; // After an Immomio reply went out.
     this.token = config.telegramBotToken;
     this.controller = new AbortController();
     // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Rewrite again is enough.
@@ -199,7 +202,7 @@ export class Telegram {
   // carousel: buttons above the others on the first part, the one that shows the photo.
   async formatted(text, entities = [], { last = {}, image = null, carousel = null, reviewId = null, replyTo = null } = {}) {
     let offset = 0;
-    const parts = chunks(text);
+    const parts = chunks(text), ids = [];
     for (const [index, part] of parts.entries()) {
       const end = offset + part.length;
       const clipped = entities.flatMap(entity => {
@@ -218,8 +221,10 @@ export class Telegram {
         ? await this.api('sendMessage', { ...message, link_preview_options: preview(image) }).catch(() => this.api('sendMessage', message))
         : await this.api('sendMessage', message);
       if (reviewId) this.store.recordTelegramMessage(reviewId, this.chatId, sent.message_id);
+      ids.push(sent.message_id);
       offset = end;
     }
+    return ids;
   }
   buttons(review, layout) {
     return { inline_keyboard: layout.map(row => row.map(([text, action]) => ({ text, callback_data: this.callback(review, action) }))) };
@@ -234,15 +239,13 @@ export class Telegram {
   // A new listing is a compact card; you decide from it whether ChatGPT writes a message. A draft (written
   // on request, or revised) arrives as its own short reply under the card. again: show the card and its draft.
   // heading/note: an outcome shown above the listing and its message instead of buttons (auto-sent reviews).
-  // An Immomio listing has no message: its card shows the application it approves and is decided right there.
+  // A listing that links to Immomio is applied for there, with the same message, once approved.
   async notify(review, { heading = '', note = '', again = false } = {}) {
-    const immomio = usesImmomio(review.snapshot, this.config);
-    const card = !heading && !immomio; // The draft, once written, is a separate reply under this card.
+    const card = !heading; // The draft, once written, is a separate reply under this card.
     if (card && review.draft && !again) return this.notifyDraft(review);
-    const draftLabel = !card && review.draft ? (immomio ? '🏢 Immomio application' : '✉️ Message') : '';
-    const { text, entities } = listingMessage(review, { heading, note, draftLabel });
-    const buttons = heading || (card && review.draft) ? null
-      : immomio ? this.buttons(review, [[['✅ Apply on Immomio', 'a']], [['✖️ Dismiss', 'd']]]) : this.cardButtons(review);
+    const draftLabel = !card && review.draft ? '✉️ Message' : '';
+    const { text, entities } = listingMessage(review, { heading, note, draftLabel, immomio: usesImmomio(review.snapshot, this.config) });
+    const buttons = heading || review.draft ? null : this.cardButtons(review);
     const images = photos(review.snapshot);
     await this.formatted(text, entities, { image: images[0], carousel: images.length > 1 ? this.photoButtons(review, 0, images.length) : null,
       reviewId: heading ? null : review.id, last: buttons ? { reply_markup: buttons } : {} });
@@ -252,7 +255,8 @@ export class Telegram {
   async notifyDraft(review) {
     const heading = `✉️ ${review.snapshot.title}`;
     const card = (review.telegramMessages || []).find(message => message.chatId === this.chatId)?.messageId;
-    const keyboard = this.buttons(review, [[['✅ Send', 'a'], ['✖️ Dismiss', 'd']], [['✏️ Rewrite', 'e'], ['📝 Write myself', 'm']], []]);
+    const send = usesImmomio(review.snapshot, this.config) ? '✅ Apply + send' : '✅ Send';
+    const keyboard = this.buttons(review, [[[send, 'a'], ['✖️ Dismiss', 'd']], [['✏️ Rewrite', 'e'], ['📝 Write myself', 'm']], []]);
     // A short draft copies with one tap; a longer one is sent as a code block, which Telegram copies with one tap.
     keyboard.inline_keyboard[2].push(review.draft.length <= COPY_LIMIT
       ? { text: '📋 Copy', copy_text: { text: review.draft } } : { text: '📋 Copy', callback_data: this.callback(review, 'p') });
@@ -266,6 +270,33 @@ export class Telegram {
     // You never saw an auto-sent listing, so it comes with the full listing and the message.
     if (review.approvedBy === 'auto') return this.notify(review, { heading: `${heading} (auto-send)`, note: `${text}${review.detail ? `\n${review.detail}` : ''}` });
     await this.formatted(`${heading}\n\n${review.snapshot.title}\n\n${text}\n${review.detail || ''}`, [{ type: 'bold', offset: 0, length: heading.length }]);
+  }
+  // A landlord's Immomio message, with ↩️ Reply. The text is shown literally, like a listing. Returns the message IDs.
+  forwardImmomio({ subject, from, text, attachments = [] }) {
+    const heading = `📨 Immomio · ${subject}`;
+    const body = text.trim() || '(no text)';
+    const head = `${heading}\n${from}:\n`;
+    const files = attachments.length ? `\n📎 ${attachments.join(', ')} (open them on Immomio)` : '';
+    return this.formatted(`${head}${body}${files}`, [{ type: 'bold', offset: 0, length: heading.length }, { type: 'blockquote', offset: head.length, length: body.length }],
+      { last: { reply_markup: { inline_keyboard: [[{ text: '↩️ Reply', callback_data: 'i:reply' }]] } } });
+  }
+  // ↩️ Reply under a forwarded message: a prompt whose reply goes to that conversation.
+  async inboxTap(query) {
+    const thread = this.inbox?.thread(query.message?.message_id);
+    if (!thread) return { text: 'This conversation is no longer available here; answer on Immomio.' };
+    const prompt = await this.send(`↩️ Your reply to ${thread.subject} on Immomio:`, { reply_parameters: { message_id: query.message.message_id, allow_sending_without_reply: true },
+      reply_markup: { force_reply: true, input_field_placeholder: 'Your reply' } });
+    this.inbox.remember([prompt.message_id], thread.conversationId, thread.subject);
+    return { text: 'Reply to the prompt with your message.' };
+  }
+  // A reply to a forwarded Immomio message or its prompt goes out as is: you wrote it yourself.
+  async replyImmomio(thread, text) {
+    if (text.length > 5000) return this.send('Please keep Immomio replies under 5000 characters.');
+    try {
+      await this.inbox.reply(thread.conversationId, text);
+      this.onReplied();
+      await this.send(`✅ Sent on Immomio to ${thread.subject}.`);
+    } catch (error) { await this.send(`❌ Not sent on Immomio: ${error.message}`); }
   }
   // Deletes every message shown for a review.
   async withdraw(review, extra = []) {
@@ -288,6 +319,8 @@ export class Telegram {
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
     if (text.startsWith('/')) return this.assistant.command(text.split(/[\s@]/)[0].toLowerCase());
     if (!text) return;
+    const thread = message.reply_to_message && this.inbox?.thread(message.reply_to_message.message_id);
+    if (thread) return this.replyImmomio(thread, text);
     // Not a reply: the newest edit prompt whose draft is still open, unless the chat waits for a typed answer.
     const open = ([, { id, version }]) => { const review = this.store.get(id); return review?.status === 'awaiting_approval' && review.version === version; };
     const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts].findLast(open)?.[0];
@@ -317,6 +350,7 @@ export class Telegram {
     const tap = !owner ? INVALID
       : /^[ckx]:/.test(query.data || '') ? await this.assistant.choice(query.data).catch(error => ({ text: error.message }))
       : /^g:/.test(query.data || '') ? this.photoTap(query)
+      : query.data === 'i:reply' ? await this.inboxTap(query).catch(error => ({ text: error.message }))
       : await this.reviewTap(query);
     const tapped = { chat_id: this.chatId, message_id: query.message?.message_id };
     // The new view before the answer: once the tap is answered, the message already shows what it led to.

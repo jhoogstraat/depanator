@@ -44,7 +44,7 @@ export const BRANDS = {
     perks: ['Read new listings of your search', 'Send the applications you approve', 'Use your name and contact details in them'] },
   immomio: { name: 'Immomio', path: 'immomio', email: config => config.immomioEmail,
     logo: '<div class="logo immomio">im</div>',
-    perks: ['Apply on Immomio when an approved listing links there', 'Use your Immomio profile for those applications', 'Never send applications you did not approve'] },
+    perks: ['Apply on Immomio when an approved listing links there', 'Read and answer your Immomio messages in this chat', 'Never send applications you did not approve'] },
 };
 export class ConnectApp {
   // bot: the Bot (telegram.js) whose name and photo the page shows.

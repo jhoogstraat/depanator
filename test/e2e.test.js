@@ -174,9 +174,11 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   assert.ok(!world.codexCalls().some(call => call.input.listing.title === 'Während der Pause'));
 });
 
-test('Immomio: connected from /settings, a linked listing is applied there and never on IS24', async t => {
+test('Immomio: connected from /settings, a linked listing is applied there with the message and never on IS24', async t => {
   const world = await createWorld(t);
   world.seed({ autoSend: true });
+  // A public link ID: Immomio answers with the property's own ID, which the application uses.
+  world.immomio.properties.p8FkQ2 = IMMOMIO_AUTO;
   await world.start();
   await until('the first search', () => world.searches > 0);
   world.say('/settings');
@@ -185,16 +187,64 @@ test('Immomio: connected from /settings, a linked listing is applied there and n
   await world.connect('🔗 Connect Immomio', 'immomio', 'alex@immomio.test', 'correct');
   await world.sees(/Connected to Immomio as alex@immomio\.test/);
 
-  world.listing(400, 'Immomio Wohnung', `Bewerbung nur über https://tenant.immomio.com/apply/${IMMOMIO_ID}, unclear.`);
-  await world.sees(/Apply on Immomio with your profile \(alex@immomio\.test\)/);
-  await world.tap('✅ Apply on Immomio');
-  await world.sees(/✅ Applied on Immomio/);
-  // A clear match is applied by itself.
-  world.listing(401, 'Immomio klar', `Bewerbung über https://tenant.immomio.com/apply/${IMMOMIO_AUTO}`);
+  world.listing(400, 'Immomio Wohnung', `Bewerbung nur über https://tenant.immomio.com/apply/${IMMOMIO_ID.toUpperCase()}, unclear.`);
+  await world.sees(/^Immomio Wohnung\n[\s\S]*🏢 Applies on Immomio/);
+  await world.tap('✨ Write message');
+  await until('the draft', () => world.labels().includes('✅ Apply + send'));
+  await world.tap('✅ Apply + send');
+  const { body: applied } = await world.sees(/✅ Applied on Immomio/);
+  assert.match(applied.text, /Your message went to the landlord/);
+  // A clear match is applied by itself, with a written message.
+  world.listing(401, 'Immomio klar', 'Bewerbung über tenant.immomio.com/de/apply/p8FkQ2 bitte.');
   await world.sees(/✅ Applied on Immomio \(auto-send\)/);
   assert.deepEqual(world.immomioApplications, [{ userId: 'immomio-user', propertyId: IMMOMIO_ID }, { userId: 'immomio-user', propertyId: IMMOMIO_AUTO }]);
+  assert.deepEqual(world.immomio.sent, [{ applicationId: 'application-1', message: 'Guten Tag, ich bin Alex.' }, { applicationId: 'application-2', message: 'Guten Tag, ich bin Alex.' }]);
   assert.deepEqual(world.contacts, []);
-  assert.equal(world.codexCalls().filter(call => call.input.task === 'write').length, 0, 'there is nothing to write');
+});
+
+test('Immomio messages: new landlord messages reach the chat once, and a reply goes back to that conversation', async t => {
+  const world = await createWorld(t);
+  world.seed();
+  // The history is ten days old, so the account counts as quiet.
+  const at = minutes => new Date(Date.now() - 10 * 86_400_000 + minutes * 60_000).toISOString();
+  const landlord = { firstname: 'Kim', name: 'Vermieter', type: 'LANDLORD' };
+  const me = { firstname: 'Alex', name: 'Doe', type: 'PROPERTY_SEARCHER' };
+  world.immomio.conversations.push(
+    { id: 'conv-old', subject: 'Altbau Mitte', unread: 0, messages: [{ id: 'm1', messageSent: at(0), message: 'Already read', sender: landlord }] },
+    { id: 'conv-1', subject: 'Wohnung Kreuzberg', unread: 1, messages: [{ id: 'm2', messageSent: at(1), message: 'Hallo', sender: me },
+      { id: 'm3', messageSent: at(2), message: 'Besichtigung am Montag um 18 Uhr?', sender: landlord, attachments: [{ title: 'Grundriss.pdf', url: 'https://example.test/x' }] }] });
+  await world.start();
+  await until('the first search', () => world.searches > 0);
+  world.say('/immomio');
+  await world.connect('🔗 Connect Immomio', 'immomio', 'alex@immomio.test', 'correct');
+
+  // The first check shows what is still unread, not the history.
+  const forwarded = await world.sees(/^📨 Immomio · Wohnung Kreuzberg\nKim Vermieter:\nBesichtigung am Montag um 18 Uhr\?/);
+  assert.match(forwarded.body.text, /📎 Grundriss\.pdf/);
+  world.never(/Already read|^📨 .*\n.*\nHallo/);
+  // A quiet account is read 30 times less often than an active one.
+  const quiet = world.immomio.reads;
+  await wait(1500);
+  assert.ok(world.immomio.reads - quiet <= 1, `a quiet account was read ${world.immomio.reads - quiet} times in 1.5 s`);
+
+  world.immomio.conversations[0].messages.push({ id: 'm4', messageSent: new Date().toISOString(), message: 'Ist die Wohnung noch frei?', sender: landlord });
+  world.immomio.conversations[0].unread = 1;
+  await world.sees(/^📨 Immomio · Altbau Mitte\nKim Vermieter:\nIst die Wohnung noch frei\?/);
+
+  // ↩️ Reply opens a prompt; the reply to it is sent as written.
+  assert.match(await world.press(world.button('↩️ Reply')), /Reply to the prompt/);
+  const { result: prompt } = await world.sees(/^↩️ Your reply to Altbau Mitte on Immomio/);
+  world.reply('Ja, ich komme gern.', prompt.message_id);
+  await world.sees(/✅ Sent on Immomio to Altbau Mitte/);
+  // Replying to the forwarded message itself works too.
+  world.reply('Montag passt.', forwarded.result.message_id);
+  await world.sees(/✅ Sent on Immomio to Wohnung Kreuzberg/);
+  assert.deepEqual(world.immomio.sent, [{ conversationId: 'conv-old', message: 'Ja, ich komme gern.' }, { conversationId: 'conv-1', message: 'Montag passt.' }]);
+
+  // Active again: read often. Nothing is shown twice, and the own replies are not shown back.
+  const reads = world.immomio.reads;
+  await until('frequent Immomio checks', () => world.immomio.reads > reads + 3, 1500);
+  assert.equal(world.messages().filter(call => /^📨 /.test(call.body.text)).length, 2);
 });
 
 test('a listing IS24 published without a rent still reaches the owner, waits for a tap, and leaves its responses behind', async t => {
