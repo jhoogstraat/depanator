@@ -1,4 +1,4 @@
-import { INTERVALS, NIGHT_PAUSES, STYLE_SECTIONS, allQuiet, isQuiet, pickedSearches } from './settings.js';
+import { DEFAULT_LLM, INTERVALS, NIGHT_PAUSES, STYLE_SECTIONS, allQuiet, isQuiet, pickedSearches } from './settings.js';
 import { expandId } from './review.js';
 import { MENU_HINT, plural, fingerprint, fit, statusView, waitingView, clearView, sentView, modelView, thinkingView, requirementsView, searchesView, searchAddedView, searchView, scheduleView, removeSearchView, catalogView, adminView, styleView, aboutView, settingsView, usersView, removeUserView } from './menu.js';
 
@@ -8,7 +8,7 @@ const RECONNECT = { '/connect': 'connectIS24', '/immomio': 'connectImmomio', '/l
 // Buttons that work during setup, which includes choosing searches.
 const SETUP_ACTIONS = ['searches', 'catalog', 'st', 'sd', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr', 'cancel'];
 // Buttons only the admin's chat has.
-const ADMIN_ACTIONS = ['admin', 'users', 'invite', 'rm', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr'];
+const ADMIN_ACTIONS = ['admin', 'users', 'invite', 'rm', 'model', 'm', 't', 'sa', 'se', 'si', 'sq', 'sn', 'su', 'sr'];
 // What a setup form is for, with its button.
 const FORM_INTRO = {
   search: ['🔍 What are you looking for? Fill in rent, rooms, living space and, in your own words, what else matters to you.', '✏️ Fill in your search'],
@@ -35,17 +35,12 @@ const ACTIONS = {
     const on = this.settings.set('autoSend', !this.settings.config.autoSend);
     return { text: on ? '📤 Auto-send on' : '📤 Auto-send off', edit: this.settingsView() };
   },
-  // Step 1 of a model menu, use: 'w' (🧠 Writing model, everyone) or 's' (🔎 Screening model, the admin).
-  // Without the plan's list, the writing model is typed instead.
-  async model(use = 'w') {
-    if (!this.mayChoose(use)) return STALE;
+  // Step 1 of the 🧠 Model menu (admin only): the one model that screens and writes for everyone.
+  async model() {
     let list;
-    try { list = await this.models(); } catch (error) {
-      if (use === 's') return { text: `⚠️ I could not read the plan's models (${error.message}).` };
-      await this.send(`⚠️ I could not read your plan's models (${error.message}).`); await this.ask('model'); return { text: '' };
-    }
-    const { model, thinking } = this.llm(use);
-    return navigate(modelView(use, list, model, thinking));
+    try { list = await this.models(); } catch (error) { return { text: `⚠️ I could not read the plan's models (${error.message}).` }; }
+    const { model, thinking } = this.llm();
+    return navigate(modelView(list, model, thinking));
   },
   // Cancel on a question that waits for a typed answer (a search's name or link): back to the searches.
   cancel() {
@@ -82,21 +77,19 @@ const ACTIONS = {
     return { text: '' };
   },
   // Model menu step 1: a model was picked, now its thinking level.
-  m(use, index, mark) {
-    const model = this.mayChoose(use) && this.pickedModel(index, mark);
+  m(index, mark) {
+    const model = this.pickedModel(index, mark);
     if (!model) return STALE;
-    const { model: current, thinking } = this.llm(use);
-    return { text: '', edit: thinkingView(use, model, Number(index), current, thinking) };
+    const { model: current, thinking } = this.llm();
+    return { text: '', edit: thinkingView(model, Number(index), current, thinking) };
   },
   // Model menu step 2: model and thinking level are saved together.
-  t(use, index, level, mark) {
-    const model = this.mayChoose(use) && this.pickedModel(index, mark);
+  t(index, level, mark) {
+    const model = this.pickedModel(index, mark);
     if (!model?.thinking.includes(level)) return STALE;
     const thinking = level === model.defaultThinking ? '' : level;
-    if (use === 's') this.admin.setScreening({ model: model.id, thinking });
-    else { this.settings.set('model', model.id); this.settings.set('thinking', thinking); }
-    const applies = use === 's' ? 'Screens the next listings, for everyone.' : 'Writes your next messages.';
-    return { text: `✅ ${model.name} · thinking ${level}. ${applies}`, edit: modelView(use, this.modelCache.list, model.id, thinking) };
+    this.admin.setLlm({ model: model.id, thinking });
+    return { text: `✅ ${model.name} · thinking ${level}. Screens and writes from now on, for everyone.`, edit: modelView(this.modelCache.list, model.id, thinking) };
   },
   admin() { return navigate(adminView()); },
   // 🛠 Admin → 🔎 Manage searches; during setup, the list the admin adds the first ones to.
@@ -169,13 +162,13 @@ const ACTIONS = {
 // Which question comes next is derived from the stored settings, so setup resumes after a restart.
 export class Assistant {
   // workflow: health for /status. redeliver(review) shows a waiting listing again.
-  // admin: Users#adminActions() (people, the searches everyone picks from, the screening model) for the person running the
+  // admin: Users#adminActions() (people, the searches everyone picks from, the models) for the person running the
   // agent, null for everyone else. catalog() -> the admin's [{ name, url }].
   // feedStatus(search) -> { crawledAt, failures, blocked } of one search's crawler.
   constructor({ settings, store, send, codex, is24, immomio = null, workflow = null, admin = null, catalog = () => [], feedStatus = () => ({}), redeliver = async () => {}, onReady = () => {}, onError = () => {},
-    screening = () => settings.config.llm }) {
-    // screening() -> { model, thinking }: the admin's model for reading every listing; this person's own writes their messages.
-    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, feedStatus, redeliver, onReady, onError, screening });
+    llm = () => DEFAULT_LLM }) {
+    // llm() -> { model, thinking }: the one model the admin set for everyone.
+    Object.assign(this, { settings, store, send, codex, is24, immomio, workflow, admin, catalog, feedStatus, redeliver, onReady, onError, llm });
     this.modelCache = null; // { at, list }: the plan's models, read through Codex.
     this.busy = null; // A long step (ChatGPT login, connecting IS24) in progress.
     this.chatgpt = false;
@@ -263,7 +256,6 @@ export class Assistant {
     const field = this.settings.field(key);
     if (kind === 'k') {
       if (!field || (field.form && key !== 'style')) return { text: 'Unknown setting.' };
-      if (key === 'model' || key === 'thinking') { await this.modelMenu(); return { text: '' }; }
       if (key === 'style') return ACTIONS.style.call(this);
       await this.ask(key);
       return { text: 'Choose or send the new value.' };
@@ -301,10 +293,10 @@ export class Assistant {
       '/settings': () => this.show(this.settingsView()),
       '/search': () => this.show(this.requirementsView()),
       '/prompt': () => this.show(this.styleView()),
-      '/model': () => this.modelMenu(),
       '/autosend': () => this.ask('autoSend'),
       ...(this.admin && {
         '/users': () => this.show(usersView(this.admin.users())),
+        '/model': () => this.modelMenu(),
       }),
     };
     return Object.hasOwn(commands, name) ? commands[name]() : this.send(`I do not know ${name}. ${MENU_HINT}`);
@@ -353,13 +345,14 @@ export class Assistant {
     const { config } = this.settings;
     const picked = this.picked();
     // The level a model uses when none is chosen; unknown if the model list cannot be read.
-    const list = await this.models().catch(() => []);
+    const list = this.admin ? await this.models().catch(() => []) : [];
     const level = ({ model, thinking }) => {
       const fallback = list.find(entry => entry.id === model)?.defaultThinking;
       return thinking || (fallback ? `${fallback} (default)` : '');
     };
     return statusView({ counts, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
-      paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail, model: config.llm.model, thinking: level(config.llm), screening: this.admin ? { model: this.screening().model, thinking: level(this.screening()) } : null,
+      paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail,
+      llm: this.admin ? { ...this.llm(), thinking: level(this.llm()) } : null,
       searches: picked.map(search => ({ ...search, quiet: isQuiet(search.quietHours), ...this.feedStatus(search) })), quiet: allQuiet(picked), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
   }
   // ponytail: 10-minute cache; plans rarely change their models more often.
@@ -369,12 +362,10 @@ export class Assistant {
   }
   async modelMenu() {
     let list;
-    try { list = await this.models(); } catch (error) { await this.send(`⚠️ I could not read your plan's models (${error.message}).`); return this.ask('model'); }
-    return this.show(modelView('w', list, this.settings.config.llm.model, this.settings.config.llm.thinking));
+    try { list = await this.models(); } catch (error) { return this.send(`⚠️ I could not read the plan's models (${error.message}).`); }
+    const { model, thinking } = this.llm();
+    return this.show(modelView(list, model, thinking));
   }
-  // Everyone picks their writing model; only the admin the screening model.
-  mayChoose(use) { return use === 'w' || (use === 's' && Boolean(this.admin)); }
-  llm(use) { return use === 's' ? this.screening() : this.settings.config.llm; }
   // Menu buttons: x:<name>:<arguments>, see ACTIONS.
   async action(name, ...args) {
     if (!this.settings.complete() && !SETUP_ACTIONS.includes(name)) return { text: 'Finish the setup first.' };

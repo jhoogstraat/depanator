@@ -38,12 +38,11 @@ export function reviewInput(config, snapshot, revision) {
     ...(revision?.draft && { currentDraft: revision.draft }), ...(revision?.instructions && { userInstructions: revision.instructions }) });
 }
 
-// Writing and rewriting a message use the person's own model (config.llm, ✍️ Writing model); screening uses the one
-// the admin set for everybody, screening() -> { model, thinking }.
-export function createEvaluator(config, { screening = () => config.llm } = {}) {
+// llm() -> { model, thinking }: the one model the admin set for everybody, for screening and writing alike.
+export function createEvaluator(config, { llm: model }) {
   return async (snapshot, options = {}) => {
     const { evaluateWithCodex } = await import('./codex.js');
-    const llm = options.revision ? config.llm : screening();
+    const llm = model();
     const result = validateEvaluation(await evaluateWithCodex(config, snapshot, { ...options, llm }), { write: Boolean(options.revision) });
     // Immomio applies with the account's profile: the approval covers that exact action, so there is nothing to write.
     return usesImmomio(snapshot, config) && result.decision === 'message' ? { ...result, draft: immomioDraft(config, snapshot) } : result;

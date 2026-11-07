@@ -3,10 +3,10 @@ import { compactId } from './review.js';
 import { INTERVALS, NIGHT_PAUSES, STYLE_SECTIONS, TIME_ZONE, every, nightPause } from './settings.js';
 
 // The Telegram menu (☰ next to the message field): two entry points, everything else is a button in the chat.
-// Hidden but still working: /start, /setup, /search, /pause, /prompt, /model, /autosend, /connect, /immomio, /login. Admin only: /users.
+// Hidden but still working: /start, /setup, /search, /pause, /prompt, /autosend, /connect, /immomio, /login. Admin only: /users, /model.
 export const COMMANDS = [
   ['status', 'Overview: search now, waiting and sent'],
-  ['settings', 'Search, about you, writing style, model, connections'],
+  ['settings', 'Search, about you, writing style, connections'],
 ];
 export const MENU_HINT = 'Send /status to see what I am doing, /settings to change anything.';
 
@@ -45,8 +45,8 @@ function ago(time, now = Date.now()) {
   const minutes = Math.floor((now - time) / 60_000);
   return minutes < 1 ? 'just now' : minutes < 60 ? `${minutes} min ago` : minutes < 24 * 60 ? `${Math.floor(minutes / 60)} h ago` : when(time);
 }
-// status: { counts, failures: { IS24, LLM }, blocked, paused, autoSend, email, immomioEmail, model, thinking (writing),
-// screening: { model, thinking } (only for the admin; internal to everyone else), chatgpt: { email, plan },
+// status: { counts, failures: { IS24, LLM }, blocked, paused, autoSend, email, immomioEmail,
+// llm: { model, thinking } (only for the admin; internal to everyone else), chatgpt: { email, plan },
 // searches: [{ name, intervalMs, quietHours, quiet, crawledAt, failures, blocked }] (the ones picked), quiet: all of them are in their night pause }
 // Blocks, most important first: what I do, your listings, the searches, the connections, how ChatGPT works.
 export function statusView(s) {
@@ -79,8 +79,8 @@ export function statusView(s) {
     ['<b>🔎 Searches</b>', ...(searches.length ? searches : ['None picked. 🔍 Search in /settings.'])],
     ['<b>🔗 Connections</b>', account('ImmoScout24', s.email, s.failures.IS24, s.blocked, '/connect'), account('Immomio', s.immomioEmail, 0, false, '/immomio'),
       account(`ChatGPT${plan}`, s.chatgpt.email, s.failures.LLM)],
-    ['<b>🤖 Agent</b>', `✍️ Writing: ${esc(s.model)} · thinking ${esc(s.thinking || 'default')}`,
-      ...(s.screening ? [`🔎 Screening: ${esc(s.screening.model)} · thinking ${esc(s.screening.thinking || 'default')}`] : []), `📤 Auto-send ${s.autoSend ? '<b>on</b>: clear matches go out by themselves' : 'off: you approve every application'}`],
+    ['<b>🤖 Agent</b>', ...(s.llm ? [`🧠 Model: ${esc(s.llm.model)} · thinking ${esc(s.llm.thinking || 'default')}`] : []),
+      `📤 Auto-send ${s.autoSend ? '<b>on</b>: clear matches go out by themselves' : 'off: you approve every application'}`],
   ];
   return html(blocks.map(block => block.join('\n')).join('\n\n'), [
     [s.paused ? { text: '▶️ Resume', callback_data: 'x:pause' } : { text: '⏸ Pause', callback_data: 'x:pause' }],
@@ -98,7 +98,7 @@ export function settingsView({ autoSend, admin }) {
       : '📤 Auto-send is <b>off</b>: you approve every application. Turned on, I send clear matches myself; unclear ones still ask you first.',
   ].join('\n'), [
     [{ text: '🔍 Search', callback_data: 'x:requirements' }, { text: '👤 About you', callback_data: 'x:about' }],
-    [{ text: '✍️ Agent\'s style', callback_data: 'x:style' }, { text: '🧠 Writing model', callback_data: 'x:model:w' }],
+    [{ text: '✍️ Agent\'s style', callback_data: 'x:style' }],
     [{ text: `📤 Auto-send: ${autoSend ? 'on' : 'off'}`, callback_data: 'x:autosend' }],
     [{ text: '🔗 ImmoScout24', callback_data: 'x:reconnect:/connect' }, { text: '🔗 Immomio', callback_data: 'x:reconnect:/immomio' }],
     ...(admin ? [[{ text: '🛠 Admin', callback_data: 'x:admin' }]] : []),
@@ -112,11 +112,11 @@ export function adminView() {
     '<b>🛠 Admin</b>', 'Only you see this. What you change here applies to everyone on this agent.', '',
     '🔎 <b>Manage searches</b>: add, rename, relink and remove the searches people pick from, and set how often each runs.',
     '👥 <b>People</b>: invite and remove people.',
-    '🔎 <b>Screening model</b>: the ChatGPT model that reads every new listing, for everyone. Each person picks their own 🧠 Writing model.',
+    '🧠 <b>Model</b>: the ChatGPT model for everyone. It reads every new listing and writes and rewrites the messages.',
     '🔗 <b>ChatGPT</b>: the one ChatGPT login everyone\'s listings are read with.',
   ].join('\n'), [
     [{ text: '🔎 Manage searches', callback_data: 'x:catalog' }],
-    [{ text: '🔎 Screening model', callback_data: 'x:model:s' }],
+    [{ text: '🧠 Model', callback_data: 'x:model' }],
     [{ text: '👥 People', callback_data: 'x:users' }, { text: '🔗 ChatGPT', callback_data: 'x:reconnect:/login' }],
     BACK.settings,
   ]);
@@ -161,26 +161,20 @@ export function sentView(reviews) {
   return html(`<b>📨 Applications</b>\n\n${lines.join('\n')}\n\n✅ accepted by IS24 · ⚠️ uncertain, check on IS24 · ❌ not sent`, [BACK.status]);
 }
 
-// What each ChatGPT call uses: w(riting) is everyone's own, for writing and rewriting their messages;
-// s(creening) is the admin's, for reading every new listing of everyone.
-const MODEL_USES = {
-  w: { title: '✍️ Writing model', intro: 'Writes and rewrites your messages: ✨ Write message, ✏️ Rewrite and auto-send.', more: 'better drafts' },
-  s: { title: '🔎 Screening model', intro: 'Reads every new listing, for everyone on this agent, and decides whether it reaches them. It runs far more often than writing, so a fast model saves the plan\'s usage.', more: 'better judgement' },
-};
-// models: [{ id, name, thinking: [levels], defaultThinking }]. use: a MODEL_USES key. Step 1 of 2: the model.
-export function modelView(use, models, current, thinking) {
-  const { title, intro } = MODEL_USES[use];
-  return html(`<b>${title}</b>\n${intro}\n\nNow: <b>${esc(current)}</b> · thinking ${esc(thinking || 'default')}\n\n1️⃣ Pick a model, then 2️⃣ how hard it should think.`,
-    [...fit(models.map((model, index) => ({ text: `${model.id === current ? '✓ ' : ''}${model.name}`, callback_data: `x:m:${use}:${index}:${fingerprint(model.id)}` })), 2),
-      use === 's' ? BACK.admin : BACK.settings]);
+// The one ChatGPT model the admin sets for everyone, for screening and writing alike.
+// models: [{ id, name, thinking: [levels], defaultThinking }]. Step 1 of 2: the model.
+export function modelView(models, current, thinking) {
+  return html(`<b>🧠 Model</b>\nReads every new listing for everyone on this agent and decides whether it reaches them, and writes and rewrites the messages: ✨ Write message, ✏️ Rewrite and auto-send. Screening runs far more often than writing, so a fast model saves the plan's usage.\n\nNow: <b>${esc(current)}</b> · thinking ${esc(thinking || 'default')}\n\n1️⃣ Pick a model, then 2️⃣ how hard it should think.`,
+    [...fit(models.map((model, index) => ({ text: `${model.id === current ? '✓ ' : ''}${model.name}`, callback_data: `x:m:${index}:${fingerprint(model.id)}` })), 2),
+      BACK.admin]);
 }
 // Step 2 of 2: a thinking level the chosen model supports.
-export function thinkingView(use, model, modelIndex, current, thinking) {
+export function thinkingView(model, modelIndex, current, thinking) {
   const active = model.id === current ? thinking || model.defaultThinking : null;
   const label = level => `${level === active ? '✓ ' : ''}${level}`;
   const fallback = model.defaultThinking ? `\nIts default: ${esc(model.defaultThinking)}.` : '';
-  return html(`<b>🧠 Thinking for ${esc(model.name)}</b>\n${MODEL_USES[use].title}. More thinking: ${MODEL_USES[use].more}, but slower and more of the plan's usage.${fallback}`,
-    [...fit(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${use}:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3), back(`model:${use}`, '← Models')]);
+  return html(`<b>🧠 Thinking for ${esc(model.name)}</b>\nMore thinking: better judgement and drafts, but slower and more of the plan's usage.${fallback}`,
+    [...fit(model.thinking.map(level => ({ text: label(level), callback_data: `x:t:${modelIndex}:${level}:${fingerprint(model.id)}` })), 3), back('model', '← Models')]);
 }
 
 const span = ({ min, max }, unit) => min === null && max === null ? 'any' : min === null ? `up to ${max}${unit}` : max === null ? `from ${min}${unit}` : `${min}–${max}${unit}`;

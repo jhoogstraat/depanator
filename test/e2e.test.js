@@ -124,29 +124,22 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   await until('new settings buttons', () => world.messages().filter(call => /Tap what you want to change/.test(call.body.text)).length === 2);
   assert.match(await world.tap('📤 Auto-send: off'), /Auto-send on/); // Switches at once, in place.
   await world.sees(/📤 Auto-send is <b>on<\/b>/);
-  // Everyone picks the model that writes their messages...
-  await world.tap('🧠 Writing model');
-  await world.sees(/✍️ Writing model<\/b>\nWrites and rewrites your messages/);
+  // The admin picks the one model that screens and writes for everyone.
+  const menu = world.button('🛠 Admin').messageId;
+  await world.tap('🛠 Admin');
+  await world.tap('🧠 Model');
+  await world.sees(/🧠 Model<\/b>\nReads every new listing/);
   assert.ok(!world.labels().includes('GPT E1E'), 'only the newest model of each family is offered');
   await world.tap('GPT E2E');
   await world.sees(/Thinking for GPT E2E/);
-  assert.match(await world.tap('high'), /GPT E2E · thinking high\. Writes your next messages/);
+  assert.match(await world.tap('high'), /GPT E2E · thinking high\. Screens and writes from now on, for everyone/);
   await until('the picked model', () => world.labels().includes('✓ GPT E2E'));
-  // ...and the admin the one that screens every listing, for everyone.
-  const menu = world.button('← Settings').messageId;
-  await world.tap('← Settings');
-  await world.tap('🛠 Admin');
-  await world.tap('🔎 Screening model');
-  await world.sees(/🔎 Screening model<\/b>\nReads every new listing/);
-  await world.tap('GPT E2E');
-  await until('the screening thinking levels', () => world.labels().includes('← Models') && world.labels().includes('low'));
-  assert.match(await world.tap('low'), /GPT E2E · thinking low\. Screens the next listings, for everyone/);
   // Every menu leads back up, in the same message: Model → Admin → Settings → Status.
   await world.tap('← Admin');
   await world.tap('← Settings');
   await world.tap('← Status');
   await until('the status in place of the menu', () => world.telegram.some(call => call.method === 'editMessageText' && call.body.message_id === menu
-    && /✍️ Writing: gpt-e2e · thinking high\n🔎 Screening: gpt-e2e · thinking low \(default\)\n/.test(call.body.text)));
+    && /🧠 Model: gpt-e2e · thinking high\n/.test(call.body.text)));
 
   world.listing(301, 'Parterre', 'Wohnung im Ground Floor.');
   world.listing(302, 'Klar passend', 'Balkon, ruhig.');
@@ -158,7 +151,7 @@ test('chat settings change what happens: a mismatch stays silent, a clear match 
   world.never(/^Parterre/);
   const calls = world.codexCalls();
   assert.ok(calls.some(({ input }) => input.task === 'write'), 'the clear match was written');
-  assert.ok(calls.every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"') === (input.task === 'write')), 'writing with the writing model, screening with the screening model');
+  assert.ok(calls.every(({ args, input }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"')), 'screening and writing with the one model');
   assert.ok(calls.every(({ input }) => input.preferences === 'No swap\nNo ground floor' && JSON.stringify(input.writingStyle) === JSON.stringify({ overall: { instructions: 'Kurz & formell.' }, closing: { instructions: 'Mit vollem Namen unterschreiben.', example: 'Viele Grüße\nAlex' } })));
 
   const card = world.button('✖️ Dismiss');
@@ -484,11 +477,18 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await until('their settings', () => world.chat(FRIEND).filter(text => /Tap what you want to change/.test(text)).length);
   const labels = world.labels();
   assert.ok(labels.includes('✍️ Agent\'s style'), 'these are the settings');
-  assert.ok(!labels.includes('🛠 Admin'), 'the shared searches, login and people stay with the admin');
+  assert.ok(!labels.includes('🛠 Admin') && !labels.some(label => /model/.test(label)), 'the shared searches, model, login and people stay with the admin');
   world.say('/status', FRIEND);
   await world.seesIn(FRIEND, /<b>Search 1<\/b> · every 0\.1 s · 🌙 no night pause/); // The search's, carried over from the admin's old settings.
-  assert.ok(!world.chat(FRIEND).some(text => /Screening/.test(text)), 'the screening model is internal');
+  assert.ok(!world.chat(FRIEND).some(text => /Model:/.test(text)), 'the model is internal');
   await until('their first check', () => world.agentLog.includes(`[${FRIEND}] Poll complete`));
+
+  // The model the admin picks is everyone's: it screens and writes for Robin too.
+  world.say('/model');
+  await world.sees(/🧠 Model<\/b>/);
+  await world.tap('GPT E2E');
+  await world.sees(/Thinking for GPT E2E/);
+  await world.tap('high');
 
   // One listing for each kind of match. Between them they prove the search itself never narrowed.
   world.listing(300, 'Passt beiden', 'Hell.', { rent: '700 €' });
@@ -522,6 +522,9 @@ test('two people on one bot: private by invite, one shared search, separate chat
   await world.seesIn(FRIEND, /✅ Message sent/);
   assert.deepEqual(world.contacts.map(({ authorization, form }) => [authorization, form.firstname, form.emailAddress]), [['Bearer connected-token', 'Robin', 'friend@example.com']]);
   assert.ok(!world.chat(OWNER).some(text => /Guten Tag, ich bin Robin|Message sent/.test(text)), 'their draft and outcome stay in their chat');
+  const robins = world.codexCalls().filter(({ input }) => input.preferences === 'No cellar');
+  assert.ok(robins.some(({ input }) => input.task === 'screen') && robins.some(({ input }) => input.task === 'write'));
+  assert.ok(robins.every(({ args }) => args.includes('gpt-e2e') && args.includes('model_reasoning_effort="high"')), 'the admin\'s model screens and writes for them');
 
   // Removing someone ends it for them, for good, and keeps their folder.
   world.say('/users');

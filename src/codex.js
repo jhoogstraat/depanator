@@ -101,8 +101,8 @@ export function listCodexModels(config) {
   });
 }
 
-// llm: the { model, thinking } to use; the person's own (config.llm) unless given.
-export async function evaluateWithCodex(config, snapshot, { signal, revision, llm = config.llm } = {}) {
+// llm: the { model, thinking } to use, set by the admin.
+export async function evaluateWithCodex(config, snapshot, { signal, revision, llm }) {
   signal?.throwIfAborted();
   return inTempDir('depanator-codex-', async directory => {
     const args = codexArguments(directory, llm);

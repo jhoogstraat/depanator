@@ -37,9 +37,8 @@ function range(single, hint, most) {
     return stated;
   }, { maxLength: 20, pattern: { source: RANGE.source, flags: '' }, message: hint });
 }
-// The ChatGPT model when nobody picked one: for writing (each person's `model`) and screening (the admin's `screening`).
-const DEFAULT_MODEL = 'gpt-6-luna';
-export const SCREENING = { model: DEFAULT_MODEL, thinking: '' };
+// The ChatGPT model and thinking level ('' = the model's default) until the admin picks one.
+export const DEFAULT_LLM = { model: 'gpt-6-luna', thinking: '' };
 
 // Every time the agent shows or schedules by. ponytail: German time fixed; IS24 is a German site. Make it a setting if that ever changes.
 export const TIME_ZONE = 'Europe/Berlin';
@@ -125,10 +124,6 @@ const FIELDS = [
   ]),
   { key: 'autoSend', label: 'Auto-send', ask: 'Should I send applications myself when a listing clearly fits? You get the listing and the sent message afterwards. Unclear matches always ask you first.', default: false,
     choices: [[false, 'Ask me each time'], [true, 'Auto-send clear matches']], setup: false },
-  // ✍️ Writing model: writes and rewrites this person's messages. Screening uses the admin's (SCREENING).
-  { key: 'model', label: 'Writing model', ask: 'Which ChatGPT model should write your messages? It must be available to the ChatGPT plan.', default: DEFAULT_MODEL, setup: false, parse: line(60, /^[a-zA-Z0-9._-]{1,60}$/, 'Please send a model name like gpt-6-luna.') },
-  // '' = the model's own default. Chosen together with the model (🧠 Model), from the levels it supports.
-  { key: 'thinking', label: 'Thinking', ask: 'How hard should ChatGPT think?', default: '', empty: 'default', optional: true, setup: false, parse: line(60, /^[a-z]{1,20}$/, 'Please pick a thinking level from /settings → 🧠 Model.') },
   { key: 'paused', label: 'Searching', ask: 'Should I search for new listings?', default: false, setup: false, choices: [[false, 'Searching'], [true, 'Paused']] },
 ];
 const FIELD = Object.fromEntries(FIELDS.map(field => [field.key, field]));
@@ -245,8 +240,6 @@ export class Settings {
       searches: this.values.searches ?? [], limits: { price: limit('rent'), rooms: limit('rooms'), livingSpace: limit('area') },
       autoSend: value('autoSend'), paused: value('paused'), style: this.style(),
     });
-    this.config.llm.model = value('model');
-    this.config.llm.thinking = value('thinking');
     const persona = this.config.persona;
     for (const key of Object.keys(persona)) delete persona[key];
     for (const key of PERSONA) if (this.values[`persona.${key}`]) persona[key] = this.values[`persona.${key}`];

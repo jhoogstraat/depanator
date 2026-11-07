@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Store } from './store.js';
-import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES, SCREENING, clean } from './settings.js';
+import { Settings, SCHEDULE, INTERVALS, NIGHT_PAUSES, DEFAULT_LLM, clean } from './settings.js';
 import { FormApp } from './forms.js';
 import { Workflow } from './workflow.js';
 import { IS24Adapter, searchFilters, searchKey } from './is24.js';
@@ -184,7 +184,7 @@ export class Users {
     const connect = connector({ app: is24App, setting: 'accountEmail', name: 'ImmoScout24', path: 'connect', config, settings, send, log });
     // Optional: only listings that link to Immomio need it.
     const connectImmomio = connector({ app: immomioApp, setting: 'immomioEmail', name: 'Immomio', path: 'immomio', config, settings, send, log });
-    const evaluate = createEvaluator(config, { screening: () => this.screening() });
+    const evaluate = createEvaluator(config, { llm: () => this.llm() });
     const workflow = new Workflow({
       store, adapter, config, evaluate: (snapshot, options) => this.limit(() => evaluate(snapshot, options)),
       notify: review => telegram.notify(review),
@@ -205,7 +205,7 @@ export class Users {
       immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       catalog: () => this.catalog, feedStatus: search => feeds.status(searchKey(search.url)),
-      admin: isAdmin ? this.adminActions() : null, screening: () => this.screening(),
+      admin: isAdmin ? this.adminActions() : null, llm: () => this.llm(),
       onReady: () => tick(), onError: error,
     });
     // Back from a pause: only what is crawled from now on is new, and what is online now counts as already online.
@@ -225,14 +225,18 @@ export class Users {
   // What only the admin's chat can do.
   adminActions() {
     return { invite: () => this.invite(), users: () => this.list(), remove: target => this.remove(target), addSearch: (name, url) => this.addSearch(name, url),
-      setScreening: llm => this.setScreening(llm),
+      setLlm: llm => this.setLlm(llm),
       renameSearch: (name, to) => this.renameSearch(name, to), changeSearchUrl: (name, url) => this.changeSearchUrl(name, url), scheduleSearch: (name, change) => this.scheduleSearch(name, change), removeSearch: name => this.removeSearch(name) };
   }
-  // The model that screens every new listing for everyone: { model, thinking ('' = the model's default) }, set by the admin.
-  screening() { return { ...SCREENING, ...this.admin?.store.settings().screening }; }
-  setScreening({ model, thinking }) {
+  // The one model the admin set for everyone, for screening listings and writing messages alike:
+  // { model, thinking ('' = the model's default) }. Until the admin picks one, their screening model carries over.
+  llm() {
+    const saved = this.admin?.store.settings() ?? {};
+    return { ...DEFAULT_LLM, ...(saved.llm ?? saved.screening) };
+  }
+  setLlm({ model, thinking }) {
     if (!/^[a-zA-Z0-9._-]{1,60}$/.test(model) || !/^[a-z]{0,20}$/.test(thinking)) throw new Error('Please pick a model from the list.');
-    this.admin.store.saveSetting('screening', { model, thinking });
+    this.admin.store.saveSetting('llm', { model, thinking });
   }
   // Checks run as often as the most frequent search someone searching picked; each search runs on its own interval.
   interval() {
