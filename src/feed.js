@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { isQuiet } from './settings.js';
-import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
+import { IS24_ADVICE, Health } from './health.js';
 
 // The admin's searches, each crawled on its own schedule into one table that everybody reads (push, not rounds).
 // One IS24 request per due search, however many people picked it; a search nobody searching picked costs nothing.
@@ -40,7 +40,7 @@ export class Feeds {
     this.db.exec(SCHEMA);
     this.exposes = new Map();
     this.timers = new Map(); // key -> { timer, intervalMs, at: when its last loop ended }
-    this.health = new Map(); // key -> { failures, skip, blocked }
+    this.health = new Map(); // key -> Health (health.js)
     this.stopped = false;
   }
   // Arms a timer for every search on the list and drops those removed; a changed interval applies right away.
@@ -77,16 +77,22 @@ export class Feeds {
     const { key } = search;
     if (!search.wanted) { this.feed(key, { baseline: 1 }); return { unwanted: true }; } // Its history goes stale.
     if (isQuiet(search.quietHours, this.now())) return { quiet: true }; // The morning crawl brings the night's listings.
-    const health = this.health.get(key) ?? { failures: 0, skip: 0, blocked: false };
+    const health = this.health.get(key) ?? new Health({ advice: IS24_ADVICE });
     this.health.set(key, health);
-    if (health.skip > 0) { health.skip--; return { skipped: true }; }
+    if (health.backingOff) { health.record({ type: 'waited' }); return { skipped: true }; }
+    const what = `IS24 search ${search.name}`;
     const baseline = this.feedRow(key).baseline === 1;
     const known = this.db.prepare('SELECT 1 FROM listings WHERE search=? AND expose_id=?');
     let result;
     try {
       // A baseline needs only what is online now; after that, pages up to the first known listing.
       result = await this.adapter.scan(search.filters, { maxPages: baseline ? 1 : PAGES, known: id => Boolean(known.get(key, id)) });
-    } catch (error) { await this.failed(search, health, error); throw error; }
+    } catch (error) {
+      const alert = health.record({ type: 'failed', error, intervalMs: search.intervalMs }, what);
+      this.onError(`health_error: ${what} failure ${health.failures}: ${error.message}`);
+      if (alert) this.onAlert(key, alert);
+      throw error;
+    }
     const insert = this.db.prepare('INSERT OR IGNORE INTO listings(search, expose_id, seen_at, existing, listing) VALUES(?,?,?,?,?)');
     const at = this.now();
     this.db.exec('BEGIN');
@@ -95,18 +101,11 @@ export class Feeds {
       this.feed(key, { crawled_at: at, baseline: 0 });
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    if (health.failures >= ALERT_AFTER) this.onAlert(key, recoveredAlert(`IS24 search ${search.name}`));
-    Object.assign(health, { failures: 0, blocked: false });
+    const recovered = health.record({ type: 'succeeded' }, what);
+    if (recovered) this.onAlert(key, recovered);
     if (!result.complete) this.onError(`${search.name}: page limit reached; search coverage is partial`);
     this.onCrawled(key);
     return result;
-  }
-  async failed(search, health, error) {
-    health.failures++;
-    health.blocked = error.code === 'BLOCKED';
-    health.skip = backoffSkip(health.failures, search.intervalMs);
-    this.onError(`health_error: IS24 search ${search.name} failure ${health.failures}: ${error.message}`);
-    if (health.failures === ALERT_AFTER) this.onAlert(search.key, failedAlert(`IS24 search ${search.name}`, health.failures, error, IS24_ADVICE));
   }
   feedRow(key) { return this.db.prepare('SELECT crawled_at, baseline FROM feeds WHERE search=?').get(key) ?? { crawled_at: null, baseline: 1 }; }
   feed(key, values) {
@@ -126,7 +125,7 @@ export class Feeds {
   }
   // For /status: when it last crawled, and its failure streak.
   status(key) {
-    const { failures = 0, blocked = false } = this.health.get(key) ?? {};
+    const { failures = 0, blocked = false } = this.health.get(key)?.state ?? {};
     return { crawledAt: this.feedRow(key).crawled_at, failures, blocked };
   }
   // Until when the crawlers count as alive: a loop that hangs (a crawl that never ends) lets this lapse.

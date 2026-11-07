@@ -187,8 +187,6 @@ export class Telegram {
     this.onReplied = () => {}; // After an Immomio reply went out.
     this.token = config.telegramBotToken;
     this.controller = new AbortController();
-    // Edit prompt message_id -> review. In memory: after a restart, tapping ✏️ Rewrite again is enough.
-    this.editPrompts = new Map();
   }
   api(...args) { return this.bot.api(...args); }
   signature(review, action) {
@@ -313,7 +311,8 @@ export class Telegram {
     await this.send('👋 Hi! I am your apartment agent. I find new listings on ImmobilienScout24, write applications with ChatGPT, and send them when you approve. Let us set things up; it takes a few minutes.');
     await this.assistant.continue();
   }
-  // Commands and setup answers go to the assistant; replies to a ✏️ Rewrite prompt revise that draft.
+  // Commands and typed answers go to the assistant, except the answer to an edit prompt (the assistant's
+  // open question { kind: 'edit' }), which revises that draft.
   async handleMessage(message) {
     const text = typeof message.text === 'string' ? message.text.trim() : '';
     if (message.chat?.type !== 'private' || String(message.chat.id) !== this.chatId || String(message.from?.id) !== this.chatId) return;
@@ -321,18 +320,26 @@ export class Telegram {
     if (!text) return;
     const thread = message.reply_to_message && this.inbox?.thread(message.reply_to_message.message_id);
     if (thread) return this.replyImmomio(thread, text);
-    // Not a reply: the newest edit prompt whose draft is still open, unless the chat waits for a typed answer.
-    const open = ([, { id, version }]) => { const review = this.store.get(id); return review?.status === 'awaiting_approval' && review.version === version; };
-    const promptId = message.reply_to_message ? message.reply_to_message.message_id : this.assistant.asking ? undefined : [...this.editPrompts].findLast(open)?.[0];
-    const target = this.editPrompts.get(promptId);
-    if (!target) return this.assistant.text(text);
-    // A reply to an edit prompt: how to change that draft, or the new draft itself.
-    const manual = target.mode === 'manual';
+    const question = this.assistant.awaiting;
+    const edit = question?.kind === 'edit' ? question : null;
+    // Replying to an older edit prompt must not answer whatever is open now.
+    const reply = message.reply_to_message;
+    if (reply && reply.message_id !== edit?.prompt && Object.values(EDITS).some(({ ask }) => ask === reply.text)) {
+      return this.send('This prompt is outdated. Tap ✏️ Rewrite or 📝 Write myself under the draft again.');
+    }
+    if (!edit) return this.assistant.text(text);
+    // The draft was handled or replaced meanwhile: the question is over, and the message is an ordinary one.
+    const review = this.store.get(edit.id);
+    if (review?.status !== 'awaiting_approval' || review.version !== edit.version) {
+      this.assistant.awaiting = null;
+      return this.assistant.text(text);
+    }
+    const manual = edit.mode === 'manual';
     if (!manual && text.length > 2000) return this.send('Please keep edit instructions under 2000 characters.');
-    this.editPrompts.delete(promptId);
+    this.assistant.awaiting = null;
     if (!manual) await this.send('✍️ Revising the draft…');
     // Long-polling continues while the agent works; the revised draft arrives as a new approval message.
-    this.revise(target.id, target.version, text, { manual });
+    this.revise(edit.id, edit.version, text, { manual });
   }
   revise(id, version, instructions, options) {
     Promise.resolve().then(() => this.workflow.revise(id, version, instructions, options))
@@ -414,8 +421,7 @@ export class Telegram {
     const { ask, placeholder, mode } = EDITS[action];
     const prompt = await this.send(ask, { reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
       reply_markup: { force_reply: true, input_field_placeholder: placeholder } });
-    this.editPrompts.set(prompt.message_id, { id, version, mode });
-    this.assistant.asking = null; // The newest prompt wins: the next plain message is this edit.
+    this.assistant.awaiting = { kind: 'edit', id, version, mode, prompt: prompt.message_id }; // It replaces any open question.
     return { text: 'Reply to the prompt with your changes.' };
   }
   close() { this.controller.abort(); }

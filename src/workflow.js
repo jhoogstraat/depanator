@@ -1,7 +1,7 @@
 import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.js';
 import { assertReconciled } from './config.js';
 import { TIME_ZONE } from './settings.js';
-import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
+import { ALERT_AFTER, IS24_ADVICE, Health } from './health.js';
 
 // At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
@@ -23,8 +23,8 @@ export class Workflow {
     this.runningTick = null;
     this.revisions = new Set(); // Run beside the queue so an edit never waits for a poll; close() awaits them.
     this.reporting = Promise.resolve(); // Outcome reports, serialized but independent of IS24 work.
-    this.failures = { IS24: 0, LLM: 0 }; // Consecutive outage streaks.
-    this.backoff = { skip: 0, blocked: false }; // Polls to skip; sends pause while IS24 blocks us.
+    // Outage streaks (health.js). Only IS24 is backed off; ChatGPT is retried every check.
+    this.health = { IS24: new Health({ advice: ADVICE.IS24 }), LLM: new Health({ advice: ADVICE.LLM }) };
     this.cleanedOn = null; // The German date of the last morning cleanup.
   }
   get closed() { return this.controller.signal.aborted; }
@@ -48,7 +48,7 @@ export class Workflow {
     const result = this.queue.then(async () => {
       this.assertRunning();
       try { await this.beforeWork(); }
-      catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
+      catch (error) { if (!this.closed) await this.failure('IS24', error); throw error; }
       this.assertRunning();
       return fn();
     });
@@ -71,9 +71,10 @@ export class Workflow {
 
   // One check: why it does not search, or what it found.
   async check() {
+    // The backoff counts down every tick, paused or not, so approvals held back by a block go out once it ends.
+    if (this.health.IS24.backingOff) { this.health.IS24.record({ type: 'waited' }); return { skipped: true }; }
     if (this.config.paused === true) return { paused: true };
     if (this.adapter.quiet?.()) return { quiet: true };
-    if (this.backoff.skip > 0) { this.backoff.skip--; return { skipped: true }; }
     await this.morningCleanup();
     return this.pollInternal();
   }
@@ -104,18 +105,14 @@ export class Workflow {
     try { await this.alert(text); } catch (error) { this.emit({ type: 'alert_error', detail: error.message }); }
   }
   async failure(component, error) {
-    const failures = ++this.failures[component];
-    this.emit({ type: 'health_error', detail: `${component} failure ${failures}: ${error.message}` });
-    if (failures === ALERT_AFTER) await this.raise(failedAlert(component, failures, error, ADVICE[component]));
+    const health = this.health[component];
+    const alert = health.record({ type: 'failed', error, intervalMs: component === 'IS24' ? this.interval() : 0 }, component);
+    this.emit({ type: 'health_error', detail: `${component} failure ${health.failures}: ${error.message}` });
+    if (alert) await this.raise(alert);
   }
   async recovered(component) {
-    const failures = this.failures[component];
-    this.failures[component] = 0;
-    if (failures >= ALERT_AFTER) await this.raise(recoveredAlert(component));
-  }
-  async is24Failure(error) {
-    await this.failure('IS24', error);
-    this.backoff = { skip: backoffSkip(this.failures.IS24, this.interval()), blocked: error.code === 'BLOCKED' };
+    const alert = this.health[component].record({ type: 'succeeded' }, component);
+    if (alert) await this.raise(alert);
   }
 
   async pollInternal() {
@@ -123,7 +120,7 @@ export class Workflow {
     try {
       search = await this.adapter.search();
       if (!search || !Array.isArray(search.listings)) throw new Error('Invalid search response');
-    } catch (error) { if (!this.closed) await this.is24Failure(error); throw error; }
+    } catch (error) { if (!this.closed) await this.failure('IS24', error); throw error; }
     this.assertRunning();
     // The adapter marks each search's first successful result after startup/resume/change/night pause as a baseline.
     // Those listings were already online; only later arrivals become candidates.
@@ -137,7 +134,7 @@ export class Workflow {
     // allSettled: no worker may still touch the store after this poll ends or the workflow closes.
     const failed = (await Promise.allSettled(Array.from({ length: ANALYSIS_CONCURRENCY }, worker))).find(result => result.status === 'rejected');
     if (failed) throw failed.reason;
-    if (!batch.is24Failed) { this.backoff.blocked = false; await this.recovered('IS24'); }
+    if (!batch.is24Failed) await this.recovered('IS24');
     for (const review of this.store.list('awaiting_approval')) {
       if (review.notifiedAt != null || batch.tried.has(review.id)) continue;
       this.assertRunning();
@@ -176,7 +173,7 @@ export class Workflow {
       if (failed.status === 'analysis_failed') await this.raise(`🛑 Gave up on "${review.snapshot.title}" (${review.exposeId}).\n${failed.detail}`);
       if (stage === 'IS24' && error.code !== 'LISTING_GONE') {
         batch.stop = true;
-        if (!batch.is24Failed) { batch.is24Failed = true; await this.is24Failure(error); }
+        if (!batch.is24Failed) { batch.is24Failed = true; await this.failure('IS24', error); }
       } else if (error.code === 'LLM_UNAVAILABLE') {
         batch.stop = true;
         if (!batch.llmFailed) { batch.llmFailed = true; await this.failure('LLM', error); }
@@ -239,8 +236,9 @@ export class Workflow {
   }
   async sendInternal() {
     const results = [];
-    // Approvals stay durable and are sent once IS24 stops blocking.
-    for (const candidate of this.backoff.blocked ? [] : this.store.list('approved')) {
+    // Approvals stay durable. While IS24 blocks us they wait out the backoff; then the next send tries again.
+    const held = this.health.IS24.blocked && this.health.IS24.backingOff;
+    for (const candidate of held ? [] : this.store.list('approved')) {
       this.assertRunning();
       // The claim is durable before any remote operation; a claimed review is never sent again.
       let review = this.tryDispatch(candidate.id, { type: 'claim', bindings: this.bindings() });
@@ -249,9 +247,10 @@ export class Workflow {
         const result = await this.submit(review);
         if (result.retry) {
           this.store.dispatch(review.id, { type: 'release' });
-          if (!this.closed) await this.is24Failure(result.retry);
+          if (!this.closed) await this.failure('IS24', result.retry);
           break;
         }
+        await this.recovered('IS24'); // IS24 answered the listing's last check.
         review = this.store.dispatch(review.id, { type: 'finish', ...result });
       }
       results.push(review);

@@ -34,7 +34,6 @@ export async function readJson(req, limit) {
 
 // "Connect with ImmoScout24": a Telegram Mini App where the owner enters the IS24 email, password and any
 // 2FA code. They go straight to session.login (IS24's own login service) and are never stored or logged.
-// Steps: form → working → (code → working) → done; a failure returns to the form with the reason.
 // What differs per service: the page's name, logo and promises, the page path, and the email to prefill.
 // Other apps (`apps`) are served by this one's server under their own path. forUser(id) -> that person's
 // apps, which answer their signed requests; the others on the server only serve the page itself.
@@ -46,14 +45,47 @@ export const BRANDS = {
     logo: '<div class="logo immomio">im</div>',
     perks: ['Apply on Immomio when an approved listing links there', 'Read and answer your Immomio messages in this chat', 'Never send applications you did not approve'] },
 };
+
+// The connect flow. FLOW below is complete: `flow` changes only through these events, and any other
+// (step, event) pair is ignored. The page shows the step it is at.
+//
+//   idle    ─request→ form
+//   form    ─submit→  working   (email and password sent)
+//   working ─ask→     code      (the service wants a 2FA code)
+//   code    ─answer→  working
+//   working ─fail→    form      (with the reason; try again)
+//   working ─succeed→ done
+//   done    ─request→ form
+//   form, working, code ─close→ idle
+//
+// form, working and code hold the open `request` ({ done, resolve, reject }): the agent waits on done, asking
+// again joins it, succeed resolves it and close rejects it.
+// form: { message: why the last try failed }  code: { message: the question, answer(code) }  done: { message: the email, at }
+const DONE_MS = 600_000; // How long an open page still shows done; then it is idle again.
+const open = (state, { request }) => ({ step: 'form', message: '', request });
+const close = () => ({ step: 'idle', message: '' });
+const FLOW = {
+  idle: { request: open },
+  form: { submit: state => ({ ...state, step: 'working', message: 'Connecting…' }), close },
+  working: {
+    ask: (state, { message, answer }) => ({ ...state, step: 'code', message, answer }),
+    succeed: (state, { email }, now) => ({ step: 'done', message: email, at: now }),
+    fail: (state, { message }) => ({ ...state, step: 'form', message }),
+    close,
+  },
+  code: { answer: ({ answer, ...state }) => ({ ...state, step: 'working', message: 'Checking the code…' }), close },
+  done: { request: open },
+};
+
 export class ConnectApp {
   // bot: the Bot (telegram.js) whose name and photo the page shows.
   constructor({ config, session, bot = null, port = 8080, brand = BRANDS.is24, apps = [], forUser = () => null }) {
     Object.assign(this, { config, session, bot, port, brand, apps, forUser });
     this.route = new RegExp(`\\/${brand.path}(\\/state|\\/login|\\/code|\\/avatar)?$`);
     this.page = page(brand);
-    this.pending = null;
-    this.connected = null; // { email, at } of the last success, so the open page can show it.
+    this.flow = { step: 'idle', message: '' };
+    this.version = 0; // Counts the flow's changes, so an open page's long poll answers on the next one.
+    this.waiters = new Set();
   }
   listen() {
     const app = req => {
@@ -65,42 +97,43 @@ export class ConnectApp {
   }
   close() {
     for (const app of this.apps) app.close();
-    this.pending?.reject(new Error('Shutting down'));
-    this.pending = null;
+    const { request } = this.flow;
+    if (this.go({ type: 'close' })) request.reject(new Error('Shutting down'));
     return new Promise(resolve => (this.server ? this.server.close(() => resolve()) : resolve()));
+  }
+  // Applies an event to the flow and wakes every open page. False if it does not apply at this step.
+  go(event) {
+    const next = FLOW[this.flow.step][event.type]?.(this.flow, event, Date.now());
+    if (!next) return false;
+    this.flow = next;
+    this.version++;
+    for (const wake of this.waiters) wake();
+    this.waiters.clear();
+    return true;
   }
   // Starts a connection request (or joins the open one). `fresh` tells whether the owner still needs the button.
   request() {
-    if (this.pending) return { fresh: false, done: this.pending.done };
-    let resolve, reject;
-    const done = new Promise((ok, fail) => { resolve = ok; reject = fail; });
-    // step: form → working → (code → working) → done, or back to form with the reason. code: answers the open code question.
-    this.pending = { done, resolve, reject, step: 'form', message: '', version: 1, waiters: new Set(), code: null };
-    return { fresh: true, done };
+    if (this.flow.request) return { fresh: false, done: this.flow.request.done };
+    const request = {};
+    request.done = new Promise((resolve, reject) => Object.assign(request, { resolve, reject }));
+    this.go({ type: 'request', request });
+    return { fresh: true, done: request.done };
   }
-  show(pending, step, message = '') {
-    Object.assign(pending, { step, message });
-    pending.version++;
-    for (const wake of pending.waiters) wake();
-    pending.waiters.clear();
-  }
-  async login(pending, email, password) {
-    this.show(pending, 'working', 'Connecting…');
+  // Runs after submit. Its events apply only while its request is still the open one (close may end it meanwhile).
+  async login(email, password) {
+    const { request } = this.flow;
+    const go = event => this.flow.request === request && this.go(event);
+    const askCode = message => new Promise((answer, refuse) => { if (!go({ type: 'ask', message, answer })) refuse(new Error('The login was cancelled')); });
     try {
-      const account = await this.session.login({ email, password, askCode: message => new Promise(resolve => { pending.code = resolve; this.show(pending, 'code', message); }) });
-      this.connected = { email: account, at: Date.now() };
-      if (this.pending === pending) this.pending = null;
-      this.show(pending, 'done', account);
-      pending.resolve(account);
-    } catch (error) {
-      this.show(pending, 'form', error.message);
-    } finally { pending.code = null; }
+      const account = await this.session.login({ email, password, askCode });
+      if (go({ type: 'succeed', email: account })) request.resolve(account);
+    } catch (error) { go({ type: 'fail', message: error.message }); }
   }
+  // What the page shows: { step, message, version }.
   state() {
-    const pending = this.pending;
-    if (pending) return { step: pending.step, message: pending.message, version: pending.version };
-    if (this.connected && Date.now() - this.connected.at < 600_000) return { step: 'done', message: this.connected.email, version: 0 };
-    return { step: 'idle', message: '', version: 0 };
+    const { step, message, at } = this.flow;
+    if (step === 'done' && Date.now() - at >= DONE_MS) return { step: 'idle', message: '', version: this.version };
+    return { step, message, version: this.version };
   }
   // The bot's name and photo for the consent screen next to the service (Bot.profile).
   profile() { return this.bot ? this.bot.profile() : Promise.reject(new Error('No Telegram bot')); }
@@ -117,27 +150,24 @@ export class ConnectApp {
     if (!path || path === '/connect') return send(res, 404);
     if (!verifyInitData(req.headers['x-init-data'], this.config.telegramBotToken, this.config.chatId)) return send(res, 403);
     if (path === '/connect/state') {
-      // Long poll: answers on the next change, or after 10 seconds.
-      const pending = this.pending;
-      if (pending && pending.version <= Number(url.searchParams.get('after') || 0)) {
-        await new Promise(resolve => { const timer = setTimeout(resolve, 10_000); pending.waiters.add(() => { clearTimeout(timer); resolve(); }); });
+      // Long poll while a request is open: answers on the next change, or after 10 seconds.
+      if (this.flow.request && this.version <= Number(url.searchParams.get('after') || 0)) {
+        await new Promise(resolve => { const timer = setTimeout(resolve, 10_000); this.waiters.add(() => { clearTimeout(timer); resolve(); }); });
       }
       const name = await this.profile().then(profile => profile.name, () => 'Your agent');
-      return send(res, 200, 'application/json', JSON.stringify({ ...(pending && pending !== this.pending ? { step: pending.step, message: pending.message, version: pending.version } : this.state()), bot: name, email: this.brand.email(this.config) || '' }));
+      return send(res, 200, 'application/json', JSON.stringify({ ...this.state(), bot: name, email: this.brand.email(this.config) || '' }));
     }
     if (req.method !== 'POST') return send(res, 405);
     const { input, status } = await readJson(req, 2048);
     if (status) return send(res, status);
-    const pending = this.pending;
-    if (!pending) return send(res, 409);
-    if (path === '/connect/login' && pending.step === 'form' && typeof input.email === 'string' && typeof input.password === 'string') {
+    if (!this.flow.request) return send(res, 409);
+    // Input that does not fit the step (a second submit, a code nobody asked for) is ignored.
+    if (path === '/connect/login' && typeof input.email === 'string' && typeof input.password === 'string') {
       const email = input.email.trim().toLowerCase();
-      if (email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && input.password && input.password.length <= 200) this.login(pending, email, input.password);
-    } else if (path === '/connect/code' && pending.step === 'code' && typeof input.code === 'string' && /^\s*[\w-]{1,20}\s*$/.test(input.code)) {
-      const resolve = pending.code;
-      pending.code = null;
-      this.show(pending, 'working', 'Checking the code…');
-      resolve(input.code.trim().slice(0, 20));
+      if (email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && input.password && input.password.length <= 200 && this.go({ type: 'submit' })) this.login(email, input.password);
+    } else if (path === '/connect/code' && typeof input.code === 'string' && /^\s*[\w-]{1,20}\s*$/.test(input.code)) {
+      const { answer } = this.flow;
+      if (this.go({ type: 'answer' })) answer(input.code.trim().slice(0, 20));
     }
     return send(res, 204);
   }

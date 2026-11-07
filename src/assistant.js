@@ -14,10 +14,41 @@ const FORM_INTRO = {
   search: ['🔍 What are you looking for? Fill in rent, rooms, living space and, in your own words, what else matters to you.', '✏️ Fill in your search'],
   profile: ['👤 Now about you, for your applications: your contact details for IS24\'s form, and a few words about yourself for ChatGPT.', '✏️ Fill in about you'],
 };
-// Waiting for a typed name: a new search (search+) or a new name for one (search~<old name>).
-const RENAME = 'search~';
-// Waiting for a typed link: the new address of a search (search@<name>).
-const RELINK = 'search@';
+
+// What the chat waits for: the next plain message answers it. One question at a time; asking anything new
+// replaces the open one, and answering or cancelling closes it. Saved, so it stays open through a restart.
+//   null                                         nothing open: during setup the next setup question takes a
+//                                                typed answer, otherwise a plain message opens the settings
+//   { kind: 'setting', key }                     a typed value for that setting
+//   { kind: 'newSearch' }                        "<name> <link>" of a search for the admin's list
+//   { kind: 'renameSearch', name }               a new name for that search
+//   { kind: 'relinkSearch', name }               a new link for that search
+//   { kind: 'edit', id, version, mode, prompt }  how to rewrite a draft (mode 'ai') or the message itself
+//                                                ('manual'); prompt: the question's message_id. Telegram answers it.
+const ADMIN_QUESTIONS = ['newSearch', 'renameSearch', 'relinkSearch'];
+// Before, the open question was one string: a setting key, search+, search~<name> or search@<name>.
+function savedQuestion(value) {
+  if (typeof value !== 'string') return value ?? null;
+  if (value === 'search+') return { kind: 'newSearch' };
+  const [, sign, name] = /^search([~@])(.*)$/s.exec(value) ?? [];
+  if (sign) return { kind: sign === '~' ? 'renameSearch' : 'relinkSearch', name };
+  return { kind: 'setting', key: value };
+}
+// How a typed message answers each kind of question, run with the Assistant as `this`.
+const ANSWERS = {
+  setting({ key }, message) {
+    try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
+    this.awaiting = null;
+    return this.saved(key);
+  },
+  newSearch(question, message) {
+    const [, name, url] = /^(.{1,40}?)\s+(https:\/\/\S+)$/.exec(message.trim()) ?? [];
+    if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
+    return this.changeSearches(async () => searchAddedView(name, await this.admin.addSearch(name, url)));
+  },
+  renameSearch({ name }, message) { return this.changeSearches(() => this.admin.renameSearch(name, message.trim())); },
+  relinkSearch({ name }, message) { return this.changeSearches(async () => searchAddedView(name, await this.admin.changeSearchUrl(name, message.trim()))); },
+};
 
 // The menu's buttons (x:<name>:<arguments>, written by menu.js), run with the Assistant as `this`.
 // Moving through the menus edits the tapped message (navigate), so the chat keeps one menu; /commands start a new one.
@@ -44,7 +75,7 @@ const ACTIONS = {
   },
   // Cancel on a question that waits for a typed answer (a search's name or link): back to the searches.
   cancel() {
-    this.asking = null;
+    this.awaiting = null;
     return { text: 'Cancelled.', edit: this.searchList() };
   },
   // 🗑 Remove: every section of the writing style.
@@ -122,7 +153,7 @@ const ACTIONS = {
   },
   // Add a search to the shared list: the next typed message names it.
   async sa() {
-    this.asking = 'search+';
+    this.awaiting = { kind: 'newSearch' };
     return this.sendView({ extra: CANCEL, text: 'Set the area and any filters on immobilienscout24.de, then send a name and the address of the results page, for example:\nBerlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten\n\nEvery search costs one more request per check, and everyone can pick it. Their own rent, rooms and living space are matched on the results, so leave those out of the link unless they hold for everybody.' });
   },
   // One search of the list: rename or remove it.
@@ -138,14 +169,14 @@ const ACTIONS = {
   async sn(index, mark) {
     const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
-    this.asking = `${RENAME}${search.name}`;
+    this.awaiting = { kind: 'renameSearch', name: search.name };
     return this.sendView({ extra: CANCEL, text: `✏️ Send the new name for ${search.name}, at most 40 characters. Everyone who picked it keeps it.` });
   },
   // Change a search's link: the next typed message is its new address.
   async su(index, mark) {
     const search = this.pickedSearch(index, mark);
     if (!search) return STALE;
-    this.asking = `${RELINK}${search.name}`;
+    this.awaiting = { kind: 'relinkSearch', name: search.name };
     return this.sendView({ extra: CANCEL, text: `🔗 Send the new address of the IS24 results page for ${search.name}. I try it once before I save it; its name, schedule and everyone who picked it stay.\n\nNow: ${search.url}` });
   },
   // Without sure: ask to confirm.
@@ -174,9 +205,9 @@ export class Assistant {
     this.chatgpt = false;
     this.ready = settings.complete(); // "All set" is announced once, when setup completes.
   }
-  // Keep typed prompts through a deployment/restart, including an unfinished search addition.
-  get asking() { return this.store.settings().pendingQuestion ?? null; }
-  set asking(value) { this.store.saveSetting('pendingQuestion', value); }
+  // The open question, see ANSWERS.
+  get awaiting() { return savedQuestion(this.store.settings().pendingQuestion); }
+  set awaiting(question) { this.store.saveSetting('pendingQuestion', question); }
   // Ask the next setup question, start a long step, or announce that setup is done.
   async continue() {
     if (this.busy) return;
@@ -216,7 +247,7 @@ export class Assistant {
   async ask(key) {
     const field = this.settings.field(key);
     const choices = this.settings.choices(key);
-    this.asking = choices.length ? null : key;
+    this.awaiting = choices.length ? null : { kind: 'setting', key };
     const buttons = [...choices.map(([, label], index) => ({ text: label, callback_data: `c:${key}:${index}:${fingerprint(label)}` })), ...(field.optional ? [{ text: 'Skip', callback_data: `c:${key}:-` }] : [])];
     const current = this.settings.values[key] !== undefined ? `\n\nCurrently: ${this.settings.display(key)}` : '';
     await this.send(`${field.ask}${current}`, buttons.length ? { reply_markup: { inline_keyboard: fit(buttons) } } : {});
@@ -225,27 +256,31 @@ export class Assistant {
     if (this.ready && this.settings.complete()) return this.send(`Saved: ${this.settings.field(key)?.label ?? key} = ${this.settings.display(key)}`);
     return this.continue(); // During setup: the next question, or "All set" after the last one.
   }
-  // A typed message that is not a command or a draft edit.
+  // A typed message that is not a command or a draft edit: the answer to the open question.
   async text(message) {
     if (this.busy) return this.send(BUSY);
-    if (this.asking === 'search+') {
-      const [, name, url] = /^(.{1,40}?)\s+(https:\/\/\S+)$/.exec(message.trim()) ?? [];
-      if (!name) return this.send('Please send a name of at most 40 characters, then the link, for example: Berlin https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten');
-      return this.changeSearches(async () => searchAddedView(name, await this.admin.addSearch(name, url)));
-    }
-    const [, change, name] = /^(search[~@])(.*)$/s.exec(this.asking ?? '') ?? [];
-    if (change) {
-      if (!this.admin) { this.asking = null; return this.show(this.settingsView()); }
-      if (change === RENAME) return this.changeSearches(() => this.admin.renameSearch(name, message.trim()));
-      return this.changeSearches(async () => searchAddedView(name, await this.admin.changeSearchUrl(name, message.trim())));
-    }
-    const key = this.asking ?? (this.ready ? null : this.settings.next()?.key);
-    if (!key || !this.settings.field(key) || this.settings.field(key).form || this.settings.choices(key).length) {
+    const question = this.awaiting ?? (this.ready ? null : this.setupQuestion());
+    if (!this.answerable(question)) {
+      if (this.awaiting) this.awaiting = null;
       return this.ready ? this.show(this.settingsView()) : this.continue();
     }
-    try { this.settings.set(key, message); } catch (error) { return this.send(`${error.message}\n\n${this.settings.field(key).ask}`); }
-    this.asking = null;
-    return this.saved(key);
+    return ANSWERS[question.kind].call(this, question, message);
+  }
+  // The setup step a typed message can answer, if it is one.
+  setupQuestion() {
+    const key = this.settings.next()?.key;
+    return this.typed(key) ? { kind: 'setting', key } : null;
+  }
+  // A setting set by typing, not by a form or buttons.
+  typed(key) {
+    const field = key && this.settings.field(key);
+    return Boolean(field && !field.form && !this.settings.choices(key).length);
+  }
+  // Whether this chat can still answer the question: a known kind, a typed setting, the admin's searches.
+  answerable(question) {
+    if (!question || !Object.hasOwn(ANSWERS, question.kind)) return false;
+    if (question.kind === 'setting') return this.typed(question.key);
+    return !ADMIN_QUESTIONS.includes(question.kind) || Boolean(this.admin);
   }
   // Button taps: c:<key>:<index|-> answers a question (a choice or Skip),
   // k:<key> asks to change a setting, x:<action> is a menu action. Returns the toast, whether the tap was
@@ -263,7 +298,7 @@ export class Assistant {
     const values = field && this.answer(field, index, mark);
     if (!values) return STALE;
     for (const [setting, value] of Object.entries(values)) this.settings.set(setting, value);
-    if (this.asking === key) this.asking = null;
+    if (this.awaiting?.kind === 'setting' && this.awaiting.key === key) this.awaiting = null;
     await this.saved(key);
     return { text: 'Saved.', used: true };
   }
@@ -330,7 +365,7 @@ export class Assistant {
   async changeSearches(change) {
     let view;
     try { view = await change(); } catch (error) { return this.send(error.message); }
-    this.asking = null;
+    this.awaiting = null;
     if (view) await this.show(view);
     return this.show(this.searchList());
   }
@@ -350,7 +385,7 @@ export class Assistant {
       const fallback = list.find(entry => entry.id === model)?.defaultThinking;
       return thinking || (fallback ? `${fallback} (default)` : '');
     };
-    return statusView({ counts, failures: this.workflow?.failures ?? { IS24: 0, LLM: 0 }, blocked: this.workflow?.backoff.blocked,
+    return statusView({ counts, failures: { IS24: this.workflow?.health.IS24.failures ?? 0, LLM: this.workflow?.health.LLM.failures ?? 0 }, blocked: this.workflow?.health.IS24.blocked,
       paused: config.paused, autoSend: config.autoSend, email: config.accountEmail, immomioEmail: config.immomioEmail,
       llm: this.admin ? { ...this.llm(), thinking: level(this.llm()) } : null,
       searches: picked.map(search => ({ ...search, quiet: isQuiet(search.quietHours), ...this.feedStatus(search) })), quiet: allQuiet(picked), chatgpt: (this.admin && this.codex.account?.()) || {} }); // The shared account's address stays with the admin.
