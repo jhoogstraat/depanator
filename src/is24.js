@@ -257,7 +257,9 @@ export class IS24Adapter {
   async sendImmomio(review, beforeSubmit, attempt) {
     if (this.immomio?.email !== this.config.immomioEmail) throw new Error('The connected Immomio account differs from the approved one');
     const token = await this.immomio.accessToken().catch(() => { throw new Error(`Immomio ended my login; send /immomio to connect again, or apply yourself: ${review.snapshot.immomio.url}`); });
-    const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, beforeSubmit, onSubmitAttempt: attempt });
+    // Approvals from before Immomio took a message carry a placeholder, not a message for the landlord.
+    const message = /^Apply on Immomio with your profile \(/.test(review.draft) ? '' : review.draft;
+    const { detail } = await applyOnImmomio(immomioClient(token, this.fetch), review.snapshot.immomio.propertyId, { accountEmail: this.config.immomioEmail, message, beforeSubmit, onSubmitAttempt: attempt });
     return { outcome: 'sent', detail };
   }
   async sendContact(review, beforeSubmit, attempt) {

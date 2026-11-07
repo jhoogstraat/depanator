@@ -54,6 +54,10 @@ export async function createWorld(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'depanator-e2e-'));
   const world = {
     dataDir, listings: [], searches: 0, searchUrls: [], reads: {}, contacts: [], immomioApplications: [], unexpected: [], telegram: [], agentLog: '',
+    // The Immomio account: public apply-link IDs to the property IDs Immomio answers with, its conversations
+    // ({ id, subject, unread, messages: [{ id, messageSent, message, sender: { firstname, name, type } }] }) and every
+    // message the agent sent (first messages after applying carry applicationId, replies conversationId).
+    immomio: { properties: {}, conversations: [], sent: [], reads: 0 },
     updates: [], nextUpdate: 1, nextMessage: 1,
     // Set to { status, type, body } to make IS24 answer exactly that.
     respond: { search: null, expose: {}, contact: null },
@@ -89,6 +93,10 @@ export async function createWorld(t) {
       assert.fail(`No button "${label}" in the chat`);
     },
     say(text, from = OWNER) { this.updates.push({ update_id: this.nextUpdate++, message: { message_id: this.nextMessage++, text, chat: { id: from, type: 'private' }, from: { id: from } } }); },
+    // A reply to one of the bot's messages, as Telegram sends it.
+    reply(text, messageId, from = OWNER) {
+      this.updates.push({ update_id: this.nextUpdate++, message: { message_id: this.nextMessage++, text, chat: { id: from, type: 'private' }, from: { id: from }, reply_to_message: { message_id: messageId } } });
+    },
     // Taps a button and resolves with the toast Telegram showed.
     // Telegram sends the tapped message back as it now looks.
     async press({ callback_data, messageId }, from = OWNER) {
@@ -220,12 +228,35 @@ export async function createWorld(t) {
       res.end();
     },
     'gql-ps.immomio.com'(req, res, { query, variables }) {
-      if (/createApplication\(/.test(query)) world.immomioApplications.push(variables);
-      json(res, { data: /createApplication\(/.test(query) ? { createApplication: { id: 'application', status: 'WAITING' } }
-        : /property\(/.test(query) ? { property: { id: variables.id, rented: false, captchaSettings: { applicationSubmissionActive: false }, smsVerificationRequired: false } }
-          : /checkApplicationExist/.test(query) ? { checkApplicationExist: null }
-            : /customQuestions/.test(query) ? { customQuestionsByProperty: { customQuestions: [], questions: [] } }
-              : { user: { id: 'immomio-user', email: 'alex@immomio.test' } } });
+      const { immomio } = world;
+      const input = variables?.input ?? {};
+      const time = message => Date.parse(message.messageSent);
+      const data = () => {
+        if (/createApplication\(/.test(query)) {
+          world.immomioApplications.push(variables);
+          return { createApplication: { id: `application-${world.immomioApplications.length}`, status: 'WAITING' } };
+        }
+        if (/sendMessageInNewConversation\(/.test(query) || /sendMessage\(/.test(query)) {
+          immomio.sent.push(input);
+          const sent = { id: `sent-${immomio.sent.length}`, conversationId: input.conversationId ?? 'new', messageSent: new Date().toISOString(), message: input.message, sender: { firstname: 'Alex', name: 'Doe', type: 'PROPERTY_SEARCHER' } };
+          immomio.conversations.find(conversation => conversation.id === input.conversationId)?.messages.push(sent);
+          return { [/InNewConversation/.test(query) ? 'sendMessageInNewConversation' : 'sendMessage']: sent };
+        }
+        if (/searchConversation\(/.test(query)) {
+          immomio.reads++;
+          return { searchConversation: { nodes: immomio.conversations.map(({ id, subject, unread, messages }) => ({ id, subject, unreadMessages: unread,
+            lastMessageDate: messages.length ? new Date(Math.max(...messages.map(time))).toISOString() : null, mainConversationPartner: { firstname: 'Kim', name: 'Vermieter' } })) } };
+        }
+        if (/searchConversationMessagesByConversationId\(/.test(query)) {
+          const conversation = immomio.conversations.find(entry => entry.id === input.conversationId);
+          return { searchConversationMessagesByConversationId: { nodes: (conversation?.messages ?? []).toReversed() } }; // Newest first.
+        }
+        if (/property\(/.test(query)) return { property: { id: immomio.properties[variables.id] ?? variables.id, rented: false, captchaSettings: { applicationSubmissionActive: false }, smsVerificationRequired: false } };
+        if (/checkApplicationExist/.test(query)) return { checkApplicationExist: null };
+        if (/customQuestions/.test(query)) return { customQuestionsByProperty: { customQuestions: [], questions: [] } };
+        return { user: { id: 'immomio-user', email: 'alex@immomio.test' } };
+      };
+      json(res, { data: data() });
     },
   };
   const server = createServer(async (req, res) => {

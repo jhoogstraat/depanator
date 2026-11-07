@@ -390,7 +390,7 @@ export class Assistant {
   }
   async connectImmomio() {
     const email = await this.immomio.connect();
-    await this.send(`✅ Connected to Immomio as ${email}. When a listing's IS24 description links to an Immomio application, I apply there with your Immomio profile once you approve. Keep that profile complete on tenant.immomio.com.`);
+    await this.send(`✅ Connected to Immomio as ${email}. When a listing's IS24 description links to an Immomio application, I apply there with your Immomio profile and your message once you approve (or by itself with auto-send). New Immomio messages from landlords show up here; reply to one to answer. Keep your profile complete on tenant.immomio.com.`);
   }
   // Sends the "Connect ImmoScout24" button and waits until the person connected their account there.
   async connectIS24() {

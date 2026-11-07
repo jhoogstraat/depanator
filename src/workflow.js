@@ -2,7 +2,6 @@ import { authorizes, bindingFor, configHashFor, hash, OUTCOMES } from './review.
 import { assertReconciled } from './config.js';
 import { TIME_ZONE } from './settings.js';
 import { ALERT_AFTER, IS24_ADVICE, backoffSkip, failedAlert, recoveredAlert } from './health.js';
-import { immomioDraft, usesImmomio } from './immomio.js';
 
 // At most this many listings are enriched and analyzed at once.
 const ANALYSIS_CONCURRENCY = 3;
@@ -201,12 +200,11 @@ export class Workflow {
   autoSendable(review, result, snapshot) {
     return this.config.autoSend === true && result.confident === true && review.fresh === true && !snapshot.missing;
   }
-  // False if writing failed; then the listing waits for the user like any other. An Immomio application has
-  // nothing to write, so it needs no ChatGPT call.
+  // False if writing failed; then the listing waits for the user like any other. On Immomio the message goes with
+  // the application, like the IS24 contact request.
   async autoSend(review, bindings) {
     try {
-      const written = usesImmomio(review.snapshot, this.config) ? { decision: 'message', draft: immomioDraft(this.config, review.snapshot) }
-        : await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
+      const written = await this.evaluate(review.snapshot, { signal: this.controller.signal, revision: { draft: '', instructions: '' } });
       if (this.closed || written.decision !== 'message' || this.changedSince(bindings)) return false;
       const revised = this.store.dispatch(review.id, { type: 'revise', version: review.version, draft: written.draft, reasons: review.reasons, bindings });
       this.store.dispatch(review.id, { type: 'approve', version: revised.version, draftHash: revised.draftHash, bindings, by: 'auto' });

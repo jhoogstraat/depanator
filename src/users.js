@@ -13,7 +13,7 @@ import { Telegram } from './telegram.js';
 import { Assistant } from './assistant.js';
 import { BRANDS, ConnectApp } from './connect.js';
 import { IS24Session } from './is24-auth.js';
-import { ImmomioSession } from './immomio.js';
+import { ImmomioInbox, ImmomioSession, immomioClient } from './immomio.js';
 
 // Why Workflow.check() did not search.
 const SKIPPED = { paused: 'Paused', quiet: 'Night pause', skipped: 'Backing off IS24' };
@@ -21,6 +21,9 @@ const INVITE_MS = 24 * 3_600_000;
 // Across everybody: they all use one ChatGPT login, so one person's burst must not starve the others.
 const LLM_CONCURRENCY = 3;
 const SESSIONS = ['is24-session.json', 'immomio-session.json'];
+// The shortest wait between two checks of someone's Immomio messages; quiet accounts wait up to 30 times as long.
+// Never slower than the fastest search, which only tests set below a minute.
+const INBOX_MS = 60_000;
 
 // At most `max` calls at once, first come first served.
 function limiter(max) {
@@ -59,6 +62,31 @@ function ticker(workflow, settings, log) {
   }).catch(failure => { log.error(`Agent: ${failure.message}`); return { error: failure.message }; }),
   { onBusy: () => workflow.reportOutcomes(), stopped: () => workflow.closed });
   return () => settings.complete() ? run() : Promise.resolve();
+}
+
+// The person's Immomio messages, read on their own timer: after each check the inbox says how long to wait (short
+// while the account is active, long once it is quiet). soon() checks right away, e.g. after connecting. A failure
+// streak is told once.
+function inboxChecker(inbox, { base, alert, log }) { // base() -> ms
+  let timer = null, stopped = false, failing = false;
+  const run = coalesced(async () => {
+    try {
+      const count = await inbox.check();
+      if (count) log.info(`Forwarded ${count} Immomio message${count === 1 ? '' : 's'}.`);
+      if (failing) { failing = false; log.info('Immomio messages work again.'); }
+    } catch (failure) {
+      if (failing) return;
+      failing = true;
+      log.error(`Immomio messages: ${failure.message}`);
+      if (failure.code === 'LOGIN_REQUIRED') await alert('🔗 Immomio ended my login, so I cannot show you new Immomio messages. Send /immomio to connect again.').catch(error => log.error(error.message));
+    }
+  }, { stopped: () => stopped });
+  const schedule = delay => {
+    clearTimeout(timer);
+    if (stopped) return;
+    timer = setTimeout(() => run().finally(() => schedule(inbox.wait(base()))), delay);
+  };
+  return { soon: () => schedule(0), stop: () => { stopped = true; clearTimeout(timer); } };
 }
 
 // The person's IS24 and Immomio logins. An account email whose login is gone is cleared, so setup asks to connect.
@@ -194,15 +222,27 @@ export class Users {
       beforeWork: () => adapter.authenticate(() => connect('🔗 ImmoScout24 ended my login. Please connect your account again; checks are paused until then.')),
       onEvent: event => {
         if (event.type === 'submission') log.info(`${event.review.exposeId}: ${event.review.status} — ${event.review.detail || ''}`);
+        // A landlord may answer an Immomio application soon: read the messages often again.
+        if (event.type === 'submission' && event.review.status !== 'failed' && event.review.snapshot.immomio && config.immomioEmail) { inbox.touch(); inboxTimer.soon(); }
         if (event.type.endsWith('_error')) error(`${event.type}: ${event.detail}`);
       },
     });
-    telegram = new Telegram({ config, store, workflow, bot, onError: error });
+    const inbox = new ImmomioInbox({
+      client: async () => immomioClient(await immomioSession.accessToken()),
+      connected: () => immomioSession.connected && Boolean(config.immomioEmail) && immomioSession.email === config.immomioEmail,
+      load: () => store.settings().immomioInbox ?? {}, save: value => store.saveSetting('immomioInbox', value),
+      forward: message => telegram.forwardImmomio(message),
+    });
+    telegram = new Telegram({ config, store, workflow, bot, inbox, onError: error });
+    // Immomio messages arrive whether or not the search is paused.
+    const inboxTimer = inboxChecker(inbox, { base: () => Math.min(INBOX_MS, this.interval()), alert: send, log });
+    inboxTimer.soon();
+    telegram.onReplied = () => inboxTimer.soon(); // The landlord may answer a reply soon.
     const tick = ticker(workflow, settings, log);
     telegram.assistant = new Assistant({
       settings, store, send, codex: codexFor(config),
       is24: { connect: () => connect('🔗 Connect your ImmoScout24 account, so I can read listings and send the applications you approve.') },
-      immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio.') },
+      immomio: { connect: () => connectImmomio('🔗 Connect your Immomio account, so I can apply there to the listings you approve that link to Immomio, and show you your Immomio messages.') },
       workflow, redeliver: review => telegram.notify(review, { again: true }),
       catalog: () => this.catalog, feedStatus: search => feeds.status(searchKey(search.url)),
       admin: isAdmin ? this.adminActions() : null, llm: () => this.llm(),
@@ -210,9 +250,12 @@ export class Users {
     });
     // Back from a pause: only what is crawled from now on is new, and what is online now counts as already online.
     settings.onChange(key => { if (key === 'paused' && !config.paused) store.saveSetting('cursors', {}); });
+    // Another Immomio account starts over: its messages are not the old account's.
+    settings.onChange(key => { if (key === 'immomioEmail') { store.deleteSetting('immomioInbox'); inboxTimer.soon(); } });
     const user = {
       id, folder, store, settings, workflow, telegram, tick, connects: [is24App, immomioApp, formApp],
       close: async () => {
+        inboxTimer.stop();
         workflow.stop();
         telegram.close();
         for (const app of user.connects) app.close();
